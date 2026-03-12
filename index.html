@@ -1,0 +1,1519 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Liquidación de Entregas</title>
+
+
+
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:sans-serif;background:#f4f6f9;min-height:100vh;}
+  input,select,textarea,button{font-family:sans-serif;}
+  .btn{cursor:pointer;border:none;border-radius:8px;font-weight:700;}
+</style>
+</head>
+<body>
+<div id="app"><div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#1e3a5f;font-size:16px;">⏳ Cargando...</div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+<script>
+// ── Firebase config ──
+const firebaseConfig = {
+  databaseURL: "https://entregas-diarias-default-rtdb.firebaseio.com"
+};
+if (typeof firebase === 'undefined') {
+  document.getElementById('app').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#c00;font-size:15px;text-align:center;padding:20px;">❌ Error: No se pudo cargar Firebase.<br>Verifica tu conexión a internet e intenta de nuevo.</div>';
+  throw new Error('Firebase no disponible');
+}
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// ── Constantes ──
+const MOTIVOS = [
+  {codigo:"D01",desc:"Cliente rechazó el pedido"},
+  {codigo:"D02",desc:"Producto incorrecto"},
+  {codigo:"D03",desc:"Sin dinero"},
+  {codigo:"D04",desc:"Cerrado"},
+  {codigo:"D05",desc:"Por cruce de producto en otro cliente"},
+  {codigo:"D06",desc:"Producto mal cargado en bodega"},
+];
+const BILLETES = [1,5,10,20,50,100,200];
+const APP_PASS = "entregascodeplass123";
+const PASS_DESBLOQUEO = "1234";
+
+// ── Helpers ──
+const fQ = v => `Q ${Number(v||0).toLocaleString("es-GT",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+const fN = v => Number(v||0).toLocaleString("es-GT");
+const hoy = () => new Date().toISOString().slice(0,10);
+const toNum = v => { const n=parseFloat(String(v||"").replace(/[Q,\s]/g,"")); return isNaN(n)?0:n; };
+const esRuta = v => typeof v==="string" && /^ruta\s*\d+/i.test(v.trim());
+const esCliente = v => typeof v==="string" && /^PT\d+/i.test(v.trim());
+const esProducto = v => typeof v==="string" && /^\[\d+\]/.test(v.trim());
+const esPedido = v => typeof v==="string" && /^SO\d+/i.test(v.trim());
+
+// ── Firebase helpers ──
+async function fbGet(path) {
+  const snap = await db.ref(path).once("value");
+  return snap.val();
+}
+async function fbSet(path, data) {
+  await db.ref(path).set(data);
+}
+async function fbRemove(path) {
+  await db.ref(path).remove();
+}
+
+// ── Parse archivo ──
+function parseFile(raw) {
+  const map={};
+  let ruta="",cliente="",pedido="";
+  for(let i=0;i<raw.length;i++){
+    const cells=Array.isArray(raw[i])?raw[i]:Object.values(raw[i]);
+    const A=String(cells[0]||"").trim();
+    const B=String(cells[1]||"").trim();
+    if(cells.every(c=>c===""||c===null||c===undefined)) continue;
+    if(esRuta(A)){ruta=A;continue;}
+    if(esCliente(A)){
+      const partes=A.split(/\s[—–-]+\s|\s{2,}/);
+      const codigo=partes[0].trim();
+      const nombre=partes.slice(1).join(" ").trim()||B;
+      let ped="S/N";
+      for(let ci=1;ci<=5;ci++){
+        const val=String(cells[ci]||"").trim();
+        if(esPedido(val)||/^[A-Z]{1,3}\d{4,}/i.test(val)){ped=val;break;}
+      }
+      cliente=nombre?`${codigo} - ${nombre}`:codigo;
+      pedido=ped;
+      if(!map[cliente]) map[cliente]={ruta,pedidos:{}};
+      if(!map[cliente].pedidos[pedido]) map[cliente].pedidos[pedido]={lineas:[]};
+      continue;
+    }
+    if(esProducto(A)&&cliente){
+      const nums=cells.map(c=>toNum(c)).filter(n=>n>0);
+      if(nums.length>=2){
+        map[cliente].pedidos[pedido].lineas.push({
+          producto:A, unidades:nums[nums.length-2], monto:nums[nums.length-1]
+        });
+      }
+    }
+  }
+  return map;
+}
+
+// ── Estado global ──
+let state = {
+  autenticado: false,
+  esAdmin: false,
+  verPass: false,
+  appPass: "",
+  appPassError: "",
+  cargandoDatos: false,
+  screen: "upload",
+  fileName: "",
+  fecha: hoy(),
+  clienteMap: {},
+  devoluciones: [],
+  entregados: {},       // legacy
+  estadoEntrega: {},    // "verde" | "amarillo" | "rosado"
+  motivosDevTotal: {},  // cliente -> {codigo, desc} para devoluciones totales
+  descuentos: {},
+  comentarios: {},
+  bloqueados: {},
+  deposito: "",
+  transferencia: "",
+  gastosDetalle: [{desc:"",monto:"",comentario:""}],
+  billetes: Object.fromEntries(BILLETES.map(b=>[b,""])),
+  monedas: "",
+  clienteDetalle: null,
+  busqueda: "",
+  error: "",
+  historialData: {},
+  fechaSelec: "",
+  passCliente: null,
+  passInput: "",
+  passError: "",
+  verPassDesbloqueo: false,
+  dvPedido: "",
+  dvProducto: "",
+  dvUnidades: "",
+  dvMonto: "",
+  dvCodigo: "D01",
+  dvError: "",
+  showDvForm: false,
+  showConfirmar: false,
+  confirmado: false,
+  guardando: false,
+  modoHistorial: false,
+};
+
+function setState(updates) {
+  Object.assign(state, updates);
+  render();
+}
+
+// ── Totales ──
+function totalesCliente(c) {
+  let u=0,m=0;
+  Object.values(state.clienteMap[c]?.pedidos||{}).forEach(p=>p.lineas.forEach(l=>{u+=l.unidades;m+=l.monto;}));
+  const devs=state.devoluciones.filter(d=>d.cliente===c);
+  const dU=devs.reduce((s,d)=>s+d.unidades,0),dM=devs.reduce((s,d)=>s+d.monto,0);
+  const desc=parseFloat(state.descuentos[c])||0;
+  return {unidades:u,monto:m,devU:dU,devM:dM,desc,netoU:u-dU,netoM:m-dM-desc};
+}
+
+function estadoCliente(c) {
+  // verde: confirmado sin devoluciones
+  // amarillo: confirmado con devoluciones parciales
+  // rosado: devolucion total (neto = 0)
+  // null: no confirmado
+  const est = state.estadoEntrega[c];
+  return est || null;
+}
+
+function totalesGral() {
+  return Object.keys(state.clienteMap).reduce((acc,c)=>{
+    const t=totalesCliente(c);
+    acc.unidades+=t.unidades;acc.monto+=t.monto;acc.devM+=t.devM;acc.desc+=t.desc;acc.netoM+=t.netoM;
+    return acc;
+  },{unidades:0,monto:0,devM:0,desc:0,netoM:0});
+}
+
+function prodsDisp(c,p) {
+  return (state.clienteMap[c]?.pedidos?.[p]?.lineas||[]).map(l=>{
+    const yU=state.devoluciones.filter(d=>d.cliente===c&&d.pedido===p&&d.producto===l.producto).reduce((s,d)=>s+d.unidades,0);
+    const yM=state.devoluciones.filter(d=>d.cliente===c&&d.pedido===p&&d.producto===l.producto).reduce((s,d)=>s+d.monto,0);
+    return {...l,dispU:l.unidades-yU,dispM:l.monto-yM};
+  }).filter(l=>l.dispU>0);
+}
+
+function precioUnit(cliente,pedido,producto) {
+  const linea=state.clienteMap[cliente]?.pedidos?.[pedido]?.lineas?.find(l=>l.producto===producto);
+  if(!linea||linea.unidades===0) return 0;
+  return linea.monto/linea.unidades;
+}
+
+// ── Acciones ──
+async function iniciarSesion() {
+  if(state.appPass===APP_PASS){
+    const params=new URLSearchParams(window.location.search);
+    const admin=params.get("admin")==="1";
+    setState({autenticado:true,esAdmin:admin,appPassError:"",cargandoDatos:true});
+    const datos=await fbGet("datos-dia");
+    if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length>0){
+      setState({clienteMap:datos.clienteMap,fileName:datos.fileName||"",fecha:datos.fecha||hoy(),screen:"main",cargandoDatos:false});
+    } else {
+      // Admin va a pantalla de inicio con opciones, repartidor ve nodatos
+      setState({screen:admin?"inicio":"nodatos",cargandoDatos:false});
+    }
+  } else {
+    setState({appPassError:"Contraseña incorrecta."});
+  }
+}
+
+async function procesarArchivo(file) {
+  setState({error:""});
+  try {
+    const buf=await file.arrayBuffer();
+    const wb=XLSX.read(buf,{type:"array"});
+    const ws=wb.Sheets[wb.SheetNames[0]];
+    const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+    const map=parseFile(raw);
+    if(!Object.keys(map).length){setState({error:"No se encontraron entregas."});return;}
+    // Limpiar claves para Firebase (no permite . # $ / [ ])
+    const cleanKey=k=>k.replace(/[.#$\/\[\]]/g,"_");
+    const cleanMap={};
+    Object.entries(map).forEach(([k,v])=>{cleanMap[cleanKey(k)]={...v, nombreOriginal:k};});
+    await fbSet("datos-dia",{clienteMap:cleanMap,fileName:file.name,fecha:state.fecha});
+    setState({
+      clienteMap:cleanMap,devoluciones:[],entregados:{},estadoEntrega:{},motivosDevTotal:{},descuentos:{},comentarios:{},bloqueados:{},
+      deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:""}],
+      billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,
+      fileName:file.name,screen:"main",busqueda:""
+    });
+  } catch(e){setState({error:"Error: "+e.message});}
+}
+
+async function confirmarLiquidacion() {
+  setState({guardando:true});
+  try {
+    const existing=await fbGet("historial")||{};
+    // Calcular y guardar totales por cliente para el historial
+    const clienteTotales = {};
+    Object.keys(state.clienteMap).forEach(c => {
+      if(!state.estadoEntrega[c]) return;
+      let m=0;
+      Object.values(state.clienteMap[c].pedidos||{}).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));
+      const devM=state.devoluciones.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
+      const desc=parseFloat(state.descuentos[c])||0;
+      clienteTotales[c] = m - devM - desc;
+    });
+    const totalNeto = Object.values(clienteTotales).reduce((s,v)=>s+v,0);
+
+    existing[state.fecha]={
+      fecha:state.fecha,fileName:state.fileName,
+      entregados:state.entregados,
+      estadoEntrega:state.estadoEntrega,
+      motivosDevTotal:state.motivosDevTotal,
+      devoluciones:state.devoluciones,
+      descuentos:state.descuentos,comentarios:state.comentarios,
+      deposito:state.deposito,transferencia:state.transferencia,
+      gastosDetalle:state.gastosDetalle,billetes:state.billetes,monedas:state.monedas,
+      clienteTotales, totalNeto,
+      clienteMap: state.clienteMap
+    };
+    await fbSet("historial",existing);
+    await fbRemove("datos-dia");
+    setState({confirmado:true,showConfirmar:false,guardando:false});
+  } catch(e){console.error(e);setState({guardando:false});}
+}
+
+async function abrirHistorial() {
+  const data=await fbGet("historial")||{};
+  const fechas=Object.keys(data).sort().reverse();
+  setState({historialData:data,fechaSelec:fechas[0]||"",screen:"historial"});
+}
+
+async function exportarExcel(reg) {
+  const wb=XLSX.utils.book_new();
+  const devs=reg.devoluciones||[];
+  const descs=reg.descuentos||{};
+  const coments=reg.comentarios||{};
+  const estadoEnt=reg.estadoEntrega||reg.entregados||{};
+  const cMap=reg.clienteMap||{};
+  const gastos=reg.gastosDetalle||[];
+  const billetes=reg.billetes||{};
+  const clts=[...new Set([...Object.keys(estadoEnt),...Object.keys(cMap),...devs.map(d=>d.cliente)])].filter(Boolean).sort();
+
+  // ── Hoja 1: Resumen ──
+  // Fix obs.2: devoluciones siempre se muestran en columna Devoluciones (positivo),
+  // Total neto = bruto - devoluciones - descuentos
+  let sB=0,sD=0,sDe=0,sN=0;
+  const resRows=[["Ruta","Cliente","Estado","Total bruto Q","Devoluciones Q","Descuento Q","Total neto Q","Comentario"]];
+  const cltsSorted=[...clts].sort((a,b)=>{
+    const ra=cMap[a]?.ruta||"ZZZ", rb=cMap[b]?.ruta||"ZZZ";
+    return ra.localeCompare(rb);
+  });
+  cltsSorted.forEach(c=>{
+    const ruta=cMap[c]?.ruta||"";
+    const est=estadoEnt[c];
+    const lbl=est==="verde"?"Entregado":est==="amarillo"?"Parcial":est==="rosado"?"Dev. total":"Pendiente";
+    let bruto=0; Object.values(cMap[c]?.pedidos||{}).forEach(p=>p.lineas.forEach(l=>{bruto+=l.monto;}));
+    // Devoluciones: si rosado = bruto completo; si amarillo = devs parciales registradas
+    const dv = est==="rosado" ? bruto : devs.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
+    const dc = est==="rosado" ? 0 : (parseFloat(descs[c])||0);
+    const nt = bruto - dv - dc;
+    sB+=bruto; sD+=dv; sDe+=dc; sN+=nt;
+    // dv como positivo en la columna, neto ya refleja la resta
+    resRows.push([ruta,c,lbl,bruto,dv>0?dv:0,dc>0?dc:0,nt,coments[c]||""]);
+  });
+  resRows.push(["","TOTAL","",sB,sD,sDe,sN,""]);
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(resRows),"Resumen");
+
+  // ── Hoja 2: Productos ──
+  // Fix obs.3a: agregar columna Estado de entrega
+  // Fix obs.3b: unidades/monto devueltos correctos (incluyendo devolución total = todas las unidades)
+  const pRows=[["Ruta","Cliente","Estado","Pedido","Producto","Unid pedidas","Monto Q","Unid devueltas","Monto dev Q","Unid netas","Monto neto Q"]];
+  const cltsP=[...clts].sort((a,b)=>{
+    const ra=cMap[a]?.ruta||"ZZZ", rb=cMap[b]?.ruta||"ZZZ";
+    return ra.localeCompare(rb);
+  });
+  cltsP.forEach(c=>{
+    const ruta=cMap[c]?.ruta||"";
+    const est=estadoEnt[c];
+    const lbl=est==="verde"?"Entregado":est==="amarillo"?"Parcial":est==="rosado"?"Dev. total":"Pendiente";
+    const esRosado = est==="rosado";
+    Object.entries(cMap[c]?.pedidos||{}).forEach(([ped,pd])=>{
+      pd.lineas.forEach(l=>{
+        let du,dm;
+        if(esRosado){
+          // Devolución total: todas las unidades y monto del producto
+          du=l.unidades; dm=l.monto;
+        } else {
+          const dv=devs.filter(d=>d.cliente===c&&d.pedido===ped&&d.producto===l.producto);
+          du=dv.reduce((s,d)=>s+d.unidades,0);
+          dm=dv.reduce((s,d)=>s+d.monto,0);
+        }
+        pRows.push([ruta,c,lbl,ped,l.producto,l.unidades,l.monto,du||0,dm||0,l.unidades-du,l.monto-dm]);
+      });
+    });
+  });
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(pRows),"Productos");
+
+  // ── Hoja 3: Devoluciones ──
+  // Fix obs.3b: incluir devoluciones totales (rosados) aunque no tengan registro línea a línea
+  const dRows=[["Cliente","Estado","Pedido","Producto","Unidades","Monto Q","Codigo","Motivo"]];
+  // Primero devs parciales registradas
+  const MOTIVOS_MAP_EXP={"D01":"Cliente rechazó el pedido","D02":"Producto incorrecto","D03":"Sin dinero","D04":"Cerrado"};
+  devs.forEach(d=>{
+    const est=estadoEnt[d.cliente];
+    const lbl=est==="amarillo"?"Parcial":est==="rosado"?"Dev. total":"Dev. parcial";
+    // Para rosados, el motivo real está en motivosDevTotal; para parciales en d.desc
+    const motivoRosado = est==="rosado" ? (reg.motivosDevTotal?.[d.cliente]||{}) : null;
+    const codigo = motivoRosado?.codigo || d.codigo || "D01";
+    const descFinal = motivoRosado?.desc || d.desc || MOTIVOS_MAP_EXP[codigo] || codigo || "";
+    dRows.push([d.cliente,lbl,d.pedido,d.producto,d.unidades,d.monto,codigo,descFinal]);
+  });
+  // Luego rosados sin devs registradas línea a línea (devolución total implícita)
+  clts.forEach(c=>{
+    if(estadoEnt[c]!=="rosado") return;
+    const yaRegistrado = devs.some(d=>d.cliente===c);
+    if(yaRegistrado) return; // ya aparece arriba
+    const motivo=reg.motivosDevTotal?.[c]||{};
+    const codigoMot = motivo.codigo||"D01";
+    const descMot = motivo.desc || MOTIVOS_MAP_EXP[codigoMot] || "Devolución total";
+    Object.entries(cMap[c]?.pedidos||{}).forEach(([ped,pd])=>{
+      pd.lineas.forEach(l=>{
+        dRows.push([c,"Dev. total",ped,l.producto,l.unidades,l.monto,codigoMot,descMot]);
+      });
+    });
+  });
+  if(dRows.length>1) XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(dRows),"Devoluciones");
+
+  // ── Hoja 4: Cuadre Final ──
+  const tB=[1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(billetes[b])||0),0);
+  const mon=parseFloat(reg.monedas)||0,tEf=tB+mon;
+  const tDep=parseFloat(reg.deposito)||0,tTra=parseFloat(reg.transferencia)||0;
+  const tGas=gastos.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
+  const tPag=tEf+tDep+tTra,nRec=tPag-tGas,dif=nRec-sN;
+  const cuadreRows=[
+    ["CUADRE FINAL - "+(reg.fecha||"")],[],["BILLETES","Cantidad","Total Q"],
+    ...[1,5,10,20,50,100,200].map(b=>{const c=parseFloat(billetes[b])||0;return c>0?["Q"+b,c,b*c]:null;}).filter(Boolean),
+    ["Subtotal billetes","",tB],["Monedas","",mon],["Total efectivo","",tEf],
+    [],[" OTROS PAGOS","",""],["Deposito bancario","",tDep],["Transferencia","",tTra],
+    [],[" GASTOS DE RUTA","Descripcion","Monto Q"],
+    ...gastos.filter(g=>parseFloat(g.monto)).map(g=>[g.comentario||"",g.desc||"",parseFloat(g.monto)]),
+    ["Total gastos","",tGas],
+    [],[" RESUMEN","",""],
+    ["Total a entregar (bruto)","",sB],["(-) Devoluciones","",-sD],["(-) Descuentos","",-sDe],["Total neto a cobrar","",sN],
+    [],[" PAGOS RECIBIDOS","",""],
+    ["Total pagos recibidos","",tPag],["(-) Gastos de ruta","",-tGas],["Neto recibido","",nRec],
+    [],[Math.abs(dif)<0.01?"✓ CUADRADO":dif>0?"SOBRANTE":"FALTANTE","DIFERENCIA",dif],
+  ];
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(cuadreRows),"Cuadre Final");
+  XLSX.writeFile(wb,"Liquidacion_"+(reg.fecha||"").replace(/[/]/g,"-")+".xlsx");
+}
+
+function guardarDev() {
+  if(!state.dvPedido||!state.dvProducto){setState({dvError:"Selecciona pedido y producto."});return;}
+  const u=parseFloat(state.dvUnidades)||0,m=parseFloat(state.dvMonto)||0;
+  if(u<=0||m<=0){setState({dvError:"Ingresa unidades válidas."});return;}
+  const prod=prodsDisp(state.clienteDetalle,state.dvPedido).find(p=>p.producto===state.dvProducto);
+  if(!prod){setState({dvError:"Producto no disponible."});return;}
+  if(u>prod.dispU){setState({dvError:`Máximo: ${prod.dispU} unidades.`});return;}
+  if(m>prod.dispM+0.01){setState({dvError:`Máximo: ${fQ(prod.dispM)}.`});return;}
+  const motivo=MOTIVOS.find(x=>x.codigo===state.dvCodigo);
+  setState({
+    devoluciones:[...state.devoluciones,{id:Date.now(),cliente:state.clienteDetalle,pedido:state.dvPedido,producto:state.dvProducto,unidades:u,monto:m,codigo:state.dvCodigo,desc:motivo.desc}],
+    dvPedido:"",dvProducto:"",dvUnidades:"",dvMonto:"",dvCodigo:"D01",dvError:"",showDvForm:false
+  });
+}
+
+function confirmarVerde(cliente) {
+  // Confirmar entrega 100% efectiva desde checkbox
+  setState({
+    estadoEntrega:{...state.estadoEntrega,[cliente]:"verde"},
+    entregados:{...state.entregados,[cliente]:true},
+    bloqueados:{...state.bloqueados,[cliente]:true}
+  });
+}
+
+function desconfirmarEntrega(cliente) {
+  const nuevoEstado={...state.estadoEntrega}; delete nuevoEstado[cliente];
+  const nuevoBloq={...state.bloqueados}; delete nuevoBloq[cliente];
+  const nuevoEnt={...state.entregados}; delete nuevoEnt[cliente];
+  setState({estadoEntrega:nuevoEstado, bloqueados:nuevoBloq, entregados:nuevoEnt});
+}
+
+function confirmarDesdeDetalle(cliente, tipo, codigoMotivo, descMotivo) {
+  // tipo: "amarillo" o "rosado"
+  const motivo = MOTIVOS.find(x=>x.codigo===codigoMotivo)||{};
+  const descFinal = descMotivo || motivo.desc || codigoMotivo || "";
+  const updates = {
+    estadoEntrega:{...state.estadoEntrega,[cliente]:tipo},
+    entregados:{...state.entregados,[cliente]:true},
+    bloqueados:{...state.bloqueados,[cliente]:true},
+    clienteDetalle:null, showDvForm:false, dvPedido:"", dvProducto:"", dvError:""
+  };
+  // Guardar motivo tanto para rosados como amarillos
+  if(codigoMotivo){
+    updates.motivosDevTotal = {...state.motivosDevTotal, [cliente]:{codigo:codigoMotivo, desc:descFinal}};
+  }
+  setState(updates);
+}
+
+function toggleEntregado(cliente) {
+  if(state.bloqueados[cliente]) return;
+  confirmarVerde(cliente);
+}
+
+function intentarDesbloquear() {
+  if(state.passInput===PASS_DESBLOQUEO){
+    const c=state.passCliente;
+    const tipoAnterior=state.estadoEntrega[c];
+
+    const nuevoBloq={...state.bloqueados}; delete nuevoBloq[c];
+    const nuevoEstado={...state.estadoEntrega}; delete nuevoEstado[c];
+    const nuevoEnt={...state.entregados}; delete nuevoEnt[c];
+
+    const updates={bloqueados:nuevoBloq, estadoEntrega:nuevoEstado, entregados:nuevoEnt, passCliente:null, passInput:"", passError:""};
+
+    // Si era devolución total: limpiar motivo guardado
+    if(tipoAnterior==="rosado"){
+      const nuevosMot={...state.motivosDevTotal}; delete nuevosMot[c];
+      updates.motivosDevTotal=nuevosMot;
+    }
+
+    // Si era entrega parcial: borrar devoluciones de ese cliente
+    if(tipoAnterior==="amarillo"){
+      updates.devoluciones=state.devoluciones.filter(d=>d.cliente!==c);
+    }
+
+    setState(updates);
+  } else {
+    setState({passError:"Contraseña incorrecta."});
+  }
+}
+
+// ── Navegación con Enter en cuadre final ──
+function focusNextCuadre(e) {
+  if(e.key !== "Enter") return;
+  e.preventDefault();
+  const all = Array.from(document.querySelectorAll("input[data-cuadre]"));
+  const idx = all.indexOf(e.target);
+  if(idx >= 0 && idx < all.length - 1) all[idx + 1].focus();
+}
+
+// ── Actualizar resumen sin re-render completo ──
+function actualizarResumen() {
+  const resDiv = document.getElementById("resumen-cuadre");
+  const totalBilletes2 = [1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
+  const totalMonedas2 = parseFloat(state.monedas)||0;
+  const totalEfectivo2 = totalBilletes2 + totalMonedas2;
+  const totalDeposito2 = parseFloat(state.deposito)||0;
+  const totalTransferencia2 = parseFloat(state.transferencia)||0;
+  const totalGastos2 = state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
+  const totalPagos2 = totalEfectivo2 + totalDeposito2 + totalTransferencia2;
+
+  // Total a Entregar: bruto de TODOS los clientes
+  const totalAEntregar = Object.keys(state.clienteMap).reduce((acc,c)=>{
+    let m=0; Object.values(state.clienteMap[c].pedidos||{}).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));
+    return acc + m;
+  },0);
+  // Devoluciones: parciales + bruto de rosados
+  const totalDevCuadre = Object.keys(state.clienteMap).reduce((acc,c)=>{
+    if(state.estadoEntrega[c]==="rosado"){
+      let m=0; Object.values(state.clienteMap[c].pedidos||{}).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));
+      return acc + m;
+    }
+    return acc + state.devoluciones.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
+  },0);
+  // Descuentos: solo confirmados verde+amarillo
+  const totalDescCuadre = Object.keys(state.clienteMap).reduce((acc,c)=>{
+    if(!state.estadoEntrega[c]||state.estadoEntrega[c]==="rosado") return acc;
+    return acc + (parseFloat(state.descuentos[c])||0);
+  },0);
+  // Total Neto: Total a Entregar - Devoluciones - Descuentos
+  const totalNetoCuadre = totalAEntregar - totalDevCuadre - totalDescCuadre;
+
+  const diferencia2 = (totalPagos2 + totalGastos2) - totalNetoCuadre;
+  resDiv.innerHTML = "";
+  [
+    {label:"Total a Entregar", val:fQ(totalAEntregar), color:"#1e3a5f", bold:true},
+    {label:"(-) Devoluciones", val:`-${fQ(totalDevCuadre)}`, color:"#c0392b"},
+    {label:"(-) Descuentos", val:`-${fQ(totalDescCuadre)}`, color:"#e67e22"},
+    {label:"Total Neto", val:fQ(totalNetoCuadre), color:"#1e3a5f", bold:true, sep:true},
+    {label:"Efectivo", val:fQ(totalEfectivo2), color:"#333"},
+    {label:"Depósito", val:fQ(totalDeposito2), color:"#333"},
+    {label:"Transferencia", val:fQ(totalTransferencia2), color:"#333"},
+    {label:"Total recibido", val:fQ(totalPagos2), color:"#2563eb", bold:true},
+    {label:"Gastos de ruta", val:`-${fQ(totalGastos2)}`, color:"#e67e22"},
+  ].forEach(x=>{
+    const row=document.createElement("div");
+    row.style.cssText=`display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid #e2e8f0;${x.sep?"margin-top:6px;border-top:2px solid #1e3a5f;padding-top:6px;":""}`;
+    const lbl=document.createElement("span"); lbl.style.color="#666"; lbl.textContent=x.label;
+    const val=document.createElement("span"); val.style.cssText=`font-weight:${x.bold?"700":"600"};color:${x.color};`; val.textContent=x.val;
+    row.appendChild(lbl); row.appendChild(val); resDiv.appendChild(row);
+  });
+  const difDiv=document.createElement("div");
+  difDiv.style.cssText="margin-top:10px;text-align:center;padding:10px 0;";
+  const difLabel=document.createElement("div"); difLabel.style.cssText="font-size:11px;color:#888;margin-bottom:3px;"; difLabel.textContent="DIFERENCIA";
+  const difVal=document.createElement("div");
+  const difColor=Math.abs(diferencia2)<0.01?"#27ae60":diferencia2>0?"#2563eb":"#c0392b";
+  difVal.style.cssText=`font-size:22px;font-weight:700;color:${difColor};`;
+  difVal.textContent=Math.abs(diferencia2)<0.01?"✓ CUADRADO":diferencia2>0?`+${fQ(diferencia2)} SOBRANTE`:`-${fQ(Math.abs(diferencia2))} FALTANTE`;
+  difDiv.appendChild(difLabel); difDiv.appendChild(difVal);
+  resDiv.appendChild(difDiv);
+}
+
+// ── Render helpers ──
+const s = (styles) => Object.entries(styles).map(([k,v])=>`${k.replace(/([A-Z])/g,'-$1').toLowerCase()}:${v}`).join(';');
+
+function el(tag, attrs={}, ...children) {
+  const e=document.createElement(tag);
+  Object.entries(attrs).forEach(([k,v])=>{
+    if(k==="style"&&typeof v==="object") e.style.cssText=s(v);
+    else if(k.startsWith("on")) e[k.toLowerCase()]=v;
+    else if(k==="checked") e.checked=v;
+    else if(k==="disabled") e.disabled=v;
+    else if(k==="autoFocus") { if(v) setTimeout(()=>e.focus(),50); }
+    else e.setAttribute(k,v);
+  });
+  children.flat().forEach(child=>{
+    if(child==null||child===false) return;
+    e.appendChild(typeof child==="string"?document.createTextNode(child):child);
+  });
+  return e;
+}
+
+function inp(extra={}) {
+  return {width:"100%",padding:"8px 10px",borderRadius:"6px",border:"1px solid #ccc",fontSize:"13px",boxSizing:"border-box",...extra};
+}
+
+// ── Pantallas ──
+
+function renderInicio() {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "font-family:sans-serif;background:#f4f6f9;min-height:100vh;display:flex;align-items:center;justify-content:center;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:16px;padding:40px;width:380px;box-shadow:0 8px 32px rgba(0,0,0,0.12);text-align:center;";
+  box.innerHTML = `
+    <div style="font-size:48px;margin-bottom:12px">📦</div>
+    <h2 style="margin:0 0 4px;color:#1e3a5f;font-size:20px">Liquidación de Entregas</h2>
+    <p style="margin:0 0 30px;font-size:13px;color:#888">¿Qué deseas hacer?</p>
+    <button id="btnCargar" style="width:100%;background:#1e3a5f;color:#fff;border:none;border-radius:10px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;margin-bottom:12px;font-family:sans-serif;">
+      📂 Cargar archivo de entregas
+    </button>
+    <button id="btnHistorial" style="width:100%;background:#f0f4f8;color:#1e3a5f;border:none;border-radius:10px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;">
+      📅 Ver historial de liquidaciones
+    </button>
+  `;
+  wrap.appendChild(box);
+  setTimeout(() => {
+    document.getElementById("btnCargar").addEventListener("click", () => setState({screen:"upload"}));
+    document.getElementById("btnHistorial").addEventListener("click", abrirHistorial);
+  }, 50);
+  return wrap;
+}
+
+function renderLogin() {
+  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}});
+  const box = el("div",{style:{background:"#fff",borderRadius:"16px",padding:"36px",width:"340px",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
+  box.appendChild(el("div",{style:{fontSize:"48px",marginBottom:"12px"}},"📦"));
+  box.appendChild(el("h2",{style:{margin:"0 0 4px",color:"#1e3a5f",fontSize:"20px"}},"Liquidación de Entregas"));
+  box.appendChild(el("p",{style:{margin:"0 0 24px",fontSize:"13px",color:"#888"}},"Ingresa la contraseña para continuar"));
+
+  const passWrap = el("div",{style:{position:"relative",marginBottom:"8px"}});
+  const passInp = document.createElement("input");
+  passInp.type = state.verPass ? "text" : "password";
+  passInp.placeholder = "Contraseña";
+  passInp.style.cssText = "width:100%;padding:10px 40px 10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
+  passInp.addEventListener("input", e => { state.appPass = e.target.value; });
+  passInp.addEventListener("keydown", e => { if(e.key==="Enter") iniciarSesion(); });
+  setTimeout(()=>passInp.focus(), 100);
+
+  const eyeBtn = document.createElement("button");
+  eyeBtn.type = "button";
+  eyeBtn.textContent = state.verPass ? "🙈" : "👁️";
+  eyeBtn.style.cssText = "position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;color:#888;padding:0;line-height:1;";
+  eyeBtn.addEventListener("click", () => {
+    state.verPass = !state.verPass;
+    passInp.type = state.verPass ? "text" : "password";
+    eyeBtn.textContent = state.verPass ? "🙈" : "👁️";
+  });
+
+  passWrap.appendChild(passInp);
+  passWrap.appendChild(eyeBtn);
+  box.appendChild(passWrap);
+
+  if(state.appPassError) {
+    const errP = el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.appPassError);
+    box.appendChild(errP);
+  }
+
+  const loginBtn = document.createElement("button");
+  loginBtn.textContent = "Ingresar";
+  loginBtn.style.cssText = "width:100%;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;margin-top:4px;font-family:sans-serif;";
+  loginBtn.addEventListener("click", iniciarSesion);
+  box.appendChild(loginBtn);
+
+  wrap.appendChild(box);
+  return wrap;
+}
+
+function renderCargando() {
+  return el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}},
+    el("div",{style:{textAlign:"center",color:"#1e3a5f"}},
+      el("div",{style:{fontSize:"48px",marginBottom:"12px"}},"⏳"),
+      el("p",{style:{fontSize:"16px",fontWeight:"600"}},"Cargando datos...")
+    )
+  );
+}
+
+function renderNoDatos() {
+  return el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}},
+    el("div",{style:{background:"#fff",borderRadius:"16px",padding:"48px",maxWidth:"400px",textAlign:"center",boxShadow:"0 4px 16px rgba(0,0,0,0.08)"}},
+      el("div",{style:{fontSize:"56px",marginBottom:"16px"}},"📭"),
+      el("h2",{style:{margin:"0 0 10px",color:"#1e3a5f",fontSize:"18px"}},"Aún no hay datos cargados de entrega"),
+      el("p",{style:{fontSize:"13px",color:"#888",margin:"0"}},"El administrador debe cargar el archivo de entregas del día para continuar.")
+    )
+  );
+}
+
+function renderUpload() {
+  return el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}},
+    el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"18px 28px",marginBottom:"24px",width:"100%",maxWidth:"700px"}},
+      el("h1",{style:{margin:"0",fontSize:"22px"}},"📦 Liquidación de Entregas"),
+      el("p",{style:{margin:"4px 0 0",fontSize:"12px",opacity:"0.7"}},"Panel de Administrador")
+    ),
+    el("div",{style:{background:"#fff",borderRadius:"12px",padding:"16px",marginBottom:"16px",width:"100%",maxWidth:"700px"}},
+      el("label",{style:{fontSize:"13px",fontWeight:"600",color:"#555"}},"Fecha de liquidación"),
+      el("input",{type:"date",value:state.fecha,style:{...inp(),marginTop:"6px"},onInput:e=>setState({fecha:e.target.value})})
+    ),
+    el("div",{
+      style:{border:"2px dashed #1e3a5f",borderRadius:"12px",padding:"48px",textAlign:"center",background:"#fff",cursor:"pointer",width:"100%",maxWidth:"700px"},
+      onClick:()=>document.getElementById("fi").click(),
+      onDragover:e=>e.preventDefault(),
+      onDrop:e=>{e.preventDefault();const f=e.dataTransfer?.files?.[0];if(f)procesarArchivo(f);}
+    },
+      el("div",{style:{fontSize:"48px"}},"📂"),
+      el("p",{style:{fontSize:"16px",color:"#1e3a5f",fontWeight:"600",margin:"12px 0 4px"}},"Arrastra tu archivo o haz clic para seleccionar"),
+      el("p",{style:{fontSize:"13px",color:"#888",margin:"0"}},".xlsx / .xls / .csv"),
+      el("input",{id:"fi",type:"file",accept:".xlsx,.xls,.csv",style:{display:"none"},onChange:e=>{const f=e.target.files?.[0];if(f)procesarArchivo(f);}})
+    ),
+    state.error?el("div",{style:{background:"#ffe0e0",color:"#c00",borderRadius:"8px",padding:"14px",marginTop:"16px",width:"100%",maxWidth:"700px",fontSize:"13px"}},state.error):""
+  );
+}
+
+function renderHistorial() {
+  const fechas=Object.keys(state.historialData).sort().reverse();
+  const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
+  const inner=el("div",{style:{maxWidth:"980px",margin:"0 auto"}});
+  wrap.appendChild(inner);
+  const hdr=el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 24px",marginBottom:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
+  const hdrL=el("div");
+  hdrL.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>setState({screen:"inicio",modoHistorial:false})},"<- Volver"));
+  hdrL.appendChild(el("h1",{style:{margin:"0",fontSize:"20px"}},"Historial de Liquidaciones"));
+  hdr.appendChild(hdrL); inner.appendChild(hdr);
+  if(fechas.length===0){
+    inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"48px",textAlign:"center",color:"#aaa"}},el("p",{},"No hay liquidaciones aun.")));
+    return wrap;
+  }
+  const selRow=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"16px",marginBottom:"16px",display:"flex",gap:"12px",alignItems:"center",flexWrap:"wrap"}});
+  selRow.appendChild(el("span",{style:{fontSize:"13px",fontWeight:"600",color:"#555"}},"Fecha:"));
+  const fBtns=el("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap"}});
+  fechas.forEach(f=>{
+    fBtns.appendChild(el("button",{style:{padding:"6px 14px",borderRadius:"8px",border:"none",cursor:"pointer",fontSize:"13px",fontWeight:"600",background:f===state.fechaSelec?"#1e3a5f":"#eef2f7",color:f===state.fechaSelec?"#fff":"#555"},onClick:()=>cargarFechaHistorial(f)},f));
+  });
+  selRow.appendChild(fBtns); inner.appendChild(selRow);
+  const reg2=state.historialData[state.fechaSelec];
+  if(reg2){
+    const banner=el("div",{style:{background:"#fff8e1",border:"1px solid #ffe082",borderRadius:"10px",padding:"10px 16px",fontSize:"13px",color:"#795548",display:"flex",alignItems:"center",gap:"8px"}});
+    banner.appendChild(el("span",{},"Liquidacion del "+state.fechaSelec+" - solo lectura"));
+    banner.appendChild(el("button",{style:{marginLeft:"auto",background:"#27ae60",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 14px",cursor:"pointer",fontSize:"12px",fontWeight:"700"},onClick:()=>exportarExcel(reg2)},"Exportar Excel"));
+    inner.appendChild(banner);
+  }
+  return wrap;
+}
+
+function cargarFechaHistorial(fecha) {
+  const reg=state.historialData[fecha];
+  if(!reg) return;
+  setState({
+    fechaSelec:fecha, screen:"historialVista",
+    clienteMap:reg.clienteMap||{}, fileName:reg.fileName||"", fecha:reg.fecha||fecha,
+    devoluciones:reg.devoluciones||[],
+    estadoEntrega:reg.estadoEntrega||reg.entregados||{},
+    motivosDevTotal:reg.motivosDevTotal||{},
+    descuentos:reg.descuentos||{}, comentarios:reg.comentarios||{},
+    deposito:reg.deposito||"", transferencia:reg.transferencia||"",
+    gastosDetalle:reg.gastosDetalle||[{desc:"",monto:"",comentario:""}],
+    billetes:reg.billetes||Object.fromEntries(BILLETES.map(b=>[b,""])),
+    monedas:reg.monedas||"",
+    bloqueados:Object.fromEntries(Object.keys(reg.estadoEntrega||{}).map(k=>[k,true])),
+    busqueda:"", clienteDetalle:null, confirmado:true, modoHistorial:true,
+  });
+}
+
+function renderDetalleCliente() {
+  const c=state.clienteDetalle;
+  const cl=state.clienteMap[c];
+  const devsCl=state.devoluciones.filter(d=>d.cliente===c);
+  const pedidos=Object.entries(cl.pedidos);
+  const tc=totalesCliente(c);
+  const prodsSel=state.dvPedido?prodsDisp(c,state.dvPedido):[];
+  const prodSel=prodsSel.find(p=>p.producto===state.dvProducto);
+
+  const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
+  const inner=el("div",{style:{maxWidth:"860px",margin:"0 auto"}});
+  wrap.appendChild(inner);
+
+  // Header
+  const hdr=el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 22px",marginBottom:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
+  const hdrLeft=el("div");
+  hdrLeft.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>setState({clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:""})},"← Volver"));
+  hdrLeft.appendChild(el("h2",{style:{margin:"0",fontSize:"17px"}},c));
+  hdrLeft.appendChild(el("p",{style:{margin:"3px 0 0",fontSize:"12px",opacity:"0.75"}},cl.ruta));
+  hdr.appendChild(hdrLeft);
+  if(!state.modoHistorial) hdr.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"9px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({showDvForm:true,dvPedido:pedidos.length===1?pedidos[0][0]:""})},"↩️ Registrar Devolución"));
+  inner.appendChild(hdr);
+
+  // Pedidos
+  pedidos.forEach(([pedido,pData])=>{
+    const pm=pData.lineas.reduce((s,l)=>s+l.monto,0);
+    const devM=devsCl.filter(d=>d.pedido===pedido).reduce((s,d)=>s+d.monto,0);
+    const devU=devsCl.filter(d=>d.pedido===pedido).reduce((s,d)=>s+d.unidades,0);
+    const box=el("div",{style:{background:"#fff",borderRadius:"12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"16px",overflow:"hidden"}});
+    const phdr=el("div",{style:{background:"#2d5f8a",color:"#fff",padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
+    phdr.appendChild(el("span",{style:{fontWeight:"700",fontSize:"14px"}},`Pedido: ${pedido}`));
+    const psum=el("div",{style:{display:"flex",gap:"16px",fontSize:"13px"}});
+    psum.appendChild(el("span",{},`Bruto: ${fQ(pm)}`));
+    if(devM>0) psum.appendChild(el("span",{style:{color:"#ffaaaa"}},`Dev: -${fQ(devM)}`));
+    psum.appendChild(el("span",{style:{fontWeight:"700"}},`Neto: ${fQ(pm-devM)}`));
+    phdr.appendChild(psum); box.appendChild(phdr);
+    const t=el("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:"13px"}});
+    const thead=el("thead"); const tr=el("tr");
+    ["Producto","Unidades","P.Unit.","Monto","Dev. Unid.","Dev. Monto","Neto"].forEach((h,i)=>{
+      tr.appendChild(el("th",{style:{padding:"9px 12px",textAlign:i===0?"left":"right",color:"#555",fontWeight:"600",background:"#eef2f7",whiteSpace:"nowrap"}},h));
+    });
+    thead.appendChild(tr); t.appendChild(thead);
+    const tbody=el("tbody");
+    pData.lineas.forEach((l,li)=>{
+      const ldU=devsCl.filter(d=>d.pedido===pedido&&d.producto===l.producto).reduce((s,d)=>s+d.unidades,0);
+      const ldM=devsCl.filter(d=>d.pedido===pedido&&d.producto===l.producto).reduce((s,d)=>s+d.monto,0);
+      const pu2=l.unidades>0?(l.monto/l.unidades):0; // 4 decimales abajo
+      const row=el("tr",{style:{borderTop:"1px solid #f0f0f0",background:li%2===0?"#fafbfc":"#fff"}});
+      row.appendChild(el("td",{style:{padding:"9px 12px"}},l.producto));
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right"}},fN(l.unidades)));
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#888"}},`Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`));
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right"}},fQ(l.monto)));
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#c0392b"}},ldU>0?`-${fN(ldU)}`:"-"));
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#c0392b"}},ldM>0?`-${fQ(ldM)}`:"-"));
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:"#1e3a5f"}},fQ(l.monto-ldM)));
+      tbody.appendChild(row);
+    });
+    const totRow=el("tr",{style:{background:"#f0f4f8"}});
+    totRow.appendChild(el("td",{style:{padding:"9px 12px",fontWeight:"700"},colspan:"3"},"Total"));
+    totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700"}},fQ(pm)));
+    totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:"#c0392b"}},devU>0?`-${fN(devU)}`:"-"));
+    totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:"#c0392b"}},devM>0?`-${fQ(devM)}`:"-"));
+    totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:"#1e3a5f"}},fQ(pm-devM)));
+    tbody.appendChild(totRow); t.appendChild(tbody); box.appendChild(t);
+    inner.appendChild(box);
+  });
+
+  // Descuento y comentario
+  const dcBox=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"16px"}});
+  const dcGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"16px"}});
+  const descDiv=el("div");
+  descDiv.appendChild(el("label",{style:{display:"block",fontSize:"13px",fontWeight:"600",color:"#555",marginBottom:"5px"}},"💲 Descuento en valores (Q)"));
+  if(state.modoHistorial){
+    descDiv.appendChild(el("div",{style:{padding:"8px 10px",background:"#f4f6f9",borderRadius:"8px",fontSize:"14px",fontWeight:"700",color:"#c0392b"}},tc.desc>0?`-${fQ(tc.desc)}`:"Q 0.00"));
+  } else {
+    const descInp=el("input",{type:"number",min:"0",step:"0.01",value:state.descuentos[c]||"",placeholder:"0.00",style:inp()});
+    descInp.oninput=e=>{ state.descuentos[c]=e.target.value; render(); };
+    descDiv.appendChild(descInp);
+    if(tc.desc>0) descDiv.appendChild(el("p",{style:{margin:"6px 0 0",fontSize:"12px",color:"#c0392b"}},`Descuento: -${fQ(tc.desc)}`));
+  }
+  dcGrid.appendChild(descDiv);
+  const comDiv=el("div");
+  comDiv.appendChild(el("label",{style:{display:"block",fontSize:"13px",fontWeight:"600",color:"#555",marginBottom:"5px"}},"💬 Comentarios"));
+  if(state.modoHistorial){
+    comDiv.appendChild(el("div",{style:{padding:"8px 10px",background:"#f4f6f9",borderRadius:"8px",fontSize:"13px",color:"#555",minHeight:"44px"}},state.comentarios[c]||"—"));
+  } else {
+    const comTa=el("textarea",{placeholder:"Ej: Cliente necesita que se le visiten...",style:{...inp(),height:"60px",resize:"vertical"}});
+    comTa.value=state.comentarios[c]||"";
+    comTa.oninput=e=>{ state.comentarios[c]=e.target.value; };
+    comDiv.appendChild(comTa);
+  }
+  dcGrid.appendChild(comDiv);
+  dcBox.appendChild(dcGrid);
+  dcBox.appendChild(el("div",{style:{marginTop:"12px",background:"#f0f4f8",borderRadius:"8px",padding:"10px 14px",display:"flex",justifyContent:"space-between",fontSize:"14px"}},
+    el("span",{style:{fontWeight:"600"}},"Total a cobrar:"),
+    el("span",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"16px"}},fQ(tc.netoM))
+  ));
+  inner.appendChild(dcBox);
+
+  // Motivo devolución total (rosado) — mostrar aunque no haya líneas de devs
+  const esRosado = state.estadoEntrega[c]==="rosado";
+  const motivoTotal = state.motivosDevTotal?.[c];
+  if(esRosado && motivoTotal){
+    const motBox=el("div",{style:{background:"#fff0f0",border:"1px solid #f5c6c6",borderRadius:"12px",padding:"12px 16px",marginBottom:"16px",display:"flex",alignItems:"center",gap:"10px"}});
+    motBox.appendChild(el("span",{style:{background:"#c0392b",color:"#fff",borderRadius:"5px",padding:"3px 9px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}},motivoTotal.codigo||""));
+    motBox.appendChild(el("span",{style:{fontSize:"13px",color:"#c0392b",fontWeight:"600"}},"Motivo devolución total:"));
+    motBox.appendChild(el("span",{style:{fontSize:"13px",color:"#555"}},motivoTotal.desc||""));
+    inner.appendChild(motBox);
+  }
+
+  // Devoluciones registradas
+  if(devsCl.length>0){
+    const dvBox=el("div",{style:{background:"#fff5f5",borderRadius:"12px",padding:"16px",marginBottom:"16px"}});
+    dvBox.appendChild(el("p",{style:{margin:"0 0 10px",fontWeight:"700",color:"#c0392b",fontSize:"14px"}},"↩️ Devoluciones registradas"));
+    devsCl.forEach(d=>{
+      const row=el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #ffd5d5",fontSize:"13px"}});
+      const left=el("div");
+      left.appendChild(el("span",{style:{background:"#c0392b",color:"#fff",borderRadius:"4px",padding:"2px 7px",fontSize:"11px",fontWeight:"700",marginRight:"8px"}},d.codigo));
+      left.appendChild(document.createTextNode(d.producto));
+      left.appendChild(el("span",{style:{color:"#888",marginLeft:"8px"}},`· ${fN(d.unidades)} unid. · ${d.desc}`));
+      const right=el("div",{style:{display:"flex",alignItems:"center",gap:"12px"}});
+      right.appendChild(el("span",{style:{color:"#c0392b",fontWeight:"700"}},`-${fQ(d.monto)}`));
+      if(!state.modoHistorial) right.appendChild(el("button",{style:{background:"#ffe0e0",color:"#c0392b",border:"none",borderRadius:"5px",padding:"3px 9px",cursor:"pointer",fontSize:"12px"},onClick:()=>setState({devoluciones:state.devoluciones.filter(x=>x.id!==d.id)})},"✕"));
+      row.appendChild(left); row.appendChild(right);
+      dvBox.appendChild(row);
+    });
+    inner.appendChild(dvBox);
+  }
+
+  // Formulario devolución
+  if(state.showDvForm && !state.modoHistorial){
+    const dvForm=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"20px",boxShadow:"0 2px 8px rgba(0,0,0,0.1)",marginBottom:"16px"}});
+    dvForm.appendChild(el("p",{style:{margin:"0 0 14px",fontWeight:"700",color:"#c0392b",fontSize:"15px"}},"↩️ Nueva Devolución"));
+    const grid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"12px"}});
+
+    // Pedido select
+    const pedDiv=el("div");
+    pedDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Pedido"));
+    const pedSel=el("select",{style:inp()});
+    pedSel.appendChild(el("option",{value:""},"-- Selecciona --"));
+    pedidos.forEach(([p])=>pedSel.appendChild(el("option",{value:p},p)));
+    pedSel.value=state.dvPedido;
+    pedSel.onchange=e=>setState({dvPedido:e.target.value,dvProducto:"",dvUnidades:"",dvMonto:""});
+    pedDiv.appendChild(pedSel); grid.appendChild(pedDiv);
+
+    // Producto select
+    const prDiv=el("div");
+    prDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Producto"));
+    const prSel=el("select",{style:inp()});
+    if(!state.dvPedido) prSel.disabled=true;
+    prSel.appendChild(el("option",{value:""},"-- Selecciona --"));
+    prodsSel.forEach(p=>prSel.appendChild(el("option",{value:p.producto},`${p.producto} (disp: ${fN(p.dispU)} u)`)));
+    prSel.value=state.dvProducto;
+    prSel.onchange=e=>setState({dvProducto:e.target.value,dvUnidades:"",dvMonto:""});
+    prDiv.appendChild(prSel); grid.appendChild(prDiv);
+
+    // Unidades
+    const uDiv=el("div");
+    const uLabel=el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Unidades");
+    if(prodSel) uLabel.appendChild(el("span",{style:{color:"#888",fontWeight:"400"}},` (máx ${fN(prodSel.dispU)})`));
+    uDiv.appendChild(uLabel);
+    const uInp=document.createElement("input");
+    uInp.type="number"; uInp.min="0"; uInp.placeholder="0";
+    uInp.style.cssText="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;font-family:sans-serif;";
+    if(!state.dvProducto) uInp.disabled=true;
+    uInp.value=state.dvUnidades||"";
+    uInp.addEventListener("input",e=>{
+      state.dvUnidades=e.target.value;
+      const pu=precioUnit(c,state.dvPedido,state.dvProducto);
+      if(pu>0){ state.dvMonto=((parseFloat(e.target.value)||0)*pu).toFixed(2); }
+      const mInpEl=document.getElementById("dv-monto-inp");
+      if(mInpEl) mInpEl.value=state.dvMonto;
+    });
+    uInp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); document.getElementById("dv-monto-inp")?.focus(); } });
+    uDiv.appendChild(uInp); grid.appendChild(uDiv);
+
+    // Monto
+    const mDiv=el("div");
+    mDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},["Monto Q ",el("span",{style:{color:"#27ae60",fontWeight:"400"}},"(auto)")]));
+    const mInp=document.createElement("input");
+    mInp.type="number"; mInp.min="0"; mInp.step="0.01"; mInp.placeholder="0.00"; mInp.id="dv-monto-inp";
+    mInp.style.cssText="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;background:#f9fff9;font-family:sans-serif;";
+    mInp.value=state.dvMonto||"";
+    mInp.addEventListener("input",e=>{ state.dvMonto=e.target.value; });
+    mInp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); document.getElementById("dv-motivo-sel")?.focus(); } });
+    mDiv.appendChild(mInp); grid.appendChild(mDiv);
+    dvForm.appendChild(grid);
+
+    // Motivo
+    const motDiv=el("div",{style:{marginBottom:"12px"}});
+    motDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Motivo"));
+    const motSel=el("select",{style:inp(),id:"dv-motivo-sel"});
+    MOTIVOS.forEach(m=>motSel.appendChild(el("option",{value:m.codigo},`${m.codigo} — ${m.desc}`)));
+    motSel.value=state.dvCodigo;
+    motSel.onchange=e=>setState({dvCodigo:e.target.value});
+    motDiv.appendChild(motSel); dvForm.appendChild(motDiv);
+
+    if(state.dvError) dvForm.appendChild(el("div",{style:{background:"#ffe0e0",color:"#c00",borderRadius:"6px",padding:"9px",marginBottom:"10px",fontSize:"12px"}},state.dvError));
+
+    const btns=el("div",{style:{display:"flex",gap:"10px"}});
+    btns.appendChild(el("button",{style:{flex:"1",background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"10px 0",fontSize:"13px",fontWeight:"700",cursor:"pointer"},onClick:guardarDev},"✅ Guardar"));
+    btns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px 0",fontSize:"13px",cursor:"pointer"},onClick:()=>setState({showDvForm:false,dvError:""})},"Cancelar"));
+    dvForm.appendChild(btns);
+    inner.appendChild(dvForm);
+  }
+
+  // ── Botones de confirmación (si no está ya confirmado) ──
+  const estado = state.estadoEntrega[c] || null;
+  if(!estado) {
+    const confirmBox=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"16px"}});
+    confirmBox.appendChild(el("p",{style:{margin:"0 0 14px",fontWeight:"700",color:"#1e3a5f",fontSize:"14px"}},"✅ Confirmar entrega"));
+    const btnRow=el("div",{style:{display:"flex",gap:"12px"}});
+
+    // Botón amarillo: entrega parcial
+    if(devsCl.length > 0) {
+      const btnAma=document.createElement("button");
+      btnAma.style.cssText="flex:1;background:#f9a825;color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+      btnAma.textContent="🟡 Confirmar entrega parcial";
+      btnAma.onclick=()=>{
+        if(devsCl.length===0){alert("Debes registrar al menos una devolución antes de confirmar entrega parcial."); return;}
+        // Para parciales: consolidar motivo(s) de las devs registradas
+        const codigosUnicos=[...new Set(devsCl.map(d=>d.codigo))];
+        const codigoConsolidado = codigosUnicos.length===1 ? codigosUnicos[0] : codigosUnicos.join("/");
+        const descConsolidada = codigosUnicos.length===1
+          ? (MOTIVOS.find(x=>x.codigo===codigosUnicos[0])?.desc||codigosUnicos[0])
+          : codigosUnicos.map(cd=>MOTIVOS.find(x=>x.codigo===cd)?.desc||cd).join(" / ");
+        confirmarDesdeDetalle(c,"amarillo",codigoConsolidado,descConsolidada);
+      };
+      btnRow.appendChild(btnAma);
+    }
+
+    // Motivo devolución total
+    const motivoRosDiv=el("div",{style:{marginBottom:"12px"}});
+    motivoRosDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Motivo devolución total"));
+    const motivoRosSel=el("select",{style:{width:"100%",padding:"8px 10px",borderRadius:"6px",border:"1px solid #ccc",fontSize:"13px",boxSizing:"border-box",fontFamily:"sans-serif"}});
+    motivoRosSel.appendChild(el("option",{value:""},"-- Selecciona motivo --"));
+    MOTIVOS.forEach(m=>motivoRosSel.appendChild(el("option",{value:m.codigo},`${m.codigo} — ${m.desc}`)));
+    motivoRosDiv.appendChild(motivoRosSel);
+    confirmBox.appendChild(motivoRosDiv);
+
+    // Botón rosado: devolución total
+    const btnRos=document.createElement("button");
+    btnRos.style.cssText="flex:1;background:#e91e8c;color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+    btnRos.textContent="Confirmar devolución total";
+    btnRos.onclick=()=>{
+      if(!motivoRosSel.value){ alert("Selecciona un motivo de devolución"); return; }
+      confirmarDesdeDetalle(c,"rosado",motivoRosSel.value);
+    };
+    btnRow.appendChild(btnRos);
+
+    confirmBox.appendChild(btnRow);
+    inner.appendChild(confirmBox);
+  } else {
+    // Ya confirmado - mostrar estado con opción de desbloquear
+    const estadoLabel = estado==="verde"?"✅ Entrega confirmada":estado==="amarillo"?"🟡 Entrega parcial confirmada":"🌸 Devolución total confirmada";
+    const estadoBg = estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":"#fce4ec";
+    const estadoColor = estado==="verde"?"#27ae60":estado==="amarillo"?"#f9a825":"#e91e8c";
+    inner.appendChild(el("div",{style:{background:estadoBg,borderRadius:"12px",padding:"14px 18px",marginBottom:"16px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
+      el("span",{style:{fontWeight:"700",color:estadoColor,fontSize:"14px"}},estadoLabel),
+      el("span",{style:{fontSize:"12px",color:"#888"}},"🔒 Bloqueado")
+    ));
+  }
+
+  return wrap;
+}
+
+function renderMain() {
+  const clientes=Object.keys(state.clienteMap);
+  const gral=totalesGral();
+  const montoEntregado=clientes.filter(c=>state.estadoEntrega[c] && state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
+  const montoPendiente=clientes.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).netoM,0);
+  const clientesFiltrados=clientes.filter(c=>c.toLowerCase().includes(state.busqueda.toLowerCase()));
+  const totalBilletes=BILLETES.reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
+  const totalMonedas=parseFloat(state.monedas)||0;
+  const totalEfectivo=totalBilletes+totalMonedas;
+  const totalDeposito=parseFloat(state.deposito)||0;
+  const totalTransferencia=parseFloat(state.transferencia)||0;
+  const totalGastos=state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
+  const totalPagos=totalEfectivo+totalDeposito+totalTransferencia;
+  // Total a cobrar solo de confirmados
+  const totalACobrarConfirmado = Object.keys(state.clienteMap)
+    .filter(c=>state.estadoEntrega[c] && state.estadoEntrega[c]!=="rosado")
+    .reduce((s,c)=>s+totalesCliente(c).netoM,0);
+  const diferencia=(totalPagos+totalGastos)-totalACobrarConfirmado;
+  const porRuta={};
+  clientesFiltrados.forEach(c=>{
+    const r=state.clienteMap[c].ruta||"Sin ruta";
+    if(!porRuta[r]) porRuta[r]=[];
+    porRuta[r].push(c);
+  });
+
+  const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
+
+  // Modal contraseña desbloqueo
+  if(state.passCliente){
+    const modal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999"}});
+    const box=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"28px",width:"320px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
+    box.appendChild(el("h3",{style:{margin:"0 0 6px",color:"#1e3a5f"}},"🔒 Desbloquear entrega"));
+    box.appendChild(el("p",{style:{fontSize:"13px",color:"#888",margin:"0 0 16px",wordBreak:"break-all"}},state.passCliente));
+    const pWrap=el("div",{style:{position:"relative",marginBottom:"8px"}});
+    const pInp=el("input",{type:state.verPassDesbloqueo?"text":"password",placeholder:"Contraseña",style:{...inp(),padding:"8px 36px 8px 10px"},autoFocus:true});
+    pInp.value=state.passInput;
+    pInp.addEventListener('input', e=>{ state.passInput=e.target.value; });
+    pInp.addEventListener('keydown', e=>{ if(e.key==="Enter") intentarDesbloquear(); });
+    pWrap.appendChild(pInp);
+    pWrap.appendChild(el("button",{style:{position:"absolute",right:"8px",top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:"16px",color:"#888",padding:"0"},onClick:()=>setState({verPassDesbloqueo:!state.verPassDesbloqueo})},state.verPassDesbloqueo?"🙈":"👁️"));
+    box.appendChild(pWrap);
+    if(state.passError) box.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.passError));
+    const btns=el("div",{style:{display:"flex",gap:"10px",marginTop:"4px"}});
+    btns.appendChild(el("button",{style:{flex:"1",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer",fontWeight:"700"},onClick:intentarDesbloquear},"Desbloquear"));
+    btns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer"},onClick:()=>setState({passCliente:null,passInput:"",passError:""})},"Cancelar"));
+    box.appendChild(btns); modal.appendChild(box); wrap.appendChild(modal);
+  }
+
+  // Modal confirmar
+  if(state.showConfirmar){
+    // Calcular datos del cuadre para el modal
+    const totalBilletesM = [1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
+    const totalMonedasM = parseFloat(state.monedas)||0;
+    const totalEfectivoM = totalBilletesM + totalMonedasM;
+    const totalDepositoM = parseFloat(state.deposito)||0;
+    const totalTransferenciaM = parseFloat(state.transferencia)||0;
+    const totalGastosM = state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
+    const totalPagosM = totalEfectivoM + totalDepositoM + totalTransferenciaM;
+    const totalAEntregarM = clientes.reduce((s,c)=>{let m=0;Object.values(state.clienteMap[c].pedidos||{}).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));return s+m;},0);
+    const totalDescM = Object.keys(state.clienteMap).reduce((acc,c)=>{
+      if(!state.estadoEntrega[c]||state.estadoEntrega[c]==="rosado") return acc;
+      return acc+(parseFloat(state.descuentos[c])||0);
+    },0);
+    const totalNetoM = totalAEntregarM - totalDevGral - totalDescM;
+    const diferenciaM = (totalPagosM + totalGastosM) - totalNetoM;
+    const difColor = Math.abs(diferenciaM)<0.01?"#27ae60":diferenciaM>0?"#2563eb":"#c0392b";
+    const difTexto = Math.abs(diferenciaM)<0.01?"✓ CUADRADO":diferenciaM>0?`+${fQ(diferenciaM)} SOBRANTE`:`-${fQ(Math.abs(diferenciaM))} FALTANTE`;
+
+    const modal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999",overflowY:"auto",padding:"20px 0"}});
+    const box=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"24px",width:"380px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
+    box.appendChild(el("div",{style:{fontSize:"36px",textAlign:"center",marginBottom:"8px"}},"📋"));
+    box.appendChild(el("h3",{style:{margin:"0 0 4px",color:"#1e3a5f",textAlign:"center"}},"Confirmar Liquidación"));
+    box.appendChild(el("p",{style:{fontSize:"13px",color:"#666",textAlign:"center",margin:"0 0 14px"}},["¿Está seguro de confirmar la liquidación del ",el("strong",{},state.fecha),"?"]));
+
+    // Sección: Entregas
+    const secEntregas=el("div",{style:{background:"#f0f4f8",borderRadius:"8px",padding:"10px 14px",marginBottom:"10px",fontSize:"12px"}});
+    secEntregas.appendChild(el("div",{style:{fontWeight:"700",color:"#1e3a5f",marginBottom:"6px",fontSize:"11px",textTransform:"uppercase",letterSpacing:"0.5px"}},"Entregas"));
+    [
+      {label:"Clientes:",val:`${entregadosCount}/${clientes.length}  ✅${cntVerde} 🟡${cntAmarillo} 🔴${cntRosado}`,color:"#333"},
+      {label:"Total a Entregar:",val:fQ(totalAEntregarM),color:"#1e3a5f"},
+      {label:"(-) Devoluciones:",val:`-${fQ(totalDevGral)}`,color:"#c0392b"},
+      {label:"(-) Descuentos:",val:`-${fQ(totalDescM)}`,color:"#e67e22"},
+      {label:"Total Neto:",val:fQ(totalNetoM),color:"#1e3a5f",bold:true},
+    ].forEach(r=>{
+      secEntregas.appendChild(el("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:"4px"}},el("span",{style:{color:"#666"}},r.label),el("span",{style:{fontWeight:r.bold?"700":"600",color:r.color}},r.val)));
+    });
+    box.appendChild(secEntregas);
+
+    // Sección: Cuadre
+    const secCuadre=el("div",{style:{background:"#f0f4f8",borderRadius:"8px",padding:"10px 14px",marginBottom:"10px",fontSize:"12px"}});
+    secCuadre.appendChild(el("div",{style:{fontWeight:"700",color:"#1e3a5f",marginBottom:"6px",fontSize:"11px",textTransform:"uppercase",letterSpacing:"0.5px"}},"Cuadre"));
+    [
+      {label:"Efectivo:",val:fQ(totalEfectivoM),color:"#333"},
+      {label:"Depósito:",val:fQ(totalDepositoM),color:"#333"},
+      {label:"Transferencia:",val:fQ(totalTransferenciaM),color:"#333"},
+      {label:"Total recibido:",val:fQ(totalPagosM),color:"#2563eb",bold:true},
+      {label:"Gastos de ruta:",val:`-${fQ(totalGastosM)}`,color:"#e67e22"},
+    ].forEach(r=>{
+      secCuadre.appendChild(el("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:"4px"}},el("span",{style:{color:"#666"}},r.label),el("span",{style:{fontWeight:r.bold?"700":"600",color:r.color}},r.val)));
+    });
+    box.appendChild(secCuadre);
+
+    // Diferencia
+    const difDiv=el("div",{style:{textAlign:"center",padding:"8px 0 14px",fontSize:"18px",fontWeight:"700",color:difColor}});
+    difDiv.textContent=difTexto;
+    box.appendChild(difDiv);
+
+    const btns=el("div",{style:{display:"flex",gap:"10px"}});
+    btns.appendChild(el("button",{style:{flex:"1",background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"11px 0",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:confirmarLiquidacion},state.guardando?"Guardando...":"✅ Confirmar"));
+    btns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"11px 0",fontSize:"14px",cursor:"pointer"},onClick:()=>setState({showConfirmar:false})},"Cancelar"));
+    box.appendChild(btns); modal.appendChild(box); wrap.appendChild(modal);
+  }
+
+  const inner=el("div",{style:{maxWidth:"980px",margin:"0 auto"}});
+  wrap.appendChild(inner);
+
+  // Header
+  const hdr=el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 24px",marginBottom:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
+  const hdrLeft=el("div");
+  hdrLeft.appendChild(el("h1",{style:{margin:"0",fontSize:"20px"}},"📦 Liquidación de Entregas"));
+  hdrLeft.appendChild(el("p",{style:{margin:"4px 0 0",fontSize:"12px",opacity:"0.75"}},`${state.fileName} · ${state.fecha} · ${clientes.length} clientes`));
+  hdr.appendChild(hdrLeft);
+  const hdrBtns=el("div",{style:{display:"flex",gap:"8px",alignItems:"center"}});
+  if(state.modoHistorial){
+    hdrBtns.appendChild(el("span",{style:{background:"#f39c12",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Solo lectura"));
+    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"historial",modoHistorial:false})},"<- Historial"));
+  } else {
+    if(state.confirmado) hdrBtns.appendChild(el("span",{style:{background:"#27ae60",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Confirmada"));
+    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:abrirHistorial},"Historial"));
+    if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:""}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false})},"Nuevo archivo"));
+  }
+  hdr.appendChild(hdrBtns); inner.appendChild(hdr);
+
+  // Cards
+  const cntVerde=clientes.filter(c=>state.estadoEntrega[c]==="verde").length;
+  const cntAmarillo=clientes.filter(c=>state.estadoEntrega[c]==="amarillo").length;
+  const cntRosado=clientes.filter(c=>state.estadoEntrega[c]==="rosado").length;
+  const entregadosCount=cntVerde+cntAmarillo;
+  // Total devoluciones: parciales + monto bruto de devoluciones totales
+  const totalDevGral=clientes.reduce((s,c)=>{
+    if(state.estadoEntrega[c]==="rosado") return s+totalesCliente(c).monto;
+    return s+totalesCliente(c).devM;
+  },0);
+  // Efectividad entrega: (verde+amarillo)/total
+  const pctEfectividad=clientes.length>0?Math.round((cntVerde+cntAmarillo)/clientes.length*100):0;
+  // % devoluciones totales: rosado/total
+  const pctDevTotal=clientes.length>0?(Math.round(cntRosado/clientes.length*1000)/10).toFixed(1):0;
+  const montoTotal=clientes.reduce((s,c)=>s+totalesCliente(c).monto,0);
+  const pctMonto=montoTotal>0?(Math.round(montoEntregado/montoTotal*1000)/10).toFixed(1):0;
+  const cards=el("div",{style:{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:"12px",marginBottom:"20px"}});
+
+  // Tarjeta especial: % Efectividad de entregas
+  const cardEfect=el("div",{style:{background:"#fff",borderRadius:"10px",padding:"14px 16px",boxShadow:"0 2px 6px rgba(0,0,0,0.07)"}});
+  cardEfect.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:"#888",letterSpacing:"0.5px",marginBottom:"6px"}},"% EFECT. ENTREGAS"));
+  const efectVal=el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"4px"}});
+  efectVal.appendChild(el("span",{style:{fontSize:"15px"}},"👥"));
+  efectVal.appendChild(el("span",{style:{fontSize:"15px",fontWeight:"700",color:"#1e3a5f"}},`${entregadosCount}/${clientes.length}`));
+  efectVal.appendChild(el("span",{style:{fontSize:"15px",fontWeight:"700",color:"#27ae60"}},`${pctEfectividad}%`));
+  cardEfect.appendChild(efectVal);
+  const efectDet=el("div",{style:{fontSize:"13px",marginBottom:"3px"}});
+  efectDet.appendChild(el("span",{style:{marginRight:"6px"}},`✅${cntVerde}`));
+  efectDet.appendChild(el("span",{style:{marginRight:"6px"}},`🟡${cntAmarillo}`));
+  efectDet.appendChild(el("span",{},`🔴${cntRosado}`));
+  cardEfect.appendChild(efectDet);
+  cardEfect.appendChild(el("div",{style:{fontSize:"11px",color:"#888"}},"Clientes entregados"));
+  cards.appendChild(cardEfect);
+
+  // Tarjeta especial: % Efectividad monto
+  const cardMonto=el("div",{style:{background:"#fff",borderRadius:"10px",padding:"14px 16px",boxShadow:"0 2px 6px rgba(0,0,0,0.07)"}});
+  cardMonto.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:"#888",letterSpacing:"0.5px",marginBottom:"6px"}},"% EFECT. ENTREGAS (monto)"));
+  cardMonto.appendChild(el("div",{style:{fontSize:"13px",color:"#888",marginBottom:"2px"}},"💵"));
+  cardMonto.appendChild(el("div",{style:{fontSize:"14px",color:"#1e3a5f",marginBottom:"2px"}},fQ(montoEntregado)));
+  cardMonto.appendChild(el("div",{style:{fontSize:"16px",fontWeight:"700",color:"#27ae60"}},`${pctMonto}%`));
+  cardMonto.appendChild(el("div",{style:{fontSize:"11px",color:"#888",marginTop:"3px"}},`de ${fQ(montoTotal)}`));
+  cards.appendChild(cardMonto);
+
+  const pctDev=montoTotal>0?(Math.round(totalDevGral/montoTotal*1000)/10).toFixed(1):0;
+  // Tarjetas restantes
+  [{icon:"⏳",label:"Monto pendiente",val:fQ(montoPendiente),orange:true},
+   {icon:"↩️",label:"Devoluciones",val:fQ(totalDevGral),sub:`${pctDev}% del total`,red:true},
+   {icon:"💰",label:"Total Neto confirmado",val:fQ(montoEntregado),hl:true},
+  ].forEach(c=>{
+    const card=el("div",{style:{background:c.hl?"#1e3a5f":c.red?"#fff5f5":c.orange?"#fff8f0":"#fff",color:c.hl?"#fff":c.red?"#c0392b":c.orange?"#e67e22":"#333",borderRadius:"10px",padding:"14px 16px",boxShadow:"0 2px 6px rgba(0,0,0,0.07)"}});
+    card.appendChild(el("div",{style:{fontSize:"20px"}},c.icon));
+    card.appendChild(el("div",{style:{fontSize:"16px",fontWeight:"700",marginTop:"4px"}},c.val));
+    if(c.sub) card.appendChild(el("div",{style:{fontSize:"11px",opacity:"0.7"}},c.sub));
+    card.appendChild(el("div",{style:{fontSize:"11px",opacity:"0.75"}},c.label));
+    cards.appendChild(card);
+  });
+  inner.appendChild(cards);
+
+  // Búsqueda
+  const busq=el("input",{type:"text",placeholder:"🔍 Buscar cliente...",style:{width:"100%",padding:"10px 14px",borderRadius:"8px",border:"1px solid #ddd",fontSize:"14px",boxSizing:"border-box",background:"#fff",marginBottom:"16px"}});
+  busq.value=state.busqueda;
+  busq.addEventListener('input', e=>setState({busqueda:e.target.value}));
+  inner.appendChild(busq);
+
+  // Tablas por ruta
+  Object.entries(porRuta).forEach(([ruta,rutaClientes])=>{
+    const cntVerdeR=rutaClientes.filter(c=>state.estadoEntrega[c]==="verde").length;
+    const cntAmarilloR=rutaClientes.filter(c=>state.estadoEntrega[c]==="amarillo").length;
+    const cntRosadoR=rutaClientes.filter(c=>state.estadoEntrega[c]==="rosado").length;
+    const entregadosRuta=cntVerdeR+cntAmarilloR;
+    const montoEntregadoRuta=rutaClientes.filter(c=>state.estadoEntrega[c] && state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
+    const montoPendienteRuta=rutaClientes.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).netoM,0);
+    const montoTotalRuta=rutaClientes.reduce((s,c)=>s+totalesCliente(c).monto,0);
+    const netoRutaConfirmado=montoEntregadoRuta;
+    const descRuta=rutaClientes.reduce((s,c)=>s+totalesCliente(c).desc,0);
+    const devTotalRuta=rutaClientes.reduce((s,c)=>{
+      if(state.estadoEntrega[c]==="rosado") return s+totalesCliente(c).monto;
+      return s+totalesCliente(c).devM;
+    },0);
+    const pctEfectividadR=rutaClientes.length>0?Math.round((cntVerdeR+cntAmarilloR)/rutaClientes.length*100):0;
+    const pctMontoRuta=montoTotalRuta>0?(Math.round(montoEntregadoRuta/montoTotalRuta*1000)/10).toFixed(1):0;
+    const pctDevMontoRuta=montoTotalRuta>0?(Math.round(devTotalRuta/montoTotalRuta*1000)/10).toFixed(1):0;
+
+    const rutaNombre = ruta.replace(/[\s—–-]+\d+\s*clientes?/i,"").trim();
+    const rutaDiv=el("div",{style:{marginBottom:"24px"}});
+    const rutaHdr=el("div",{style:{background:"#2d5f8a",color:"#fff",borderRadius:"10px 10px 0 0",padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}});
+    rutaHdr.appendChild(el("span",{style:{fontWeight:"700",fontSize:"15px"}},`🚚 ${rutaNombre} — ${rutaClientes.length} clientes`));
+    const rutaInfo=el("div",{style:{display:"flex",gap:"16px",fontSize:"12px",flexWrap:"wrap",alignItems:"center"}});
+    rutaInfo.appendChild(el("span",{},`👥 ${entregadosRuta}/${rutaClientes.length} · ✅${cntVerdeR} 🟡${cntAmarilloR} 🔴${cntRosadoR}`));
+    rutaInfo.appendChild(el("span",{style:{color:"#a8e6a3"}},`📊 Efect: ${pctEfectividadR}%`));
+    rutaInfo.appendChild(el("span",{},[`✅ ${fQ(montoEntregadoRuta)} `,el("span",{style:{color:"#a8e6a3",fontSize:"11px"}},`${pctMontoRuta}%`),el("span",{style:{color:"#ffd580",marginLeft:"8px"}},`⏳ ${fQ(montoPendienteRuta)}`)]));
+    if(devTotalRuta>0) rutaInfo.appendChild(el("span",{style:{color:"#ffaaaa"}},[`↩️ -${fQ(devTotalRuta)} `,el("span",{style:{fontSize:"11px",color:"#ffcccc"}},`${pctDevMontoRuta}%`)]));
+    rutaInfo.appendChild(el("span",{style:{fontWeight:"700"}},`💰 ${fQ(netoRutaConfirmado)}`));
+    rutaHdr.appendChild(rutaInfo); rutaDiv.appendChild(rutaHdr);
+
+    const tblWrap=el("div",{style:{background:"#fff",borderRadius:"0 0 12px 12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",overflow:"hidden"}});
+    const tblScroll=el("div",{style:{overflowX:"auto"}});
+    const t=el("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:"13px"}});
+    const thead=el("thead"); const tr=el("tr");
+    ["✓","Cliente","Pedido(s)","Monto","Dev.","Desc.","Neto","💬"].forEach((h,i)=>{
+      tr.appendChild(el("th",{style:{padding:"9px 12px",textAlign:i===0||i===7?"center":i>=3?"right":"left",color:"#555",fontWeight:"600",background:"#eef2f7",whiteSpace:"nowrap"}},h));
+    });
+    thead.appendChild(tr); t.appendChild(thead);
+    const tbody=el("tbody");
+    rutaClientes.forEach((cliente,ri)=>{
+      const tt=totalesCliente(cliente);
+      const entregado=state.entregados[cliente]||false;
+      const bloqueado=state.bloqueados[cliente]||false;
+      const tieneComentario=!!(state.comentarios[cliente]||"").trim();
+      const pedidosList=Object.keys(state.clienteMap[cliente].pedidos).join(", ");
+      const estado = state.estadoEntrega[cliente] || null;
+      // Color de fila según estado
+      const rowBg = estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":estado==="rosado"?"#fce4ec":ri%2===0?"#fafbfc":"#fff";
+      const row=el("tr",{style:{borderTop:"1px solid #f0f0f0",background:rowBg,transition:"background 0.3s"}});
+
+      // Checkbox / candado / estado
+      const cbTd=el("td",{style:{padding:"9px 12px",textAlign:"center"}});
+      if(bloqueado){
+        // Mostrar estado con color + botón desbloquear
+        const estadoIcon = estado==="verde"?"✅":estado==="amarillo"?"🟡":"🔴";
+        const unlockBtn = document.createElement("button");
+        unlockBtn.title="Clic para desbloquear";
+        unlockBtn.style.cssText="background:none;border:none;cursor:pointer;font-size:18px;";
+        unlockBtn.textContent="🔒";
+        unlockBtn.onclick=()=>setState({passCliente:cliente,passInput:"",passError:""});
+        const estadoSpan = document.createElement("span");
+        estadoSpan.style.cssText="font-size:15px;margin-left:4px;";
+        estadoSpan.textContent=estadoIcon;
+        cbTd.appendChild(unlockBtn);
+        cbTd.appendChild(estadoSpan);
+      } else {
+        const cb=document.createElement("input");
+        cb.type="checkbox"; cb.style.cssText="width:16px;height:16px;cursor:pointer;accent-color:#27ae60;";
+        cb.checked=false;
+        cb.onchange=()=>confirmarVerde(cliente);
+        cbTd.appendChild(cb);
+      }
+      row.appendChild(cbTd);
+
+      // Nombre
+      const nameTd=el("td",{style:{padding:"9px 12px"}});
+      const nameBtn=document.createElement("button");
+      const puedeAbrir = state.modoHistorial || !bloqueado;
+      nameBtn.style.cssText=`background:none;border:none;cursor:${puedeAbrir?"pointer":"not-allowed"};color:${puedeAbrir?"#1e3a5f":"#888"};font-weight:600;font-size:13px;text-decoration:${puedeAbrir?"underline":"none"};padding:0;text-align:left;font-family:sans-serif;`;
+      nameBtn.textContent=cliente;
+      nameBtn.onclick=()=>{if(state.modoHistorial){setState({clienteDetalle:cliente});}else if(!bloqueado){setState({clienteDetalle:cliente});}};
+      nameTd.appendChild(nameBtn);
+      row.appendChild(nameTd);
+
+      row.appendChild(el("td",{style:{padding:"9px 12px",color:"#555",fontSize:"12px"}},pedidosList));
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right"}},fQ(tt.monto)));
+      // Dev: si es rosado (devolución total) mostrar el monto bruto; si no, mostrar devoluciones parciales
+      const devMostrar = estado==="rosado" ? tt.monto : tt.devM;
+      const devColor = estado==="rosado" ? "#e91e8c" : "#c0392b";
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:devColor}},devMostrar>0?`-${fQ(devMostrar)}`:"-"));
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#e67e22"}},tt.desc>0?`-${fQ(tt.desc)}`:"-"));
+      // Neto: blanco si no confirmado, Q0.00 si devolución total, normal si confirmado
+      const netoVal = !estado ? "-" : estado==="rosado" ? fQ(0) : fQ(tt.netoM);
+      const netoColor = estado==="rosado" ? "#e91e8c" : "#1e3a5f";
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:netoColor}},netoVal));
+      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"center"}},tieneComentario?el("span",{title:state.comentarios[cliente],style:{cursor:"help",fontSize:"16px"}},"💬"):""));
+      tbody.appendChild(row);
+    });
+
+    // Fila total ruta
+    const totRow=el("tr",{style:{background:"#2d5f8a",color:"#fff"}});
+    totRow.appendChild(el("td",{style:{padding:"10px 12px",fontWeight:"700"},colspan:"3"},`Total ${ruta}`));
+    totRow.appendChild(el("td",{style:{padding:"10px 12px",textAlign:"right",fontWeight:"700"}},fQ(rutaClientes.reduce((s,c)=>s+totalesCliente(c).monto,0))));
+    totRow.appendChild(el("td",{style:{padding:"10px 12px",textAlign:"right",fontWeight:"700",color:"#ffaaaa"}},devTotalRuta>0?`-${fQ(devTotalRuta)}`:"-"));
+    totRow.appendChild(el("td",{style:{padding:"10px 12px",textAlign:"right",fontWeight:"700",color:"#ffd580"}},descRuta>0?`-${fQ(descRuta)}`:"-"));
+    totRow.appendChild(el("td",{style:{padding:"10px 12px",textAlign:"right",fontWeight:"700"}},netoRutaConfirmado>0?fQ(netoRutaConfirmado):"-"));
+    totRow.appendChild(el("td",{}));
+    tbody.appendChild(totRow);
+    t.appendChild(tbody); tblScroll.appendChild(t); tblWrap.appendChild(tblScroll); rutaDiv.appendChild(tblWrap);
+    inner.appendChild(rutaDiv);
+  });
+
+  // Panel cuadre final
+  const cuadre=el("div",{style:{background:"#fff",borderRadius:"12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",padding:"20px",marginTop:"8px"}});
+  cuadre.appendChild(el("h3",{style:{margin:"0 0 18px",color:"#1e3a5f",fontSize:"15px"}},"💳 Cuadre Final"));
+  const cuadreGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"20px"}});
+
+  // ── Billetes (sin re-render) ──
+  const billDiv=el("div");
+  billDiv.appendChild(el("div",{style:{fontWeight:"700",fontSize:"13px",color:"#555",marginBottom:"10px"}},"💵 Billetes"));
+  const subtotalBillSpan=document.createElement("span");
+  subtotalBillSpan.style.cssText="color:#1e3a5f;font-weight:700;min-width:75px;text-align:right;";
+  const actualizarBilletes=()=>{
+    const tot=[1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
+    subtotalBillSpan.textContent=fQ(tot);
+    const tef=document.getElementById("total-efectivo-span");
+    if(tef) tef.textContent=fQ(tot+(parseFloat(state.monedas)||0));
+    actualizarResumen();
+  };
+  BILLETES.forEach(b=>{
+    const row=document.createElement("div");
+    row.style.cssText="display:flex;align-items:center;gap:8px;margin-bottom:7px;";
+    const lbl=document.createElement("span");
+    lbl.style.cssText="background:#1e3a5f;color:#fff;border-radius:5px;padding:2px 8px;font-size:12px;font-weight:700;min-width:40px;text-align:center;";
+    lbl.textContent=`Q${b}`;
+    const x=document.createElement("span"); x.style.cssText="color:#aaa;font-size:11px;"; x.textContent="×";
+    const bi=document.createElement("input");
+    bi.type="number"; bi.min="0"; bi.placeholder="0";
+    bi.style.cssText="width:60px;padding:5px 8px;border-radius:6px;border:1px solid #ccc;font-size:13px;text-align:right;box-sizing:border-box;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
+    if(state.modoHistorial) bi.disabled=true;
+    bi.value=state.billetes[b]||"";
+    const totSpan=document.createElement("span");
+    totSpan.style.cssText="min-width:75px;text-align:right;font-size:12px;color:#1e3a5f;font-weight:600;";
+    totSpan.textContent=fQ(b*(parseFloat(state.billetes[b])||0));
+    bi.setAttribute("data-cuadre","1");
+    bi.addEventListener("input",e=>{
+      state.billetes[b]=e.target.value;
+      totSpan.textContent=fQ(b*(parseFloat(e.target.value)||0));
+      actualizarBilletes();
+    });
+    bi.addEventListener("keydown", focusNextCuadre);
+    row.appendChild(lbl); row.appendChild(x); row.appendChild(bi); row.appendChild(totSpan);
+    billDiv.appendChild(row);
+  });
+  const subtotalRow=document.createElement("div");
+  subtotalRow.style.cssText="border-top:2px solid #eef2f7;padding-top:8px;display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:13px;margin-top:4px;";
+  const subtotalLbl=document.createElement("span"); subtotalLbl.style.color="#555"; subtotalLbl.textContent="Subtotal billetes";
+  subtotalBillSpan.textContent=fQ([1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0));
+  subtotalRow.appendChild(subtotalLbl); subtotalRow.appendChild(subtotalBillSpan);
+  billDiv.appendChild(subtotalRow);
+  cuadreGrid.appendChild(billDiv);
+
+  // ── Monedas (sin re-render) ──
+  const monDiv=el("div");
+  monDiv.appendChild(el("div",{style:{fontWeight:"700",fontSize:"13px",color:"#555",marginBottom:"10px"}},"🪙 Monedas"));
+  const monRow=el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"12px"}});
+  monRow.appendChild(el("span",{style:{background:"#64748b",color:"#fff",borderRadius:"5px",padding:"4px 10px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}},"Total Q"));
+  const monInp=document.createElement("input");
+  monInp.type="number"; monInp.min="0"; monInp.step="0.01"; monInp.placeholder="0.00";
+  monInp.style.cssText="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;text-align:right;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
+  if(state.modoHistorial) monInp.disabled=true;
+  monInp.value=state.monedas||"";
+  monInp.setAttribute("data-cuadre","1");
+  monInp.addEventListener("input",e=>{
+    state.monedas=e.target.value;
+    const tef=document.getElementById("total-efectivo-span");
+    if(tef){ const bill=[1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0); tef.textContent=fQ(bill+(parseFloat(e.target.value)||0)); }
+    actualizarResumen();
+  });
+  monInp.addEventListener("keydown", focusNextCuadre);
+  monRow.appendChild(monInp); monDiv.appendChild(monRow);
+  monDiv.appendChild(el("div",{style:{borderTop:"2px solid #eef2f7",paddingTop:"8px",display:"flex",justifyContent:"space-between",fontWeight:"700",fontSize:"13px"}},
+    el("span",{style:{color:"#555"}},"Subtotal monedas"),el("span",{style:{color:"#1e3a5f"}},fQ(parseFloat(state.monedas)||0))
+  ));
+  const totEfectivoDiv=el("div",{style:{marginTop:"8px",background:"#f0f4f8",borderRadius:"7px",padding:"8px 12px",display:"flex",justifyContent:"space-between",fontWeight:"700",fontSize:"13px"}});
+  totEfectivoDiv.appendChild(el("span",{},"Total Efectivo"));
+  const totEfectivoSpan=document.createElement("span");
+  totEfectivoSpan.id="total-efectivo-span";
+  totEfectivoSpan.style.color="#27ae60";
+  totEfectivoSpan.textContent=fQ([1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0)+(parseFloat(state.monedas)||0));
+  totEfectivoDiv.appendChild(totEfectivoSpan);
+  monDiv.appendChild(totEfectivoDiv);
+  cuadreGrid.appendChild(monDiv);
+
+  // ── Otros pagos (sin re-render) ──
+  const otrosDiv=el("div",{style:{display:"flex",flexDirection:"column",gap:"12px"}});
+  const depDiv=el("div");
+  depDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"🏦 Depósito bancario (Q)"));
+  const depInp=document.createElement("input");
+  depInp.type="number"; depInp.min="0"; depInp.step="0.01"; depInp.placeholder="0.00";
+  depInp.style.cssText="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
+  if(state.modoHistorial) depInp.disabled=true;
+  depInp.value=state.deposito||"";
+  depInp.setAttribute("data-cuadre","1");
+  depInp.addEventListener("input",e=>{ state.deposito=e.target.value; actualizarResumen(); });
+  depInp.addEventListener("keydown", focusNextCuadre);
+  depDiv.appendChild(depInp); otrosDiv.appendChild(depDiv);
+
+  const traDiv=el("div");
+  traDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"📲 Transferencia (Q)"));
+  const traInp=document.createElement("input");
+  traInp.type="number"; traInp.min="0"; traInp.step="0.01"; traInp.placeholder="0.00";
+  traInp.style.cssText="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
+  if(state.modoHistorial) traInp.disabled=true;
+  traInp.value=state.transferencia||"";
+  traInp.setAttribute("data-cuadre","1");
+  traInp.addEventListener("input",e=>{ state.transferencia=e.target.value; actualizarResumen(); });
+  traInp.addEventListener("keydown", focusNextCuadre);
+  traDiv.appendChild(traInp); otrosDiv.appendChild(traDiv);
+
+  // Gastos
+  const gasDiv=el("div");
+  gasDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"6px"}},"⛽ Gastos de ruta"));
+  const gasTable=el("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:"12px",marginBottom:"6px"}});
+  const gasThead=el("thead"); const gasTr=el("tr");
+  [["Descripción","40%"],["Monto Q","22%"],["Comentario",""],["","24px"]].forEach(([h,w])=>{
+    gasTr.appendChild(el("th",{style:{background:"#f0f4f8",padding:"5px 8px",textAlign:h==="Monto Q"?"right":"left",color:"#555",fontWeight:"600",...(w?{width:w}:{})}},h));
+  });
+  gasThead.appendChild(gasTr); gasTable.appendChild(gasThead);
+  const gasTbody=el("tbody");
+  state.gastosDetalle.forEach((g,gi)=>{
+    const grow=el("tr");
+    const gd=el("td",{style:{padding:"3px 4px"}});
+    const gdInp=document.createElement("input"); gdInp.placeholder="Ej: Combustible";
+    gdInp.style.cssText="width:100%;padding:4px 6px;border-radius:6px;border:1px solid #ccc;font-size:12px;box-sizing:border-box;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
+    if(state.modoHistorial) gdInp.disabled=true;
+    gdInp.value=g.desc||"";
+    gdInp.addEventListener("input",e=>{state.gastosDetalle[gi].desc=e.target.value;});
+    gdInp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); gm.querySelector("input")?.focus(); } });
+    gd.appendChild(gdInp);
+    const gm=el("td",{style:{padding:"3px 4px"}});
+    const gmInp=document.createElement("input"); gmInp.type="number"; gmInp.min="0"; gmInp.step="0.01"; gmInp.placeholder="0.00";
+    gmInp.style.cssText="width:100%;padding:4px 6px;border-radius:6px;border:1px solid #ccc;font-size:12px;box-sizing:border-box;text-align:right;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
+    if(state.modoHistorial) gmInp.disabled=true;
+    gmInp.value=g.monto||"";
+    gmInp.setAttribute("data-cuadre","1");
+    gmInp.addEventListener("input",e=>{state.gastosDetalle[gi].monto=e.target.value; actualizarResumen();});
+    gmInp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); gcInp.focus(); } });
+    gm.appendChild(gmInp);
+    const gc=el("td",{style:{padding:"3px 4px"}});
+    const gcInp=document.createElement("input"); gcInp.placeholder="Opcional";
+    gcInp.style.cssText="width:100%;padding:4px 6px;border-radius:6px;border:1px solid #ccc;font-size:12px;box-sizing:border-box;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
+    if(state.modoHistorial) gcInp.disabled=true;
+    gcInp.value=g.comentario||"";
+    gcInp.addEventListener("input",e=>{state.gastosDetalle[gi].comentario=e.target.value;});
+    gc.appendChild(gcInp);
+    const gx=el("td",{style:{padding:"3px 4px",textAlign:"center"}});
+    if(state.gastosDetalle.length>1) gx.appendChild(el("button",{style:{background:"none",border:"none",color:"#c0392b",cursor:"pointer",fontSize:"14px",padding:"0"},onClick:()=>setState({gastosDetalle:state.gastosDetalle.filter((_,i)=>i!==gi)})},"✕"));
+    grow.appendChild(gd);grow.appendChild(gm);grow.appendChild(gc);grow.appendChild(gx);
+    gasTbody.appendChild(grow);
+  });
+  gasTable.appendChild(gasTbody); gasDiv.appendChild(gasTable);
+  gasDiv.appendChild(el("button",{style:{background:"#eef2f7",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"12px",cursor:"pointer",color:"#1e3a5f",fontWeight:"600"},onClick:()=>setState({gastosDetalle:[...state.gastosDetalle,{desc:"",monto:"",comentario:""}]})},"+ Agregar gasto"));
+  otrosDiv.appendChild(gasDiv);
+
+  // Resumen cuadre
+  const resumen=document.createElement("div");
+  resumen.id="resumen-cuadre";
+  resumen.style.cssText="background:#f0f4f8;border-radius:9px;padding:14px;margin-top:4px;";
+  otrosDiv.appendChild(resumen);
+  // Llenar resumen DESPUÉS de que esté en el DOM
+  setTimeout(actualizarResumen, 0);
+  cuadreGrid.appendChild(otrosDiv);
+  cuadre.appendChild(cuadreGrid);
+  inner.appendChild(cuadre);
+
+  // Botón confirmar
+  const confirmDiv=el("div",{style:{marginTop:"20px",textAlign:"center",paddingBottom:"32px"}});
+  if(state.confirmado){
+    confirmDiv.appendChild(el("div",{style:{background:"#e8f5e9",borderRadius:"12px",padding:"16px 24px",display:"inline-flex",alignItems:"center",gap:"10px",fontSize:"15px",fontWeight:"700",color:"#27ae60"}},"✅ Liquidación confirmada y guardada correctamente"));
+  } else {
+    confirmDiv.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 48px",fontSize:"16px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(39,174,96,0.3)"},onClick:()=>{
+      const sinConfirmar=clientes.filter(c=>!state.estadoEntrega[c]);
+      if(sinConfirmar.length>0){
+        alert(`⚠️ Hay ${sinConfirmar.length} entrega(s) sin confirmar:\n\n${sinConfirmar.map(c=>`• ${c}`).join("\n")}\n\nPor favor confirma todas las entregas antes de liquidar.`);
+        return;
+      }
+      setState({showConfirmar:true});
+    }},"✅ Confirmar Liquidación"));
+  }
+  inner.appendChild(confirmDiv);
+  return wrap;
+}
+
+// ── Render principal ──
+function render() {
+  const app=document.getElementById("app");
+  app.innerHTML="";
+  let content;
+  if(!state.autenticado) content=renderLogin();
+  else if(state.cargandoDatos) content=renderCargando();
+  else if(state.screen==="inicio") content=renderInicio();
+  else if(state.screen==="nodatos") content=renderNoDatos();
+  else if(state.screen==="upload") content=renderUpload();
+  else if(state.screen==="historial") content=renderHistorial();
+  else if(state.screen==="historialVista" && state.clienteDetalle) content=renderDetalleCliente();
+  else if(state.screen==="historialVista") content=renderMain();
+  else if(state.clienteDetalle) content=renderDetalleCliente();
+  else content=renderMain();
+  app.appendChild(content);
+}
+
+render();
+</script>
+</body>
+</html>
