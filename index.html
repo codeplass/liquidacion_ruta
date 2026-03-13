@@ -272,15 +272,18 @@ async function confirmarLiquidacion() {
     await fbSet("historial",existing);
     await fbRemove("datos-dia");
     setState({confirmado:true,showConfirmar:false,guardando:false,screen:"confirmado"});
-  } catch(e){console.error(e);setState({guardando:false});}
+  } catch(e){
+    console.error(e);
+    setState({guardando:false,showConfirmar:false});
+    alert("❌ Error al guardar la liquidación:\n" + e.message);
+  }
 }
 
 function renderConfirmado() {
   const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
   const box=el("div",{style:{background:"#fff",borderRadius:"16px",padding:"40px 32px",maxWidth:"380px",width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
   box.appendChild(el("div",{style:{fontSize:"64px",marginBottom:"16px"}},"✅"));
-  box.appendChild(el("h2",{style:{margin:"0 0 8px",color:"#27ae60",fontSize:"24px"}})). textContent="¡Liquidación Confirmada!";
-  const h2=box.querySelector("h2"); h2.textContent="¡Liquidación Confirmada!";
+  box.appendChild(el("h2",{style:{margin:"0 0 8px",color:"#27ae60",fontSize:"24px"}},"¡Liquidación Confirmada!"));
   const p1=el("p",{style:{margin:"0 0 4px",color:"#555",fontSize:"14px"}},"La liquidación del día");
   const p2=el("p",{style:{margin:"0 0 20px",color:"#1e3a5f",fontSize:"18px",fontWeight:"700"}},state.fecha);
   const p3=el("p",{style:{margin:"0 0 28px",color:"#555",fontSize:"14px"}},"fue guardada exitosamente en el historial.");
