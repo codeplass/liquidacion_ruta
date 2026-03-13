@@ -278,7 +278,11 @@ async function procesarArchivo(file) {
     // Limpiar claves para Firebase (no permite . # $ / [ ])
     const cleanKey=k=>k.replace(/[.#$\/\[\]]/g,"_");
     const cleanMap={};
-    Object.entries(map).forEach(([k,v])=>{cleanMap[cleanKey(k)]={...v, nombreOriginal:k};});
+    Object.entries(map).forEach(([k,v])=>{
+      const cleanPedidos={};
+      Object.entries(v.pedidos||{}).forEach(([pk,pv])=>{cleanPedidos[cleanKey(pk)]={...pv,pedidoOriginal:pk};});
+      cleanMap[cleanKey(k)]={...v,pedidos:cleanPedidos,nombreOriginal:k};
+    });
     await fbSet("datos-dia",{clienteMap:cleanMap,fileName:file.name,fecha:state.fecha});
     setState({
       clienteMap:cleanMap,devoluciones:[],entregados:{},estadoEntrega:{},motivosDevTotal:{},descuentos:{},comentarios:{},bloqueados:{},
