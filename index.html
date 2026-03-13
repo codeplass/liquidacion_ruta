@@ -157,6 +157,36 @@ let state = {
 function setState(updates) {
   Object.assign(state, updates);
   render();
+  // Guardado automático en Firebase cuando cambian datos del día
+  const camposGuardar = ["estadoEntrega","entregados","bloqueados","devoluciones",
+    "motivosDevTotal","descuentos","comentarios","billetes","monedas",
+    "deposito","transferencia","gastosDetalle"];
+  const afecta = Object.keys(updates).some(k => camposGuardar.includes(k));
+  if(afecta && state.autenticado && state.clienteMap && Object.keys(state.clienteMap).length > 0){
+    clearTimeout(window._autoSaveTimer);
+    window._autoSaveTimer = setTimeout(async () => {
+      try {
+        const actual = await fbGet("datos-dia");
+        if(actual) {
+          await fbSet("datos-dia", {
+            ...actual,
+            estadoEntrega: state.estadoEntrega,
+            entregados: state.entregados,
+            bloqueados: state.bloqueados,
+            devoluciones: state.devoluciones,
+            motivosDevTotal: state.motivosDevTotal,
+            descuentos: state.descuentos,
+            comentarios: state.comentarios,
+            billetes: state.billetes,
+            monedas: state.monedas,
+            deposito: state.deposito,
+            transferencia: state.transferencia,
+            gastosDetalle: state.gastosDetalle
+          });
+        }
+      } catch(e) { console.warn("AutoSave error:", e); }
+    }, 1500);
+  }
 }
 
 // ── Totales ──
@@ -208,7 +238,25 @@ async function iniciarSesion() {
     setState({autenticado:true,esAdmin:admin,appPassError:"",cargandoDatos:true});
     const datos=await fbGet("datos-dia");
     if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length>0){
-      setState({clienteMap:datos.clienteMap,fileName:datos.fileName||"",fecha:datos.fecha||hoy(),screen:"main",cargandoDatos:false});
+      setState({
+        clienteMap:datos.clienteMap,
+        fileName:datos.fileName||"",
+        fecha:datos.fecha||hoy(),
+        screen:"main",
+        cargandoDatos:false,
+        estadoEntrega:datos.estadoEntrega||{},
+        entregados:datos.entregados||{},
+        bloqueados:datos.bloqueados||{},
+        devoluciones:datos.devoluciones||[],
+        motivosDevTotal:datos.motivosDevTotal||{},
+        descuentos:datos.descuentos||{},
+        comentarios:datos.comentarios||{},
+        billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
+        monedas:datos.monedas||"",
+        deposito:datos.deposito||"",
+        transferencia:datos.transferencia||"",
+        gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}]
+      });
     } else {
       // Admin va a pantalla de inicio con opciones, repartidor ve nodatos
       setState({screen:admin?"inicio":"nodatos",cargandoDatos:false});
