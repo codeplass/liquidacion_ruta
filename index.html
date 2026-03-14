@@ -70,7 +70,7 @@ async function fbRemove(path) {
 // ── Parse archivo ──
 function parseFile(raw) {
   const map={};
-  let ruta="",cliente="",pedido="";
+  let ruta="",cliente="",pedidoDefault="";
   for(let i=0;i<raw.length;i++){
     const cells=Array.isArray(raw[i])?raw[i]:Object.values(raw[i]);
     const A=String(cells[0]||"").trim();
@@ -81,34 +81,47 @@ function parseFile(raw) {
       const partes=A.split(/\s[—–-]+\s|\s{2,}/);
       const codigo=partes[0].trim();
       const nombre=partes.slice(1).join(" ").trim()||B;
-      let ped="S/N";
-      let estPed="";
-      for(let ci=1;ci<=5;ci++){
-        const val=String(cells[ci]||"").trim();
-        if(esPedido(val)||/^[A-Z]{1,3}\d{4,}/i.test(val)){ped=val;}
-        // Detectar Est.ped: "Blo", "Pre" u otro estado de pedido
-        if(/^(Blo|Pre|Borr|Can|Hecho)$/i.test(val)) estPed=val;
-      }
+      // El pedido en la fila del cliente puede ser "SO63077 / SO63089" (múltiples)
+      // El pedido real de cada producto viene en columna C de la línea del producto
+      const pedCol=String(cells[2]||"").trim();
+      const primerPed=pedCol.split(/[/,\s]+/).map(x=>x.trim()).find(x=>esPedido(x)||/^[A-Z]{1,3}\d{4,}/i.test(x))||"S/N";
       cliente=nombre?`${codigo} - ${nombre}`:codigo;
-      pedido=ped;
+      pedidoDefault=primerPed;
       if(!map[cliente]) map[cliente]={ruta,pedidos:{}};
-      // estPed se guarda por pedido, no por cliente
-      if(!map[cliente].pedidos[pedido]) map[cliente].pedidos[pedido]={lineas:[],estPed};
       continue;
     }
     if(esProducto(A)&&cliente){
-      const nums=cells.map(c=>toNum(c)).filter(n=>n>0);
-      if(nums.length>=2){
-        map[cliente].pedidos[pedido].lineas.push({
-          producto:A, unidades:nums[nums.length-2], monto:nums[nums.length-1]
-        });
+      // Col C (índice 2): número de pedido del producto
+      // Col D (índice 3): Est.ped ("Blo", "Pre", etc.)
+      // Col E (índice 4): cantidad
+      // Col F (índice 5): monto
+      const pedProd=String(cells[2]||"").trim();
+      const estPed=String(cells[3]||"").trim();
+      const pedido=(esPedido(pedProd)||/^[A-Z]{1,3}\d{4,}/i.test(pedProd))?pedProd:pedidoDefault;
+      const unidades=toNum(cells[4]);
+      const monto=toNum(cells[5]);
+      if(unidades>0&&monto>0){
+        if(!map[cliente].pedidos[pedido]) map[cliente].pedidos[pedido]={lineas:[],estPed:""};
+        if(estPed) map[cliente].pedidos[pedido].estPed=estPed;
+        map[cliente].pedidos[pedido].lineas.push({producto:A,unidades,monto,estPed});
       }
     }
-    if(esNota(A)&&cliente&&pedido){
+    if(esNota(A)&&cliente){
       const textoNota=A.replace(/^📝\s*/,'').trim();
-      if(textoNota) map[cliente].pedidos[pedido].nota=textoNota;
+      if(textoNota){
+        if(!map[cliente].pedidos[pedidoDefault]) map[cliente].pedidos[pedidoDefault]={lineas:[],estPed:""};
+        map[cliente].pedidos[pedidoDefault].nota=textoNota;
+      }
     }
   }
+  // Post-proceso: un pedido es "Pre" si TODOS sus productos son Pre
+  Object.values(map).forEach(cl=>{
+    Object.values(cl.pedidos).forEach(ped=>{
+      if(ped.lineas.length===0) return;
+      const todosPre=ped.lineas.every(l=>/^pre$/i.test(l.estPed||""));
+      ped.estPed=todosPre?"Pre":(ped.lineas.some(l=>/^blo$/i.test(l.estPed||""))?"Blo":"");
+    });
+  });
   return map;
 }
 
