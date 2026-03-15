@@ -1342,6 +1342,11 @@ function renderMain() {
     if(state.confirmado) hdrBtns.appendChild(el("span",{style:{background:"#27ae60",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Confirmada"));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:abrirHistorial},"Historial"));
     if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false})},"Nuevo archivo"));
+    if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(220,53,69,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:async()=>{
+      if(!confirm("¿Seguro que deseas quitar el archivo del día? Se borrarán todos los datos no confirmados.")) return;
+      await fbRemove("datos-dia");
+      setState({screen:"inicio",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false});
+    }},"🗑️ Quitar archivo"));
   }
   hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"600"},onClick:()=>setState({autenticado:false,esAdmin:false,screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false})},"🚪 Salir"));
   hdr.appendChild(hdrBtns); inner.appendChild(hdr);
