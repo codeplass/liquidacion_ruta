@@ -643,7 +643,7 @@ function actualizarResumen() {
   // Total Neto: Total a Entregar - Devoluciones - Descuentos
   const totalNetoCuadre = totalAEntregar - totalDevCuadre - totalDescCuadre;
 
-  const diferencia2 = (totalPagos2 - totalGastosDeCuenta2) - totalNetoCuadre;
+  const diferencia2 = (totalPagos2 + totalGastosDeCuenta2) - totalNetoCuadre;
   resDiv.innerHTML = "";
   [
     {label:"Total a Entregar", val:fQ(totalAEntregar), color:"#1e3a5f", bold:true},
@@ -1225,7 +1225,7 @@ function renderMain() {
   const totalACobrarConfirmado = Object.keys(state.clienteMap)
     .filter(c=>state.estadoEntrega[c] && state.estadoEntrega[c]!=="rosado")
     .reduce((s,c)=>s+totalesCliente(c).netoM,0);
-  const diferencia=(totalPagos-totalGastosDeCuenta)-totalACobrarConfirmado;
+  const diferencia=(totalPagos+totalGastosDeCuenta)-totalACobrarConfirmado;
   const porRuta={};
   clientesFiltrados.forEach(c=>{
     const r=state.clienteMap[c].ruta||"Sin ruta";
@@ -1267,13 +1267,13 @@ function renderMain() {
     const totalGastosM = state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
     const totalGastosDeCuentaM = state.gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
     const totalPagosM = totalEfectivoM + totalDepositoM + totalTransferenciaM;
-    const totalAEntregarM = clientesEntregables.reduce((s,c)=>{let m=0;Object.values(state.clienteMap[c].pedidos||{}).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));return s+m;},0);
+    const totalAEntregarM = clientesEntregables.reduce((s,c)=>{let m=0;Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));return s+m;},0);
     const totalDescM = clientesEntregables.reduce((acc,c)=>{
       if(!state.estadoEntrega[c]||state.estadoEntrega[c]==="rosado") return acc;
       return acc+(parseFloat(state.descuentos[c])||0);
     },0);
     const totalNetoM = totalAEntregarM - totalDevGral - totalDescM;
-    const diferenciaM = (totalPagosM - totalGastosDeCuentaM) - totalNetoM;
+    const diferenciaM = (totalPagosM + totalGastosDeCuentaM) - totalNetoM;
     const difColor = Math.abs(diferenciaM)<0.01?"#27ae60":diferenciaM>0?"#2563eb":"#c0392b";
     const difTexto = Math.abs(diferenciaM)<0.01?"✓ CUADRADO":diferenciaM>0?`+${fQ(diferenciaM)} SOBRANTE`:`-${fQ(Math.abs(diferenciaM))} FALTANTE`;
 
