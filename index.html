@@ -941,9 +941,32 @@ function renderHistorial() {
   selRow.appendChild(fBtns); inner.appendChild(selRow);
   const reg2=state.historialData[state.fechaSelec];
   if(reg2){
-    const banner=el("div",{style:{background:"#fff8e1",border:"1px solid #ffe082",borderRadius:"10px",padding:"10px 16px",fontSize:"13px",color:"#795548",display:"flex",alignItems:"center",gap:"8px"}});
+    const banner=el("div",{style:{background:"#fff8e1",border:"1px solid #ffe082",borderRadius:"10px",padding:"10px 16px",fontSize:"13px",color:"#795548",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}});
     banner.appendChild(el("span",{},"Liquidacion del "+state.fechaSelec+" - solo lectura"));
     banner.appendChild(el("button",{style:{marginLeft:"auto",background:"#27ae60",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 14px",cursor:"pointer",fontSize:"12px",fontWeight:"700"},onClick:()=>exportarExcel(reg2)},"Exportar Excel"));
+    if(state.esAdmin && state.fechaSelec===hoy()){
+      banner.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 14px",cursor:"pointer",fontSize:"12px",fontWeight:"700"},onClick:async()=>{
+        const reg=state.historialData[hoy()];
+        if(!reg) return;
+        // Cargar datos del historial de hoy al estado editable
+        const datosParaGuardar = {
+          clienteMap:reg.clienteMap||{}, fileName:reg.fileName||"", fecha:reg.fecha||hoy(),
+          devoluciones:reg.devoluciones||[], estadoEntrega:reg.estadoEntrega||{},
+          motivosDevTotal:reg.motivosDevTotal||{}, descuentos:reg.descuentos||{},
+          comentarios:reg.comentarios||{}, deposito:reg.deposito||"",
+          transferencia:reg.transferencia||"", gastosDetalle:reg.gastosDetalle||[{desc:"",monto:"",comentario:"",deCuenta:true}],
+          billetes:reg.billetes||Object.fromEntries(BILLETES.map(b=>[b,""])), monedas:reg.monedas||"",
+          confirmado:true
+        };
+        // Guardar en datos-dia para que el flujo automático funcione de ahora en adelante
+        await fbSet("datos-dia", datosParaGuardar);
+        setState({
+          ...datosParaGuardar,
+          bloqueados:Object.fromEntries(Object.keys(reg.estadoEntrega||{}).map(k=>[k,true])),
+          busqueda:"", clienteDetalle:null, modoHistorial:false, screen:"main"
+        });
+      }},"✏️ Editar"));
+    }
     inner.appendChild(banner);
   }
   return wrap;
