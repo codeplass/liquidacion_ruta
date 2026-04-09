@@ -169,6 +169,13 @@ let state = {
   confirmado: false,
   guardando: false,
   modoHistorial: false,
+  showMoverProd: false,
+  moverOrigenCliente: "",
+  moverOrigenPedido: "",
+  moverProductoSel: "",
+  moverDestinoCliente: "",
+  moverDestinoPedido: "",
+  moverError: "",
 };
 
 function setState(updates) {
@@ -595,6 +602,31 @@ function intentarDesbloquear() {
   } else {
     setState({passError:"Contraseña incorrecta."});
   }
+}
+
+
+// ── Mover producto entre clientes ──
+function ejecutarMoverProducto() {
+  const {moverOrigenCliente, moverOrigenPedido, moverProductoSel, moverDestinoCliente, moverDestinoPedido} = state;
+  if(!moverOrigenCliente||!moverOrigenPedido||!moverProductoSel||!moverDestinoCliente||!moverDestinoPedido){
+    setState({moverError:"Completa todos los campos."}); return;
+  }
+  if(moverOrigenCliente===moverDestinoCliente && moverOrigenPedido===moverDestinoPedido){
+    setState({moverError:"El origen y destino son iguales."}); return;
+  }
+  const newMap = JSON.parse(JSON.stringify(state.clienteMap));
+  const lineasOrigen = newMap[moverOrigenCliente]?.pedidos?.[moverOrigenPedido]?.lineas;
+  if(!lineasOrigen){setState({moverError:"Pedido origen no encontrado."}); return;}
+  const idx = lineasOrigen.findIndex(l=>l.producto===moverProductoSel);
+  if(idx===-1){setState({moverError:"Producto no encontrado en origen."}); return;}
+  const [linea] = lineasOrigen.splice(idx,1);
+  if(!newMap[moverDestinoCliente]){setState({moverError:"Cliente destino no encontrado."}); return;}
+  if(!newMap[moverDestinoCliente].pedidos[moverDestinoPedido]){
+    newMap[moverDestinoCliente].pedidos[moverDestinoPedido]={lineas:[],estPed:""};
+  }
+  newMap[moverDestinoCliente].pedidos[moverDestinoPedido].lineas.push(linea);
+  setState({clienteMap:newMap, showMoverProd:false, moverOrigenCliente:"", moverOrigenPedido:"", moverProductoSel:"", moverDestinoCliente:"", moverDestinoPedido:"", moverError:""});
+  showToast("Producto movido correctamente","#1e3a5f");
 }
 
 // ── Navegación con Enter en cuadre final ──
@@ -1256,6 +1288,78 @@ function renderMain() {
     box.appendChild(btns); modal.appendChild(box); wrap.appendChild(modal);
   }
 
+  // Modal mover producto
+  if(state.showMoverProd){
+    const clientes = Object.keys(state.clienteMap);
+    const mModal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999",padding:"16px"}});
+    const mBox=el("div",{style:{background:"#fff",borderRadius:"14px",padding:"24px",width:"100%",maxWidth:"400px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)",maxHeight:"90vh",overflowY:"auto"}});
+    mBox.appendChild(el("h3",{style:{margin:"0 0 18px",color:"#1e3a5f",fontSize:"16px"}},"🔀 Mover producto entre clientes"));
+
+    // -- ORIGEN --
+    mBox.appendChild(el("p",{style:{margin:"0 0 6px",fontWeight:"700",color:"#555",fontSize:"13px"}},"ORIGEN"));
+
+    // Select cliente origen
+    const selOrigenC = el("select",{style:{width:"100%",padding:"8px 10px",borderRadius:"8px",border:"1px solid #ccc",marginBottom:"10px",fontSize:"13px"}});
+    selOrigenC.appendChild(el("option",{value:""},"— Cliente origen —"));
+    clientes.forEach(c=>{ const o=el("option",{value:c},c); if(state.moverOrigenCliente===c) o.selected=true; selOrigenC.appendChild(o); });
+    selOrigenC.addEventListener("change",e=>{setState({moverOrigenCliente:e.target.value,moverOrigenPedido:"",moverProductoSel:""});});
+    mBox.appendChild(selOrigenC);
+
+    // Select pedido origen
+    if(state.moverOrigenCliente){
+      const pedidosOrigen = Object.keys(state.clienteMap[state.moverOrigenCliente]?.pedidos||{});
+      const selOrigenP = el("select",{style:{width:"100%",padding:"8px 10px",borderRadius:"8px",border:"1px solid #ccc",marginBottom:"10px",fontSize:"13px"}});
+      selOrigenP.appendChild(el("option",{value:""},"— Pedido origen —"));
+      pedidosOrigen.forEach(p=>{ const o=el("option",{value:p},p); if(state.moverOrigenPedido===p) o.selected=true; selOrigenP.appendChild(o); });
+      selOrigenP.addEventListener("change",e=>{setState({moverOrigenPedido:e.target.value,moverProductoSel:""});});
+      mBox.appendChild(selOrigenP);
+    }
+
+    // Select producto
+    if(state.moverOrigenCliente && state.moverOrigenPedido){
+      const lineas = state.clienteMap[state.moverOrigenCliente]?.pedidos?.[state.moverOrigenPedido]?.lineas||[];
+      const selProd = el("select",{style:{width:"100%",padding:"8px 10px",borderRadius:"8px",border:"1px solid #ccc",marginBottom:"16px",fontSize:"13px"}});
+      selProd.appendChild(el("option",{value:""},"— Selecciona producto —"));
+      lineas.forEach(l=>{ const o=el("option",{value:l.producto},`${l.producto} (${l.unidades} u — Q${l.monto.toFixed(2)})`); if(state.moverProductoSel===l.producto) o.selected=true; selProd.appendChild(o); });
+      selProd.addEventListener("change",e=>{setState({moverProductoSel:e.target.value});});
+      mBox.appendChild(selProd);
+    }
+
+    // -- DESTINO --
+    mBox.appendChild(el("p",{style:{margin:"0 0 6px",fontWeight:"700",color:"#555",fontSize:"13px"}},"DESTINO"));
+
+    // Select cliente destino
+    const selDestinoC = el("select",{style:{width:"100%",padding:"8px 10px",borderRadius:"8px",border:"1px solid #ccc",marginBottom:"10px",fontSize:"13px"}});
+    selDestinoC.appendChild(el("option",{value:""},"— Cliente destino —"));
+    clientes.forEach(c=>{ const o=el("option",{value:c},c); if(state.moverDestinoCliente===c) o.selected=true; selDestinoC.appendChild(o); });
+    selDestinoC.addEventListener("change",e=>{setState({moverDestinoCliente:e.target.value,moverDestinoPedido:""});});
+    mBox.appendChild(selDestinoC);
+
+    // Select pedido destino
+    if(state.moverDestinoCliente){
+      const pedidosDest = Object.keys(state.clienteMap[state.moverDestinoCliente]?.pedidos||{});
+      const selDestinoP = el("select",{style:{width:"100%",padding:"8px 10px",borderRadius:"8px",border:"1px solid #ccc",marginBottom:"16px",fontSize:"13px"}});
+      selDestinoP.appendChild(el("option",{value:""},"— Pedido destino —"));
+      pedidosDest.forEach(p=>{ const o=el("option",{value:p},p); if(state.moverDestinoPedido===p) o.selected=true; selDestinoP.appendChild(o); });
+      // Opción para crear pedido nuevo (usar mismo código de pedido del origen)
+      if(state.moverOrigenPedido) selDestinoP.appendChild(el("option",{value:state.moverOrigenPedido+"_NUEVO"},`➕ Usar pedido ${state.moverOrigenPedido}`));
+      selDestinoP.addEventListener("change",e=>{
+        let val=e.target.value;
+        if(val.endsWith("_NUEVO")) val=val.replace("_NUEVO","");
+        setState({moverDestinoPedido:val});
+      });
+      mBox.appendChild(selDestinoP);
+    }
+
+    if(state.moverError) mBox.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.moverError));
+
+    const mBtns=el("div",{style:{display:"flex",gap:"10px",marginTop:"4px"}});
+    mBtns.appendChild(el("button",{style:{flex:"1",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"8px",padding:"11px 0",cursor:"pointer",fontWeight:"700",fontSize:"14px"},onClick:ejecutarMoverProducto},"✅ Mover"));
+    mBtns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"11px 0",cursor:"pointer"},onClick:()=>setState({showMoverProd:false,moverError:""})},"Cancelar"));
+    mBox.appendChild(mBtns);
+    mModal.appendChild(mBox); wrap.appendChild(mModal);
+  }
+
   // Modal confirmar
   if(state.showConfirmar){
     // Calcular datos del cuadre para el modal
@@ -1341,6 +1445,7 @@ function renderMain() {
   } else {
     if(state.confirmado) hdrBtns.appendChild(el("span",{style:{background:"#27ae60",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Confirmada"));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:abrirHistorial},"Historial"));
+    if(state.esAdmin && !state.modoHistorial) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,165,0,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({showMoverProd:true,moverOrigenCliente:"",moverOrigenPedido:"",moverProductoSel:"",moverDestinoCliente:"",moverDestinoPedido:"",moverError:""})},"🔀 Mover producto"));
     if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false})},"Nuevo archivo"));
     if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(220,53,69,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:async()=>{
       if(!confirm("¿Seguro que deseas quitar el archivo del día? Se borrarán todos los datos no confirmados.")) return;
