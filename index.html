@@ -274,25 +274,51 @@ async function iniciarSesion() {
     setState({autenticado:true,esAdmin:admin,appPassError:"",cargandoDatos:true});
     const datos=await fbGet("datos-dia");
     if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length>0){
-      setState({
-        clienteMap:datos.clienteMap,
-        fileName:datos.fileName||"",
-        fecha:datos.fecha||hoy(),
-        screen:"main",
-        cargandoDatos:false,
-        estadoEntrega:datos.estadoEntrega||{},
-        entregados:datos.entregados||{},
-        bloqueados:datos.bloqueados||{},
-        devoluciones:datos.devoluciones||[],
-        motivosDevTotal:datos.motivosDevTotal||{},
-        descuentos:datos.descuentos||{},
-        comentarios:datos.comentarios||{},
-        billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
-        monedas:datos.monedas||"",
-        deposito:datos.deposito||"",
-        transferencia:datos.transferencia||"",
-        gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}]
-      });
+      const yaConfirmado = datos.confirmado === true;
+      if(yaConfirmado && admin){
+        // Mostrar pantalla de opciones para admin
+        setState({
+          clienteMap:datos.clienteMap,
+          fileName:datos.fileName||"",
+          fecha:datos.fecha||hoy(),
+          estadoEntrega:datos.estadoEntrega||{},
+          entregados:datos.entregados||{},
+          bloqueados:datos.bloqueados||{},
+          devoluciones:datos.devoluciones||[],
+          motivosDevTotal:datos.motivosDevTotal||{},
+          descuentos:datos.descuentos||{},
+          comentarios:datos.comentarios||{},
+          billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
+          monedas:datos.monedas||"",
+          deposito:datos.deposito||"",
+          transferencia:datos.transferencia||"",
+          gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}],
+          confirmado:true,
+          screen:"opciones",
+          cargandoDatos:false
+        });
+      } else {
+        setState({
+          clienteMap:datos.clienteMap,
+          fileName:datos.fileName||"",
+          fecha:datos.fecha||hoy(),
+          screen:"main",
+          cargandoDatos:false,
+          confirmado:yaConfirmado,
+          estadoEntrega:datos.estadoEntrega||{},
+          entregados:datos.entregados||{},
+          bloqueados:datos.bloqueados||{},
+          devoluciones:datos.devoluciones||[],
+          motivosDevTotal:datos.motivosDevTotal||{},
+          descuentos:datos.descuentos||{},
+          comentarios:datos.comentarios||{},
+          billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
+          monedas:datos.monedas||"",
+          deposito:datos.deposito||"",
+          transferencia:datos.transferencia||"",
+          gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}]
+        });
+      }
     } else {
       // Admin va a pantalla de inicio con opciones, repartidor ve nodatos
       setState({screen:admin?"inicio":"nodatos",cargandoDatos:false});
@@ -359,13 +385,43 @@ async function confirmarLiquidacion() {
       clienteMap: state.clienteMap
     };
     await fbSet("historial",existing);
-    await fbRemove("datos-dia");
+    // Guardar datos-dia con flag confirmado (no borrar, para poder reabrir)
+    const datosActuales = await fbGet("datos-dia");
+    if(datosActuales) await fbSet("datos-dia", {...datosActuales, confirmado:true});
     setState({confirmado:true,showConfirmar:false,guardando:false,screen:"confirmado"});
   } catch(e){
     console.error(e);
     setState({guardando:false,showConfirmar:false});
     alert("❌ Error al guardar la liquidación:\n" + e.message);
   }
+}
+
+function renderOpciones() {
+  const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
+  const box=el("div",{style:{background:"#fff",borderRadius:"16px",padding:"36px 28px",maxWidth:"380px",width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
+  box.appendChild(el("div",{style:{fontSize:"52px",marginBottom:"12px"}},"✅"));
+  box.appendChild(el("h2",{style:{margin:"0 0 6px",color:"#1e3a5f",fontSize:"20px"}},"Liquidación del día confirmada"));
+  box.appendChild(el("p",{style:{margin:"0 0 28px",color:"#888",fontSize:"13px"}},"Fecha: "+state.fecha));
+
+  const btn=(icon,label,bg,onClick)=>{
+    const b=el("button",{style:{width:"100%",background:bg,color:"#fff",border:"none",borderRadius:"12px",padding:"16px 20px",fontSize:"15px",fontWeight:"700",cursor:"pointer",marginBottom:"12px",display:"flex",alignItems:"center",gap:"14px",textAlign:"left"},onClick});
+    b.appendChild(el("span",{style:{fontSize:"26px"}},icon));
+    b.appendChild(el("span",{},label));
+    return b;
+  };
+
+  box.appendChild(btn("📋","Ver / editar liquidación de hoy","#1e3a5f",()=>setState({screen:"main"})));
+  box.appendChild(btn("📅","Ver historial","#2980b9",abrirHistorial));
+  box.appendChild(btn("📁","Cargar nuevo archivo","#7f8c8d",()=>setState({
+    screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},
+    bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],
+    billetes:Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false
+  })));
+
+  const salir=el("button",{style:{background:"none",border:"none",color:"#aaa",fontSize:"13px",cursor:"pointer",marginTop:"8px"},onClick:()=>setState({autenticado:false,esAdmin:false,screen:"upload",clienteMap:{},confirmado:false})},"🚪 Cerrar sesión");
+  box.appendChild(salir);
+  wrap.appendChild(box);
+  return wrap;
 }
 
 function renderConfirmado() {
@@ -1874,6 +1930,7 @@ function render() {
   else if(state.screen==="historial") content=renderHistorial();
   else if(state.screen==="historialVista" && state.clienteDetalle) content=renderDetalleCliente();
   else if(state.screen==="confirmado") content=renderConfirmado();
+  else if(state.screen==="opciones") content=renderOpciones();
   else if(state.screen==="historialVista") content=renderMain();
   else if(state.clienteDetalle) content=renderDetalleCliente();
   else content=renderMain();
