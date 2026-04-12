@@ -1022,7 +1022,7 @@ function renderDetalleCliente() {
   hdr.appendChild(hdrLeft);
   // Solo mostrar botón de devolución si NO es presupuesto y NO es historial
   const pedidosEntregables=pedidos.filter(([,p])=>!esPedPre(p));
-  if(!state.modoHistorial && pedidosEntregables.length>0) hdr.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"9px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({showDvForm:true,dvPedido:pedidosEntregables.length===1?pedidosEntregables[0][0]:""})},"↩️ Registrar Devolución"));
+  if(!state.modoHistorial && !state.confirmado && !state.bloqueados[c] && pedidosEntregables.length>0) hdr.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"9px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({showDvForm:true,dvPedido:pedidosEntregables.length===1?pedidosEntregables[0][0]:""})},"↩️ Registrar Devolución"));
   inner.appendChild(hdr);
 
   // Banner informativo si tiene al menos un pedido en presupuesto (pero no todos)
@@ -1165,7 +1165,7 @@ function renderDetalleCliente() {
       left.appendChild(el("span",{style:{color:"#888",marginLeft:"8px"}},`· ${fN(d.unidades)} unid. · ${d.desc}`));
       const right=el("div",{style:{display:"flex",alignItems:"center",gap:"12px"}});
       right.appendChild(el("span",{style:{color:"#c0392b",fontWeight:"700"}},`-${fQ(d.monto)}`));
-      if(!state.modoHistorial) right.appendChild(el("button",{style:{background:"#ffe0e0",color:"#c0392b",border:"none",borderRadius:"5px",padding:"3px 9px",cursor:"pointer",fontSize:"12px"},onClick:()=>setState({devoluciones:state.devoluciones.filter(x=>x.id!==d.id)})},"✕"));
+      if(!state.modoHistorial && !state.bloqueados[c]) right.appendChild(el("button",{style:{background:"#ffe0e0",color:"#c0392b",border:"none",borderRadius:"5px",padding:"3px 9px",cursor:"pointer",fontSize:"12px"},onClick:()=>setState({devoluciones:state.devoluciones.filter(x=>x.id!==d.id)})},"✕"));
       row.appendChild(left); row.appendChild(right);
       dvBox.appendChild(row);
     });
@@ -1173,7 +1173,7 @@ function renderDetalleCliente() {
   }
 
   // Formulario devolución
-  if(state.showDvForm && !state.modoHistorial && !esPresupuesto){
+  if(state.showDvForm && !state.modoHistorial && !state.bloqueados[c] && !esPresupuesto){
     const dvForm=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"20px",boxShadow:"0 2px 8px rgba(0,0,0,0.1)",marginBottom:"16px"}});
     dvForm.appendChild(el("p",{style:{margin:"0 0 14px",fontWeight:"700",color:"#c0392b",fontSize:"15px"}},"↩️ Nueva Devolución"));
     const grid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"12px"}});
@@ -1251,7 +1251,8 @@ function renderDetalleCliente() {
 
   // ── Botones de confirmación (si no está ya confirmado y NO es presupuesto) ──
   const estado = state.estadoEntrega[c] || null;
-  if(!estado && !esPresupuesto) {
+  const bloqueadoDetalle = state.bloqueados[c] || false;
+  if(!estado && !esPresupuesto && !bloqueadoDetalle) {
     const confirmBox=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"16px"}});
     confirmBox.appendChild(el("p",{style:{margin:"0 0 14px",fontWeight:"700",color:"#1e3a5f",fontSize:"14px"}},"✅ Confirmar entrega"));
     const btnRow=el("div",{style:{display:"flex",gap:"12px"}});
@@ -1295,15 +1296,21 @@ function renderDetalleCliente() {
 
     confirmBox.appendChild(btnRow);
     inner.appendChild(confirmBox);
-  } else {
-    // Ya confirmado - mostrar estado con opción de desbloquear
+  } else if(estado && !esPresupuesto) {
+    // Ya confirmado - mostrar estado con botón de desbloquear
     const estadoLabel = estado==="verde"?"✅ Entrega confirmada":estado==="amarillo"?"🟡 Entrega parcial confirmada":"🌸 Devolución total confirmada";
     const estadoBg = estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":"#fce4ec";
     const estadoColor = estado==="verde"?"#27ae60":estado==="amarillo"?"#f9a825":"#e91e8c";
-    inner.appendChild(el("div",{style:{background:estadoBg,borderRadius:"12px",padding:"14px 18px",marginBottom:"16px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
-      el("span",{style:{fontWeight:"700",color:estadoColor,fontSize:"14px"}},estadoLabel),
-      el("span",{style:{fontSize:"12px",color:"#888"}},"🔒 Bloqueado")
-    ));
+    const estadoBox = el("div",{style:{background:estadoBg,borderRadius:"12px",padding:"14px 18px",marginBottom:"16px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
+    estadoBox.appendChild(el("span",{style:{fontWeight:"700",color:estadoColor,fontSize:"14px"}},estadoLabel));
+    if(!state.modoHistorial) {
+      const unlockBtn = el("button",{style:{background:"#fff",border:"1px solid #ccc",borderRadius:"8px",padding:"7px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"600",color:"#555",display:"flex",alignItems:"center",gap:"6px"}},
+        "🔓 Desbloquear"
+      );
+      unlockBtn.onclick = () => setState({passCliente:c, passInput:"", passError:""});
+      estadoBox.appendChild(unlockBtn);
+    }
+    inner.appendChild(estadoBox);
   }
 
   return wrap;
@@ -1655,17 +1662,11 @@ function renderMain() {
         // Solo ícono de presupuesto, sin acción
         cbTd.appendChild(el("span",{title:"Presupuesto - Solo consulta",style:{fontSize:"16px",cursor:"default"}},"📋"));
       } else if(bloqueado){
-        // Mostrar estado con color + botón desbloquear
+        // Mostrar solo el estado visual (el desbloqueo se hace desde adentro del detalle)
         const estadoIcon = estado==="verde"?"✅":estado==="amarillo"?"🟡":"🔴";
-        const unlockBtn = document.createElement("button");
-        unlockBtn.title="Clic para desbloquear";
-        unlockBtn.style.cssText="background:none;border:none;cursor:pointer;font-size:18px;";
-        unlockBtn.textContent="🔒";
-        unlockBtn.onclick=()=>setState({passCliente:cliente,passInput:"",passError:""});
         const estadoSpan = document.createElement("span");
-        estadoSpan.style.cssText="font-size:15px;margin-left:4px;";
+        estadoSpan.style.cssText="font-size:18px;";
         estadoSpan.textContent=estadoIcon;
-        cbTd.appendChild(unlockBtn);
         cbTd.appendChild(estadoSpan);
       } else {
         const cb=document.createElement("input");
@@ -1679,10 +1680,9 @@ function renderMain() {
       // Nombre
       const nameTd=el("td",{style:{padding:"9px 12px"}});
       const nameBtn=document.createElement("button");
-      const puedeAbrir = esPresupuesto || state.modoHistorial || !bloqueado;
-      nameBtn.style.cssText=`background:none;border:none;cursor:${puedeAbrir?"pointer":"not-allowed"};color:${esPresupuesto?"#666":puedeAbrir?"#1e3a5f":"#888"};font-weight:600;font-size:13px;text-decoration:${puedeAbrir?"underline":"none"};padding:0;text-align:left;font-family:sans-serif;`;
+      nameBtn.style.cssText=`background:none;border:none;cursor:pointer;color:${esPresupuesto?"#666":"#1e3a5f"};font-weight:600;font-size:13px;text-decoration:underline;padding:0;text-align:left;font-family:sans-serif;`;
       nameBtn.textContent=cliente;
-      nameBtn.onclick=()=>{ if(esPresupuesto||state.modoHistorial||!bloqueado) setState({clienteDetalle:cliente}); };
+      nameBtn.onclick=()=>setState({clienteDetalle:cliente});
       nameTd.appendChild(nameBtn);
       // Badge presupuesto
       if(esPresupuesto){
