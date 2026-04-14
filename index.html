@@ -179,6 +179,8 @@ let state = {
   moverDestinoCliente: "",
   moverDestinoPedido: "",
   moverError: "",
+  ocultarConfirmados: false,
+  scrollAfterCliente: null,
 };
 
 function setState(updates) {
@@ -599,7 +601,8 @@ function confirmarVerde(cliente) {
   setState({
     estadoEntrega:{...state.estadoEntrega,[cliente]:"verde"},
     entregados:{...state.entregados,[cliente]:true},
-    bloqueados:{...state.bloqueados,[cliente]:true}
+    bloqueados:{...state.bloqueados,[cliente]:true},
+    scrollAfterCliente: cliente
   });
   showToast("✅ Entrega confirmada","#27ae60");
 }
@@ -619,7 +622,8 @@ function confirmarDesdeDetalle(cliente, tipo, codigoMotivo, descMotivo) {
     estadoEntrega:{...state.estadoEntrega,[cliente]:tipo},
     entregados:{...state.entregados,[cliente]:true},
     bloqueados:{...state.bloqueados,[cliente]:true},
-    clienteDetalle:null, showDvForm:false, dvPedido:"", dvProducto:"", dvError:""
+    clienteDetalle:null, showDvForm:false, dvPedido:"", dvProducto:"", dvError:"",
+    scrollAfterCliente: cliente
   };
   // Guardar motivo tanto para rosados como amarillos
   if(codigoMotivo){
@@ -1012,7 +1016,7 @@ function renderDetalleCliente() {
   // Header
   const hdr=el("div",{style:{background: esPresupuesto?"#616161":"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 22px",marginBottom:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
   const hdrLeft=el("div");
-  hdrLeft.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>setState({clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:""})},"← Volver"));
+  hdrLeft.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>setState({clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",scrollAfterCliente:c})},"← Volver"));
   hdrLeft.appendChild(el("h2",{style:{margin:"0",fontSize:"17px"}},c));
   const subtitleRow=el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginTop:"3px"}});
   subtitleRow.appendChild(el("p",{style:{margin:"0",fontSize:"12px",opacity:"0.75"}},cl.ruta));
@@ -1372,7 +1376,17 @@ function renderMain() {
   const gral=totalesGral();
   const montoEntregado=clientesEntregables.filter(c=>state.estadoEntrega[c] && state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
   const montoPendiente=clientesEntregables.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).netoM,0);
-  const clientesFiltrados=clientes.filter(c=>c.toLowerCase().includes(state.busqueda.toLowerCase()));
+  const busquedaLower = state.busqueda.toLowerCase().trim();
+  const clientesFiltrados = clientes.filter(c => {
+    if(!busquedaLower) return true;
+    // Buscar por nombre de cliente
+    if(c.toLowerCase().includes(busquedaLower)) return true;
+    // Buscar por producto en cualquier pedido del cliente
+    const productos = Object.values(state.clienteMap[c]?.pedidos||{})
+      .flatMap(p => p.lineas||[])
+      .map(l => l.producto?.toLowerCase()||"");
+    return productos.some(p => p.includes(busquedaLower));
+  });
   const totalBilletes=BILLETES.reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
   const totalMonedas=parseFloat(state.monedas)||0;
   const totalEfectivo=totalBilletes+totalMonedas;
@@ -1632,11 +1646,16 @@ function renderMain() {
   });
   inner.appendChild(cards);
 
-  // Búsqueda
-  const busq=el("input",{type:"text",placeholder:"🔍 Buscar cliente...",style:{width:"100%",padding:"10px 14px",borderRadius:"8px",border:"1px solid #ddd",fontSize:"14px",boxSizing:"border-box",background:"#fff",marginBottom:"16px"}});
+  // Barra de búsqueda + botón ocultar confirmados
+  const busqWrap=el("div",{style:{display:"flex",gap:"8px",marginBottom:"16px",alignItems:"center"}});
+  const busq=el("input",{type:"text",placeholder:"🔍 Buscar cliente o producto...",style:{flex:"1",padding:"10px 14px",borderRadius:"8px",border:"1px solid #ddd",fontSize:"14px",boxSizing:"border-box",background:"#fff"}});
   busq.value=state.busqueda;
   busq.addEventListener('input', e=>setState({busqueda:e.target.value}));
-  inner.appendChild(busq);
+  busqWrap.appendChild(busq);
+  const btnOcultar=el("button",{style:{whiteSpace:"nowrap",background:state.ocultarConfirmados?"#27ae60":"#eef2f7",color:state.ocultarConfirmados?"#fff":"#1e3a5f",border:"none",borderRadius:"8px",padding:"10px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"}},state.ocultarConfirmados?"👁️ Ver todas":"✅ Ocultar confirmadas");
+  btnOcultar.onclick=()=>setState({ocultarConfirmados:!state.ocultarConfirmados});
+  busqWrap.appendChild(btnOcultar);
+  inner.appendChild(busqWrap);
 
   // Tablas por ruta
   Object.entries(porRuta).forEach(([ruta,rutaClientes])=>{
@@ -1658,6 +1677,13 @@ function renderMain() {
     const pctMontoRuta=montoTotalRuta>0?(Math.round(montoEntregadoRuta/montoTotalRuta*1000)/10).toFixed(1):0;
     const pctDevMontoRuta=montoTotalRuta>0?(Math.round(devTotalRuta/montoTotalRuta*1000)/10).toFixed(1):0;
     const cntPresupuestoR=rutaClientes.filter(c=>esClientePre(c)).length;
+
+    const rutaClientesFiltrados = state.ocultarConfirmados
+      ? rutaClientes.filter(c => !state.estadoEntrega[c] || esClientePre(c))
+      : rutaClientes;
+
+    // Si ocultar activo y todos confirmados en esta ruta, saltar la ruta
+    if(state.ocultarConfirmados && rutaClientesFiltrados.length === 0) return;
 
     const rutaNombre = ruta.replace(/[\s—–-]+\d+\s*clientes?/i,"").trim();
     const rutaDiv=el("div",{style:{marginBottom:"24px"}});
@@ -1681,7 +1707,7 @@ function renderMain() {
     });
     thead.appendChild(tr); t.appendChild(thead);
     const tbody=el("tbody");
-    rutaClientes.forEach((cliente,ri)=>{
+    rutaClientesFiltrados.forEach((cliente,ri)=>{
       const tt=totalesCliente(cliente);
       const entregado=state.entregados[cliente]||false;
       const bloqueado=state.bloqueados[cliente]||false;
@@ -1694,6 +1720,7 @@ function renderMain() {
       // Color de fila según estado
       const rowBg = esPresupuesto?"#f0f0f0":estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":estado==="rosado"?"#fce4ec":ri%2===0?"#fafbfc":"#fff";
       const row=el("tr",{style:{borderTop:"1px solid #f0f0f0",background:rowBg,transition:"background 0.3s",opacity:esPresupuesto?"0.75":"1"}});
+      row.setAttribute("data-cliente", cliente);
 
       // Checkbox / candado / estado / presupuesto
       const cbTd=el("td",{style:{padding:"9px 12px",textAlign:"center"}});
@@ -2005,6 +2032,21 @@ function render() {
   else if(state.clienteDetalle) content=renderDetalleCliente();
   else content=renderMain();
   app.appendChild(content);
+  // Scroll al cliente después de volver del detalle
+  if(state.scrollAfterCliente) {
+    const target = app.querySelector(`[data-cliente="${CSS.escape(state.scrollAfterCliente)}"]`);
+    if(target) {
+      setTimeout(()=>{ target.scrollIntoView({behavior:"smooth", block:"center"}); }, 80);
+    }
+    state.scrollAfterCliente = null;
+  }
+  // Auto-focus en buscador si está en main y no hay detalle
+  if(state.autenticado && !state.clienteDetalle && (state.screen==="main"||state.screen==="historialVista")) {
+    const busqEl = app.querySelector('input[type="text"]');
+    if(busqEl && document.activeElement !== busqEl && !state.scrollAfterCliente) {
+      // No forzar focus para no interrumpir scroll
+    }
+  }
 }
 
 render();
