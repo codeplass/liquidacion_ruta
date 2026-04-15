@@ -181,6 +181,8 @@ let state = {
   moverError: "",
   ocultarConfirmados: false,
   scrollAfterCliente: null,
+  editPrecio: null, // {cliente, pedido, producto, valor}
+  editCantidad: null, // {cliente, pedido, producto, valor}
 };
 
 function setState(updates) {
@@ -588,7 +590,41 @@ function guardarDev() {
   });
 }
 
-function showToast(msg, color) {
+function aplicarEditPrecio() {
+  const {cliente, pedido, producto, valor} = state.editPrecio || {};
+  const pu = parseFloat(valor);
+  if(!cliente || !pedido || !producto || isNaN(pu) || pu < 0) {
+    setState({editPrecio: null}); return;
+  }
+  const newMap = JSON.parse(JSON.stringify(state.clienteMap));
+  const lineas = newMap[cliente]?.pedidos?.[pedido]?.lineas;
+  if(!lineas) { setState({editPrecio: null}); return; }
+  const linea = lineas.find(l => l.producto === producto);
+  if(!linea) { setState({editPrecio: null}); return; }
+  linea.monto = parseFloat((pu * linea.unidades).toFixed(2));
+  setState({clienteMap: newMap, editPrecio: null});
+  showToast("✏️ Precio actualizado", "#2563eb");
+}
+
+function aplicarEditCantidad() {
+  const {cliente, pedido, producto, valor} = state.editCantidad || {};
+  const cant = parseFloat(valor);
+  if(!cliente || !pedido || !producto || isNaN(cant) || cant < 0) {
+    setState({editCantidad: null}); return;
+  }
+  const newMap = JSON.parse(JSON.stringify(state.clienteMap));
+  const lineas = newMap[cliente]?.pedidos?.[pedido]?.lineas;
+  if(!lineas) { setState({editCantidad: null}); return; }
+  const linea = lineas.find(l => l.producto === producto);
+  if(!linea) { setState({editCantidad: null}); return; }
+  const pu = linea.unidades > 0 ? linea.monto / linea.unidades : 0;
+  linea.unidades = cant;
+  linea.monto = parseFloat((pu * cant).toFixed(2));
+  setState({clienteMap: newMap, editCantidad: null});
+  showToast("✏️ Cantidad actualizada", "#2563eb");
+}
+
+
   const t=document.createElement("div");
   t.style.cssText=`position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:${color||"#27ae60"};color:#fff;padding:14px 28px;border-radius:12px;font-size:15px;font-weight:700;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,0.2);transition:opacity 0.5s;`;
   t.textContent=msg;
@@ -1013,6 +1049,71 @@ function renderDetalleCliente() {
   const inner=el("div",{style:{maxWidth:"860px",margin:"0 auto"}});
   wrap.appendChild(inner);
 
+  // Modal editar precio unitario
+  if(state.editPrecio && state.editPrecio.cliente === c) {
+    const ep = state.editPrecio;
+    const unidades = state.clienteMap[c]?.pedidos?.[ep.pedido]?.lineas?.find(l=>l.producto===ep.producto)?.unidades||0;
+    const puActual = parseFloat(ep.valor)||0;
+    const montoCalc = parseFloat((puActual * unidades).toFixed(2));
+    const modal = el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999"}});
+    const box = el("div",{style:{background:"#fff",borderRadius:"14px",padding:"28px",width:"340px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
+    box.appendChild(el("h3",{style:{margin:"0 0 4px",color:"#1e3a5f",fontSize:"16px"}},"✏️ Editar precio unitario"));
+    box.appendChild(el("p",{style:{margin:"0 0 16px",fontSize:"12px",color:"#888",wordBreak:"break-all"}},ep.producto));
+    // Input precio
+    box.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Precio unitario (Q)"));
+    const pInp = el("input",{type:"number",min:"0",step:"0.0001",style:{width:"100%",padding:"10px 12px",borderRadius:"8px",border:"2px solid #2563eb",fontSize:"15px",boxSizing:"border-box",fontFamily:"sans-serif",marginBottom:"8px"},autoFocus:true});
+    pInp.value = ep.valor;
+    pInp.addEventListener("input", e=>{
+      state.editPrecio.valor = e.target.value;
+      const pu = parseFloat(e.target.value)||0;
+      resumenDiv.innerHTML = `<span style="color:#555">Unidades:</span> <b>${fN(unidades)}</b> &nbsp;×&nbsp; <span style="color:#555">P.U.:</span> <b>Q ${pu.toFixed(4)}</b> &nbsp;=&nbsp; <span style="color:#1e3a5f;font-weight:700;font-size:15px">${fQ(parseFloat((pu*unidades).toFixed(2)))}</span>`;
+    });
+    pInp.addEventListener("keydown", e=>{ if(e.key==="Enter") aplicarEditPrecio(); });
+    box.appendChild(pInp);
+    // Resumen calculado
+    const resumenDiv = el("div",{style:{background:"#f0f4f8",borderRadius:"8px",padding:"10px 14px",marginBottom:"16px",fontSize:"13px",textAlign:"center"}});
+    resumenDiv.innerHTML = `<span style="color:#555">Unidades:</span> <b>${fN(unidades)}</b> &nbsp;×&nbsp; <span style="color:#555">P.U.:</span> <b>Q ${puActual.toFixed(4)}</b> &nbsp;=&nbsp; <span style="color:#1e3a5f;font-weight:700;font-size:15px">${fQ(montoCalc)}</span>`;
+    box.appendChild(resumenDiv);
+    const btns = el("div",{style:{display:"flex",gap:"10px"}});
+    btns.appendChild(el("button",{style:{flex:"1",background:"#2563eb",color:"#fff",border:"none",borderRadius:"8px",padding:"11px 0",cursor:"pointer",fontWeight:"700",fontSize:"14px"},onClick:aplicarEditPrecio},"✅ Aplicar"));
+    btns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"11px 0",cursor:"pointer"},onClick:()=>setState({editPrecio:null})},"Cancelar"));
+    box.appendChild(btns);
+    modal.appendChild(box);
+    wrap.appendChild(modal);
+  }
+
+  // Modal editar cantidad
+  if(state.editCantidad && state.editCantidad.cliente === c) {
+    const ec = state.editCantidad;
+    const linea = state.clienteMap[c]?.pedidos?.[ec.pedido]?.lineas?.find(l=>l.producto===ec.producto);
+    const pu = linea && linea.unidades > 0 ? linea.monto / linea.unidades : 0;
+    const cantActual = parseFloat(ec.valor)||0;
+    const montoCalc = parseFloat((pu * cantActual).toFixed(2));
+    const modal2 = el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999"}});
+    const box2 = el("div",{style:{background:"#fff",borderRadius:"14px",padding:"28px",width:"340px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
+    box2.appendChild(el("h3",{style:{margin:"0 0 4px",color:"#1e3a5f",fontSize:"16px"}},"✏️ Editar cantidad"));
+    box2.appendChild(el("p",{style:{margin:"0 0 16px",fontSize:"12px",color:"#888",wordBreak:"break-all"}},ec.producto));
+    box2.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Cantidad (unidades)"));
+    const cInp = el("input",{type:"number",min:"0",step:"1",style:{width:"100%",padding:"10px 12px",borderRadius:"8px",border:"2px solid #2563eb",fontSize:"15px",boxSizing:"border-box",fontFamily:"sans-serif",marginBottom:"8px"},autoFocus:true});
+    cInp.value = ec.valor;
+    const resumenDiv2 = el("div",{style:{background:"#f0f4f8",borderRadius:"8px",padding:"10px 14px",marginBottom:"16px",fontSize:"13px",textAlign:"center"}});
+    resumenDiv2.innerHTML = `<span style="color:#555">Cant.:</span> <b>${fN(cantActual)}</b> &nbsp;×&nbsp; <span style="color:#555">P.U.:</span> <b>Q ${pu.toFixed(4)}</b> &nbsp;=&nbsp; <span style="color:#1e3a5f;font-weight:700;font-size:15px">${fQ(montoCalc)}</span>`;
+    cInp.addEventListener("input", e=>{
+      state.editCantidad.valor = e.target.value;
+      const cant = parseFloat(e.target.value)||0;
+      resumenDiv2.innerHTML = `<span style="color:#555">Cant.:</span> <b>${fN(cant)}</b> &nbsp;×&nbsp; <span style="color:#555">P.U.:</span> <b>Q ${pu.toFixed(4)}</b> &nbsp;=&nbsp; <span style="color:#1e3a5f;font-weight:700;font-size:15px">${fQ(parseFloat((pu*cant).toFixed(2)))}</span>`;
+    });
+    cInp.addEventListener("keydown", e=>{ if(e.key==="Enter") aplicarEditCantidad(); });
+    box2.appendChild(cInp);
+    box2.appendChild(resumenDiv2);
+    const btns2 = el("div",{style:{display:"flex",gap:"10px"}});
+    btns2.appendChild(el("button",{style:{flex:"1",background:"#2563eb",color:"#fff",border:"none",borderRadius:"8px",padding:"11px 0",cursor:"pointer",fontWeight:"700",fontSize:"14px"},onClick:aplicarEditCantidad},"✅ Aplicar"));
+    btns2.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"11px 0",cursor:"pointer"},onClick:()=>setState({editCantidad:null})},"Cancelar"));
+    box2.appendChild(btns2);
+    modal2.appendChild(box2);
+    wrap.appendChild(modal2);
+  }
+
   // Header
   const hdr=el("div",{style:{background: esPresupuesto?"#616161":"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 22px",marginBottom:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
   const hdrLeft=el("div");
@@ -1083,8 +1184,30 @@ function renderDetalleCliente() {
       const row=el("tr",{style:{borderTop:"1px solid #f0f0f0",background:rowBgProd}});
       const colTexto = pedEsPre ? "#888" : undefined;
       row.appendChild(el("td",{style:{padding:"9px 12px",...(colTexto?{color:colTexto}:{})}},l.producto));
-      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",...(colTexto?{color:colTexto}:{})}},fN(l.unidades)));
-      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:colTexto||"#888"}},`Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`));
+      // Unidades: clickeable para editar si no está bloqueado
+      const uTd = el("td",{style:{padding:"9px 12px",textAlign:"right",...(colTexto?{color:colTexto}:{})}});
+      if(!pedEsPre && !state.bloqueados[c] && !state.modoHistorial) {
+        const uBtn = el("button",{style:{background:"none",border:"none",cursor:"pointer",color:"#2563eb",fontWeight:"600",fontSize:"13px",textDecoration:"underline dotted",padding:"0",fontFamily:"sans-serif"}}, fN(l.unidades));
+        uBtn.title = "Click para editar cantidad";
+        uBtn.onclick = () => setState({editCantidad:{cliente:c, pedido, producto:l.producto, valor:l.unidades}});
+        uTd.appendChild(uBtn);
+      } else {
+        uTd.appendChild(document.createTextNode(fN(l.unidades)));
+      }
+      row.appendChild(uTd);
+      // P.Unit: clickeable para editar si no está bloqueado y no es presupuesto
+      const puTd = el("td",{style:{padding:"9px 12px",textAlign:"right",color:colTexto||"#888"}});
+      if(!pedEsPre && !state.bloqueados[c] && !state.modoHistorial) {
+        const puBtn = el("button",{style:{background:"none",border:"none",cursor:"pointer",color:"#2563eb",fontWeight:"600",fontSize:"13px",textDecoration:"underline dotted",padding:"0",fontFamily:"sans-serif"}},
+          `Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`
+        );
+        puBtn.title = "Click para editar precio unitario";
+        puBtn.onclick = () => setState({editPrecio:{cliente:c, pedido, producto:l.producto, valor:pu2.toFixed(4)}});
+        puTd.appendChild(puBtn);
+      } else {
+        puTd.appendChild(document.createTextNode(`Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`));
+      }
+      row.appendChild(puTd);
       row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",...(colTexto?{color:colTexto}:{})}},fQ(l.monto)));
       // Si es presupuesto, no mostrar columnas de dev ni neto operativo
       if(pedEsPre){
@@ -1650,7 +1773,13 @@ function renderMain() {
   const busqWrap=el("div",{style:{display:"flex",gap:"8px",marginBottom:"16px",alignItems:"center"}});
   const busq=el("input",{type:"text",placeholder:"🔍 Buscar cliente o producto...",style:{flex:"1",padding:"10px 14px",borderRadius:"8px",border:"1px solid #ddd",fontSize:"14px",boxSizing:"border-box",background:"#fff"}});
   busq.value=state.busqueda;
-  busq.addEventListener('input', e=>setState({busqueda:e.target.value}));
+  busq.addEventListener('focus', ()=>{ state._busqFocused = true; });
+  busq.addEventListener('blur', ()=>{ state._busqFocused = false; });
+  busq.addEventListener('input', e=>{
+    state.busqueda = e.target.value;
+    clearTimeout(window._busqTimer);
+    window._busqTimer = setTimeout(()=>render(), 200);
+  });
   busqWrap.appendChild(busq);
   const btnOcultar=el("button",{style:{whiteSpace:"nowrap",background:state.ocultarConfirmados?"#27ae60":"#eef2f7",color:state.ocultarConfirmados?"#fff":"#1e3a5f",border:"none",borderRadius:"8px",padding:"10px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"}},state.ocultarConfirmados?"👁️ Ver todas":"✅ Ocultar confirmadas");
   btnOcultar.onclick=()=>setState({ocultarConfirmados:!state.ocultarConfirmados});
@@ -2040,11 +2169,13 @@ function render() {
     }
     state.scrollAfterCliente = null;
   }
-  // Auto-focus en buscador si está en main y no hay detalle
-  if(state.autenticado && !state.clienteDetalle && (state.screen==="main"||state.screen==="historialVista")) {
-    const busqEl = app.querySelector('input[type="text"]');
-    if(busqEl && document.activeElement !== busqEl && !state.scrollAfterCliente) {
-      // No forzar focus para no interrumpir scroll
+  // Restaurar foco en el buscador si estaba activo
+  if(state._busqFocused) {
+    const busqEl = app.querySelector('input[placeholder*="Buscar"]');
+    if(busqEl) {
+      busqEl.focus();
+      const len = busqEl.value.length;
+      busqEl.setSelectionRange(len, len);
     }
   }
 }
