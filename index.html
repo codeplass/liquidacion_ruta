@@ -624,7 +624,7 @@ function aplicarEditCantidad() {
   showToast("✏️ Cantidad actualizada", "#2563eb");
 }
 
-
+function showToast(msg, color) {
   const t=document.createElement("div");
   t.style.cssText=`position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:${color||"#27ae60"};color:#fff;padding:14px 28px;border-radius:12px;font-size:15px;font-weight:700;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,0.2);transition:opacity 0.5s;`;
   t.textContent=msg;
