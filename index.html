@@ -704,8 +704,12 @@ function confirmarDesdeDetalle(cliente, tipo, codigoMotivo, descMotivo) {
   const devsTemporalesCliente = state.dvTemporal
     .filter(d=>d.cliente===cliente)
     .map(d=>({...d, codigo:codigoMotivo||"", desc:descFinal}));
+  // Si hay dvTemporales, reemplaza las permanentes del cliente; si no hay, conserva las permanentes
   const devsOtros = state.devoluciones.filter(d=>d.cliente!==cliente);
-  const devsFinales = [...devsOtros, ...devsTemporalesCliente];
+  const hayTemporales = devsTemporalesCliente.length > 0;
+  // Si no hay temporales: conservar permanentes existentes del cliente (el usuario no las tocó)
+  const devsPermanentesCliente = hayTemporales ? [] : state.devoluciones.filter(d=>d.cliente===cliente).map(d=>({...d,codigo:codigoMotivo||d.codigo,desc:descFinal||d.desc}));
+  const devsFinales = [...devsOtros, ...devsPermanentesCliente, ...devsTemporalesCliente];
   const dvTemporalRestante = state.dvTemporal.filter(d=>d.cliente!==cliente);
   const updates = {
     estadoEntrega:{...state.estadoEntrega,[cliente]:tipo},
@@ -714,10 +718,16 @@ function confirmarDesdeDetalle(cliente, tipo, codigoMotivo, descMotivo) {
     devoluciones: devsFinales,
     dvTemporal: dvTemporalRestante,
     clienteDetalle:null, showDvForm:false, dvPedido:"", dvProducto:"", dvError:"",
-    scrollAfterCliente: cliente
+    scrollAfterCliente: cliente,
+    _dvTipo: undefined
   };
-  if(codigoMotivo){
+  if(tipo==="rosado" && codigoMotivo){
     updates.motivosDevTotal = {...state.motivosDevTotal, [cliente]:{codigo:codigoMotivo, desc:descFinal}};
+  } else {
+    // Si ya no es devolución total, limpiar el motivo guardado
+    const nuevosMot = {...state.motivosDevTotal};
+    delete nuevosMot[cliente];
+    updates.motivosDevTotal = nuevosMot;
   }
   setState(updates);
   if(tipo==="verde") showToast("✅ Entrega confirmada","#27ae60");
@@ -733,26 +743,9 @@ function toggleEntregado(cliente) {
 function intentarDesbloquear() {
   if(state.passInput===PASS_DESBLOQUEO){
     const c=state.passCliente;
-    const tipoAnterior=state.estadoEntrega[c];
-
+    // Solo desbloquear para editar — NO borrar estado ni devoluciones
     const nuevoBloq={...state.bloqueados}; delete nuevoBloq[c];
-    const nuevoEstado={...state.estadoEntrega}; delete nuevoEstado[c];
-    const nuevoEnt={...state.entregados}; delete nuevoEnt[c];
-
-    const updates={bloqueados:nuevoBloq, estadoEntrega:nuevoEstado, entregados:nuevoEnt, passCliente:null, passInput:"", passError:""};
-
-    // Si era devolución total: limpiar motivo guardado
-    if(tipoAnterior==="rosado"){
-      const nuevosMot={...state.motivosDevTotal}; delete nuevosMot[c];
-      updates.motivosDevTotal=nuevosMot;
-    }
-
-    // Si era entrega parcial: borrar devoluciones de ese cliente
-    if(tipoAnterior==="amarillo"){
-      updates.devoluciones=state.devoluciones.filter(d=>d.cliente!==c);
-    }
-
-    setState(updates);
+    setState({bloqueados:nuevoBloq, passCliente:null, passInput:"", passError:""});
   } else {
     setState({passError:"Contraseña incorrecta."});
   }
@@ -1187,7 +1180,7 @@ function renderDetalleCliente() {
     const montoCalcDv = parseFloat((uActual * pu).toFixed(2));
     const modalDv = el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999"}});
     const boxDv = el("div",{style:{background:"#fff",borderRadius:"14px",padding:"28px",width:"360px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
-    boxDv.appendChild(el("h3",{style:{margin:"0 0 4px",color:"#c0392b",fontSize:"16px"}},"↩️ Registrar devolución"));
+    boxDv.appendChild(el("h3",{style:{margin:"0 0 4px",color:"#c0392b",fontSize:"16px"}},dp.editando?"✏️ Editar devolución":"↩️ Registrar devolución"));
     boxDv.appendChild(el("p",{style:{margin:"0 0 4px",fontSize:"12px",color:"#888",wordBreak:"break-all"}},dp.producto));
     boxDv.appendChild(el("p",{style:{margin:"0 0 16px",fontSize:"12px",color:"#555"}},[`Pedido: `,el("b",{},dp.pedido),`  ·  Disponible: `,el("b",{},`${fN(dp.dispU)} u`)]));
 
@@ -1232,8 +1225,9 @@ function renderDetalleCliente() {
   const hdrLeft=el("div");
   hdrLeft.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>{
     const devsTemporales = state.dvTemporal.filter(d=>d.cliente===c);
-    if(devsTemporales.length > 0) {
-      if(!confirm("Si sale sin confirmar, no se grabarán los cambios de devolución. ¿Desea salir?")) return;
+    const estaDesbloqueadoConEstado = state.estadoEntrega[c] && !state.bloqueados[c];
+    if(devsTemporales.length > 0 || estaDesbloqueadoConEstado) {
+      if(!confirm("Si sale sin confirmar, los cambios no se guardarán. ¿Desea salir de todas formas?")) return;
     }
     setState({clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c});
   }},"← Volver"));
@@ -1290,7 +1284,7 @@ function renderDetalleCliente() {
     const t=el("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:"13px",minWidth:"620px"}});
     const thead=el("thead"); const tr=el("tr");
     ["Producto","Unidades","P.Unit.","Monto","Dev. Unid.","Dev. Monto","Neto Unid.","Neto"].forEach((h,i)=>{
-      tr.appendChild(el("th",{style:{padding:"9px 12px",textAlign:i===0?"left":"right",color:pedEsPre?"#888":"#555",fontWeight:"600",background:pedEsPre?"#e8e8e8":"#eef2f7",whiteSpace:"nowrap"}},h));
+      tr.appendChild(el("th",{style:{padding:"9px 12px",textAlign:i===0?"left":"right",color:i===6?"#2563eb":pedEsPre?"#888":"#555",fontWeight:"600",background:pedEsPre?"#e8e8e8":"#eef2f7",whiteSpace:"nowrap"}},h));
     });
     thead.appendChild(tr); t.appendChild(thead);
     const tScroll=el("div",{style:{overflowX:"auto"}});
@@ -1313,16 +1307,22 @@ function renderDetalleCliente() {
       if(puedeDev){
         // Long press → devolución total del producto
         let lpTimer = null;
-        row.addEventListener("mousedown", ()=>{ lpTimer=setTimeout(()=>{ lpTimer=null; devolverProductoTotal(c,pedido,l.producto); },600); });
-        row.addEventListener("mouseup", ()=>{ clearTimeout(lpTimer); });
-        row.addEventListener("mouseleave", ()=>{ clearTimeout(lpTimer); });
+        let lpFired = false;
+        row.addEventListener("mousedown", ()=>{ lpFired=false; lpTimer=setTimeout(()=>{ lpTimer=null; lpFired=true; devolverProductoTotal(c,pedido,l.producto); },600); });
+        row.addEventListener("mouseup", ()=>{ clearTimeout(lpTimer); lpTimer=null; });
+        row.addEventListener("mouseleave", ()=>{ clearTimeout(lpTimer); lpTimer=null; });
         // Touch long press
-        row.addEventListener("touchstart", e=>{ lpTimer=setTimeout(()=>{ lpTimer=null; e.preventDefault(); devolverProductoTotal(c,pedido,l.producto); },600); },{passive:false});
-        row.addEventListener("touchend", ()=>{ clearTimeout(lpTimer); });
-        row.addEventListener("touchmove", ()=>{ clearTimeout(lpTimer); });
-        // Click normal → popup parcial (solo si no fue long press y quedan unidades)
+        row.addEventListener("touchstart", e=>{ lpFired=false; lpTimer=setTimeout(()=>{ lpTimer=null; lpFired=true; e.preventDefault(); devolverProductoTotal(c,pedido,l.producto); },600); },{passive:false});
+        row.addEventListener("touchend", ()=>{ clearTimeout(lpTimer); lpTimer=null; });
+        row.addEventListener("touchmove", ()=>{ clearTimeout(lpTimer); lpTimer=null; });
+        // Click normal → popup parcial (solo si no fue long press y quedan unidades, o si ya tiene devolución para editar)
         row.addEventListener("click", ()=>{
-          if(lpTimer===null) return; // fue long press
+          if(lpFired) { lpFired=false; return; } // fue long press, ignorar click
+          // Si ya tiene devolución total: abrir popup con cantidad actual para poder editar
+          if(ldU >= l.unidades && ldU > 0) {
+            setState({dvPopup:{cliente:c, pedido, producto:l.producto, dispU:l.unidades, dispM:l.monto, unidades:String(ldU), error:"", editando:true}});
+            return;
+          }
           const dispU = l.unidades - ldU;
           if(dispU <= 0) return;
           const dispM = l.monto - ldM;
@@ -1376,7 +1376,7 @@ function renderDetalleCliente() {
         const netoU = l.unidades - ldU;
         row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#c0392b"}},ldU>0?`-${fN(ldU)}`:"-"));
         row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#c0392b"}},ldM>0?`-${fQ(ldM)}`:"-"));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"600",color:netoU<l.unidades?"#c0392b":"#1e3a5f"}},fN(netoU)));
+        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"600",color:netoU<l.unidades?"#c0392b":"#2563eb"}},fN(netoU)));
         row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:"#1e3a5f"}},fQ(l.monto-ldM)));
       }
       tbody.appendChild(row);
@@ -1405,7 +1405,7 @@ function renderDetalleCliente() {
   const dcBox=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"16px"}});
   const dcGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"16px"}});
   const descDiv=el("div");
-  descDiv.appendChild(el("label",{style:{display:"block",fontSize:"13px",fontWeight:"600",color:"#555",marginBottom:"5px"}},"💲 Descuento en valores (Q)"));
+  descDiv.appendChild(el("label",{style:{display:"block",fontSize:"13px",fontWeight:"600",color:"#555",marginBottom:"5px"}},"Descuento en valores (Q)"));
   if(state.modoHistorial){
     descDiv.appendChild(el("div",{style:{padding:"8px 10px",background:"#f4f6f9",borderRadius:"8px",fontSize:"14px",fontWeight:"700",color:"#c0392b"}},tc.desc>0?`-${fQ(tc.desc)}`:"Q 0.00"));
   } else {
@@ -1427,9 +1427,13 @@ function renderDetalleCliente() {
   }
   dcGrid.appendChild(comDiv);
   dcBox.appendChild(dcGrid);
+  // Total a cobrar: usa devsCl (permanentes + temporales) para mostrar en tiempo real
+  const devMCombinado = devsCl.reduce((s,d)=>s+d.monto,0);
+  const descActual = parseFloat(state.descuentos[c])||0;
+  const netoMCombinado = tc.monto - devMCombinado - descActual;
   dcBox.appendChild(el("div",{style:{marginTop:"12px",background:"#f0f4f8",borderRadius:"8px",padding:"10px 14px",display:"flex",justifyContent:"space-between",fontSize:"14px"}},
     el("span",{style:{fontWeight:"600"}},"Total a cobrar:"),
-    el("span",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"16px"}},fQ(tc.netoM))
+    el("span",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"16px"}},fQ(netoMCombinado))
   ));
   inner.appendChild(dcBox);
 
@@ -1506,7 +1510,7 @@ function renderDetalleCliente() {
   if(state.passCliente === c) {
     const modal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999"}});
     const box=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"28px",width:"320px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
-    box.appendChild(el("h3",{style:{margin:"0 0 6px",color:"#1e3a5f"}},"🔒 Desbloquear entrega"));
+    box.appendChild(el("h3",{style:{margin:"0 0 6px",color:"#1e3a5f"}},"✏️ Editar entrega"));
     box.appendChild(el("p",{style:{fontSize:"13px",color:"#888",margin:"0 0 16px",wordBreak:"break-all"}},c));
     const pWrap=el("div",{style:{position:"relative",marginBottom:"8px"}});
     const pInp=el("input",{type:state.verPassDesbloqueo?"text":"password",placeholder:"Contraseña",style:{...inp(),padding:"8px 36px 8px 10px"},autoFocus:true});
@@ -1518,7 +1522,7 @@ function renderDetalleCliente() {
     box.appendChild(pWrap);
     if(state.passError) box.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.passError));
     const btns=el("div",{style:{display:"flex",gap:"10px",marginTop:"4px"}});
-    btns.appendChild(el("button",{style:{flex:"1",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer",fontWeight:"700"},onClick:intentarDesbloquear},"Desbloquear"));
+    btns.appendChild(el("button",{style:{flex:"1",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer",fontWeight:"700"},onClick:intentarDesbloquear},"✏️ Editar"));
     btns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer"},onClick:()=>setState({passCliente:null,passInput:"",passError:""})},"Cancelar"));
     box.appendChild(btns); modal.appendChild(box); wrap.appendChild(modal);
   }
@@ -1529,20 +1533,31 @@ function renderDetalleCliente() {
 
   if(!esPresupuesto && !state.modoHistorial) {
     if(estado && bloqueadoDetalle) {
+      // Confirmado y bloqueado: mostrar estado + botón EDITAR
       const estadoLabel = estado==="verde"?"✅ Entrega efectiva":estado==="amarillo"?"🟡 Entrega parcial":"↩️ Devolución total";
       const estadoBg = estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":"#fce4ec";
       const estadoColor = estado==="verde"?"#27ae60":estado==="amarillo"?"#f9a825":"#e91e8c";
       const estadoBox = el("div",{style:{background:estadoBg,borderRadius:"12px",padding:"14px 18px",marginBottom:"16px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
       estadoBox.appendChild(el("span",{style:{fontWeight:"700",color:estadoColor,fontSize:"14px"}},estadoLabel));
-      const unlockBtn = el("button",{style:{background:"#fff",border:"1px solid #ccc",borderRadius:"8px",padding:"7px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"600",color:"#555"}},"🔓 Desbloquear");
+      const unlockBtn = el("button",{style:{background:"#fff",border:"1px solid #ccc",borderRadius:"8px",padding:"7px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"600",color:"#555"}},"✏️ Editar");
       unlockBtn.onclick = () => setState({passCliente:c, passInput:"", passError:""});
       estadoBox.appendChild(unlockBtn);
       inner.appendChild(estadoBox);
-    } else if(!estado) {
+    } else if(!estado || (estado && !bloqueadoDetalle)) {
+      // Sin confirmar aún, O confirmado pero desbloqueado para editar
       const confirmBox=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"16px"}});
-      confirmBox.appendChild(el("p",{style:{margin:"0 0 14px",fontWeight:"700",color:"#1e3a5f",fontSize:"14px"}},"✅ Confirmar entrega"));
+      const tituloConfirm = estado ? "✏️ Guardar cambios" : "✅ Confirmar entrega";
+      confirmBox.appendChild(el("p",{style:{margin:"0 0 14px",fontWeight:"700",color:"#1e3a5f",fontSize:"14px"}},tituloConfirm));
 
       const tieneDevsParciales = devsCl.length > 0;
+
+      // Función que calcula el tipo según las devs actuales
+      function calcularTipoEntrega() {
+        if(!tieneDevsParciales) return "verde";
+        const totalUnidadesEntregables = pedidosEntregables.reduce((s,[,p])=>s+p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).reduce((ss,l)=>ss+l.unidades,0),0);
+        const totalDevUnidades = devsCl.reduce((s,d)=>s+d.unidades,0);
+        return totalDevUnidades >= totalUnidadesEntregables ? "rosado" : "amarillo";
+      }
 
       // Si se presionó confirmar y hay devs, mostrar selector de motivo
       if(state.showDvForm && tieneDevsParciales){
@@ -1551,13 +1566,16 @@ function renderDetalleCliente() {
         const motSel=el("select",{style:{width:"100%",padding:"8px 10px",borderRadius:"6px",border:"1px solid #ccc",fontSize:"13px",boxSizing:"border-box",fontFamily:"sans-serif"}});
         motSel.appendChild(el("option",{value:""},"-- Selecciona motivo --"));
         MOTIVOS.forEach(m=>motSel.appendChild(el("option",{value:m.codigo},`${m.codigo} — ${m.desc}`)));
-        motSel.value = state.dvCodigo||"";
+        // Pre-seleccionar motivo previo si existía
+        const motivoPrevio = state.motivosDevTotal?.[c]?.codigo || state.dvCodigo || "";
+        motSel.value = motivoPrevio;
         motSel.onchange = e=>{ state.dvCodigo=e.target.value; };
         motDiv.appendChild(motSel);
         confirmBox.appendChild(motDiv);
 
         const btnFinal = document.createElement("button");
-        const dvTipo = state._dvTipo || "amarillo";
+        // Recalcular tipo en base a devs actuales (no usar _dvTipo stale)
+        const dvTipo = state._dvTipo || calcularTipoEntrega();
         btnFinal.style.cssText=`width:100%;background:${dvTipo==="rosado"?"#e91e8c":"#f9a825"};color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-bottom:8px;`;
         btnFinal.textContent="✅ Confirmar";
         btnFinal.onclick = () => {
@@ -1573,20 +1591,13 @@ function renderDetalleCliente() {
         // Botón único de confirmar
         const btnConfirmar = document.createElement("button");
         btnConfirmar.style.cssText="width:100%;background:#27ae60;color:#fff;border:none;border-radius:8px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
-        btnConfirmar.textContent="✅ Confirmar entrega";
+        btnConfirmar.textContent = estado ? "✅ Guardar cambios" : "✅ Confirmar entrega";
         btnConfirmar.onclick = () => {
-          if(tieneDevsParciales){
-            // Verificar si todas las unidades entregables fueron devueltas → rosado
-            const totalUnidadesEntregables = pedidosEntregables.reduce((s,[,p])=>s+p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).reduce((ss,l)=>ss+l.unidades,0),0);
-            const totalDevUnidades = devsCl.reduce((s,d)=>s+d.unidades,0);
-            const esDevTotal = totalDevUnidades >= totalUnidadesEntregables;
-            if(esDevTotal){
-              setState({showDvForm:true, _dvTipo:"rosado"});
-            } else {
-              setState({showDvForm:true, _dvTipo:"amarillo"});
-            }
-          } else {
+          const tipo = calcularTipoEntrega();
+          if(tipo === "verde"){
             confirmarDesdeDetalle(c,"verde");
+          } else {
+            setState({showDvForm:true, _dvTipo:tipo});
           }
         };
         confirmBox.appendChild(btnConfirmar);
@@ -1661,7 +1672,7 @@ function renderMain() {
   if(state.passCliente){
     const modal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999"}});
     const box=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"28px",width:"320px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
-    box.appendChild(el("h3",{style:{margin:"0 0 6px",color:"#1e3a5f"}},"🔒 Desbloquear entrega"));
+    box.appendChild(el("h3",{style:{margin:"0 0 6px",color:"#1e3a5f"}},"✏️ Editar entrega"));
     box.appendChild(el("p",{style:{fontSize:"13px",color:"#888",margin:"0 0 16px",wordBreak:"break-all"}},state.passCliente));
     const pWrap=el("div",{style:{position:"relative",marginBottom:"8px"}});
     const pInp=el("input",{type:state.verPassDesbloqueo?"text":"password",placeholder:"Contraseña",style:{...inp(),padding:"8px 36px 8px 10px"},autoFocus:true});
@@ -1673,7 +1684,7 @@ function renderMain() {
     box.appendChild(pWrap);
     if(state.passError) box.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.passError));
     const btns=el("div",{style:{display:"flex",gap:"10px",marginTop:"4px"}});
-    btns.appendChild(el("button",{style:{flex:"1",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer",fontWeight:"700"},onClick:intentarDesbloquear},"Desbloquear"));
+    btns.appendChild(el("button",{style:{flex:"1",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer",fontWeight:"700"},onClick:intentarDesbloquear},"✏️ Editar"));
     btns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer"},onClick:()=>setState({passCliente:null,passInput:"",passError:""})},"Cancelar"));
     box.appendChild(btns); modal.appendChild(box); wrap.appendChild(modal);
   }
