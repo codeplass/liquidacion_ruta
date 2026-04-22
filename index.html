@@ -183,14 +183,16 @@ let state = {
   scrollAfterCliente: null,
   editPrecio: null, // {cliente, pedido, producto, valor}
   editCantidad: null, // {cliente, pedido, producto, valor}
-  dvPopup: null, // {cliente, pedido, producto, dispU, dispM, unidades, codigo, error}
+  dvPopup: null, // {cliente, pedido, producto, dispU, dispM, unidades, error}
+  dvTemporal: [], // devoluciones temporales (no guardadas en Firebase hasta confirmar)
+  longPressModal: null, // {cliente, paso:"motivo"|"confirmar", codigo, tipo:"cliente"|"producto"}
 };
 
 function setState(updates) {
   Object.assign(state, updates);
   render();
   // Guardado automático en Firebase cuando cambian datos del día
-  const camposGuardar = ["estadoEntrega","entregados","bloqueados","devoluciones",
+  const camposGuardar = ["estadoEntrega","entregados","bloqueados",
     "motivosDevTotal","descuentos","comentarios","billetes","monedas",
     "deposito","transferencia","gastosDetalle"];
   const afecta = Object.keys(updates).some(k => camposGuardar.includes(k));
@@ -599,9 +601,39 @@ function guardarDevPopup() {
   if(u>p.dispU){ setState({dvPopup:{...p,error:`Máximo: ${fN(p.dispU)} unidades.`}}); return; }
   const pu = p.dispM / p.dispU;
   const m = parseFloat((u * pu).toFixed(2));
+  // Quitar dev temporal previa del mismo producto y agregar la nueva
+  const sinEste = state.dvTemporal.filter(d=>!(d.cliente===p.cliente&&d.pedido===p.pedido&&d.producto===p.producto));
   setState({
-    devoluciones:[...state.devoluciones,{id:Date.now(),cliente:p.cliente,pedido:p.pedido,producto:p.producto,unidades:u,monto:m,codigo:"",desc:""}],
+    dvTemporal:[...sinEste,{id:Date.now(),cliente:p.cliente,pedido:p.pedido,producto:p.producto,unidades:u,monto:m,codigo:"",desc:""}],
     dvPopup:null
+  });
+}
+
+function devolverProductoTotal(cliente, pedido, producto) {
+  // Long press: devolver 100% de un producto
+  const linea = state.clienteMap[cliente]?.pedidos?.[pedido]?.lineas?.find(l=>l.producto===producto);
+  if(!linea) return;
+  const sinEste = state.dvTemporal.filter(d=>!(d.cliente===cliente&&d.pedido===pedido&&d.producto===producto));
+  setState({
+    dvTemporal:[...sinEste,{id:Date.now(),cliente,pedido,producto,unidades:linea.unidades,monto:linea.monto,codigo:"",desc:""}],
+    dvPopup:null
+  });
+  showToast("↩️ Devolución total del producto marcada","#e91e8c");
+}
+
+function devolverClienteTotal(cliente) {
+  // Long press en cliente desde la lista: marcar todos sus productos como devueltos temporalmente
+  const lineas = [];
+  Object.entries(state.clienteMap[cliente]?.pedidos||{}).forEach(([pedido,pData])=>{
+    if(esPedPre(pData)) return;
+    pData.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{
+      lineas.push({id:Date.now()+Math.random(),cliente,pedido,producto:l.producto,unidades:l.unidades,monto:l.monto,codigo:"",desc:""});
+    });
+  });
+  const sinCliente = state.dvTemporal.filter(d=>d.cliente!==cliente);
+  setState({
+    dvTemporal:[...sinCliente,...lineas],
+    longPressModal:{cliente, paso:"motivo", codigo:"D01", tipo:"cliente"}
   });
 }
 
@@ -666,24 +698,31 @@ function desconfirmarEntrega(cliente) {
 }
 
 function confirmarDesdeDetalle(cliente, tipo, codigoMotivo, descMotivo) {
-  // tipo: "verde", "amarillo" o "rosado"
   const motivo = MOTIVOS.find(x=>x.codigo===codigoMotivo)||{};
   const descFinal = descMotivo || motivo.desc || codigoMotivo || "";
+  // Fusionar dvTemporal del cliente con devoluciones permanentes, asignando motivo
+  const devsTemporalesCliente = state.dvTemporal
+    .filter(d=>d.cliente===cliente)
+    .map(d=>({...d, codigo:codigoMotivo||"", desc:descFinal}));
+  const devsOtros = state.devoluciones.filter(d=>d.cliente!==cliente);
+  const devsFinales = [...devsOtros, ...devsTemporalesCliente];
+  const dvTemporalRestante = state.dvTemporal.filter(d=>d.cliente!==cliente);
   const updates = {
     estadoEntrega:{...state.estadoEntrega,[cliente]:tipo},
     entregados:{...state.entregados,[cliente]:true},
     bloqueados:{...state.bloqueados,[cliente]:true},
+    devoluciones: devsFinales,
+    dvTemporal: dvTemporalRestante,
     clienteDetalle:null, showDvForm:false, dvPedido:"", dvProducto:"", dvError:"",
     scrollAfterCliente: cliente
   };
-  // Guardar motivo tanto para rosados como amarillos
   if(codigoMotivo){
     updates.motivosDevTotal = {...state.motivosDevTotal, [cliente]:{codigo:codigoMotivo, desc:descFinal}};
   }
   setState(updates);
   if(tipo==="verde") showToast("✅ Entrega confirmada","#27ae60");
   else if(tipo==="amarillo") showToast("🟡 Entrega parcial confirmada","#f9a825");
-  else if(tipo==="rosado") showToast("🌸 Devolución total confirmada","#e91e8c");
+  else if(tipo==="rosado") showToast("↩️ Devolución total confirmada","#e91e8c");
 }
 
 function toggleEntregado(cliente) {
@@ -1062,7 +1101,10 @@ function renderDetalleCliente() {
   const c=state.clienteDetalle;
   const cl=state.clienteMap[c];
   const esPresupuesto = esClientePre(state.clienteDetalle);
-  const devsCl=state.devoluciones.filter(d=>d.cliente===c);
+  const devsPermCliente = state.devoluciones.filter(d=>d.cliente===c);
+  const devsTempCliente = state.dvTemporal.filter(d=>d.cliente===c);
+  // Para mostrar en detalle: combinar permanentes + temporales (temporales sobreescriben si mismo producto)
+  const devsCl = [...devsPermCliente.filter(dp=>!devsTempCliente.some(dt=>dt.pedido===dp.pedido&&dt.producto===dp.producto)), ...devsTempCliente];
   const pedidos=Object.entries(cl.pedidos);
   const tc=totalesCliente(c);
   const prodsSel=state.dvPedido?prodsDisp(c,state.dvPedido):[];
@@ -1188,7 +1230,13 @@ function renderDetalleCliente() {
   // Header
   const hdr=el("div",{style:{background: esPresupuesto?"#616161":"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 22px",marginBottom:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
   const hdrLeft=el("div");
-  hdrLeft.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>setState({clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,scrollAfterCliente:c})},"← Volver"));
+  hdrLeft.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>{
+    const devsTemporales = state.dvTemporal.filter(d=>d.cliente===c);
+    if(devsTemporales.length > 0) {
+      if(!confirm("Si sale sin confirmar, no se grabarán los cambios de devolución. ¿Desea salir?")) return;
+    }
+    setState({clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c});
+  }},"← Volver"));
   hdrLeft.appendChild(el("h2",{style:{margin:"0",fontSize:"17px"}},c));
   const subtitleRow=el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginTop:"3px"}});
   subtitleRow.appendChild(el("p",{style:{margin:"0",fontSize:"12px",opacity:"0.75"}},cl.ruta));
@@ -1239,31 +1287,53 @@ function renderDetalleCliente() {
       psum.appendChild(el("span",{style:{fontSize:"12px",opacity:"0.85"}},`${fQ(pm)} · Solo consulta`));
     }
     phdr.appendChild(psum); box.appendChild(phdr);
-    const t=el("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:"13px"}});
+    const t=el("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:"13px",minWidth:"620px"}});
     const thead=el("thead"); const tr=el("tr");
     ["Producto","Unidades","P.Unit.","Monto","Dev. Unid.","Dev. Monto","Neto Unid.","Neto"].forEach((h,i)=>{
       tr.appendChild(el("th",{style:{padding:"9px 12px",textAlign:i===0?"left":"right",color:pedEsPre?"#888":"#555",fontWeight:"600",background:pedEsPre?"#e8e8e8":"#eef2f7",whiteSpace:"nowrap"}},h));
     });
     thead.appendChild(tr); t.appendChild(thead);
+    const tScroll=el("div",{style:{overflowX:"auto"}});
     const tbody=el("tbody");
     pData.lineas.forEach((l,li)=>{
       const lineaEsPre = pedEsPre || /^pre$/i.test(l.estPed||"");
       const ldU=devsCl.filter(d=>d.pedido===pedido&&d.producto===l.producto).reduce((s,d)=>s+d.unidades,0);
       const ldM=devsCl.filter(d=>d.pedido===pedido&&d.producto===l.producto).reduce((s,d)=>s+d.monto,0);
       const pu2=l.unidades>0?(l.monto/l.unidades):0;
-      const rowBgProd = lineaEsPre ? (li%2===0?"#ebebeb":"#e4e4e4") : (li%2===0?"#fafbfc":"#fff");
-      const puedeDev = !lineaEsPre && !state.bloqueados[c] && !state.modoHistorial && !esPresupuesto && l.unidades-ldU>0;
+      const esDevTotal = !lineaEsPre && ldU >= l.unidades;
+      const esDevParcial = !lineaEsPre && ldU > 0 && ldU < l.unidades;
+      // Color fila: rosado si dev total, amarillo si dev parcial
+      let rowBgProd;
+      if(lineaEsPre) rowBgProd = li%2===0?"#ebebeb":"#e4e4e4";
+      else if(esDevTotal) rowBgProd = "#fce4ec";
+      else if(esDevParcial) rowBgProd = "#fffde7";
+      else rowBgProd = li%2===0?"#fafbfc":"#fff";
+      const puedeDev = !lineaEsPre && !state.bloqueados[c] && !state.modoHistorial && !esPresupuesto;
       const row=el("tr",{style:{borderTop:"1px solid #f0f0f0",background:rowBgProd,cursor:puedeDev?"pointer":"default",transition:"background 0.15s"}});
       if(puedeDev){
-        row.addEventListener("mouseenter",()=>{ row.style.background=li%2===0?"#fff0f0":"#ffe8e8"; });
-        row.addEventListener("mouseleave",()=>{ row.style.background=rowBgProd; });
-        row.onclick = ()=>{
+        // Long press → devolución total del producto
+        let lpTimer = null;
+        row.addEventListener("mousedown", ()=>{ lpTimer=setTimeout(()=>{ lpTimer=null; devolverProductoTotal(c,pedido,l.producto); },600); });
+        row.addEventListener("mouseup", ()=>{ clearTimeout(lpTimer); });
+        row.addEventListener("mouseleave", ()=>{ clearTimeout(lpTimer); });
+        // Touch long press
+        row.addEventListener("touchstart", e=>{ lpTimer=setTimeout(()=>{ lpTimer=null; e.preventDefault(); devolverProductoTotal(c,pedido,l.producto); },600); },{passive:false});
+        row.addEventListener("touchend", ()=>{ clearTimeout(lpTimer); });
+        row.addEventListener("touchmove", ()=>{ clearTimeout(lpTimer); });
+        // Click normal → popup parcial (solo si no fue long press y quedan unidades)
+        row.addEventListener("click", ()=>{
+          if(lpTimer===null) return; // fue long press
           const dispU = l.unidades - ldU;
+          if(dispU <= 0) return;
           const dispM = l.monto - ldM;
-          setState({dvPopup:{cliente:c, pedido, producto:l.producto, dispU, dispM, unidades:"", codigo:"D01", error:""}});
-        };
+          setState({dvPopup:{cliente:c, pedido, producto:l.producto, dispU, dispM, unidades:"", error:""}});
+        });
+        if(!esDevTotal){
+          row.addEventListener("mouseenter",()=>{ row.style.background=esDevParcial?"#fff8e1":"#fff0f0"; });
+          row.addEventListener("mouseleave",()=>{ row.style.background=rowBgProd; });
+        }
       }
-      const colTexto = lineaEsPre ? "#888" : undefined;
+      const colTexto = lineaEsPre ? "#888" : esDevTotal ? "#c0392b" : undefined;
       // Nombre producto + badge si es Pre en pedido mixto
       const prodTd = el("td",{style:{padding:"9px 12px",...(colTexto?{color:colTexto}:{})}});
       prodTd.appendChild(document.createTextNode(l.producto));
@@ -1320,7 +1390,7 @@ function renderDetalleCliente() {
     const totNetoU = lineasEntregables.reduce((s,l)=>s+l.unidades,0) - devU;
     totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:devU>0?"#c0392b":"#1e3a5f"}},fN(totNetoU)));
     totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:"#1e3a5f"}},fQ(pm-devM)));
-    tbody.appendChild(totRow); t.appendChild(tbody); box.appendChild(t);
+    tbody.appendChild(totRow); t.appendChild(tbody); tScroll.appendChild(t); box.appendChild(tScroll);
     // Nota del vendedor
     if(pData.nota){
       const notaDiv=el("div",{style:{background:"#fffbea",borderTop:"1px solid #f0e68c",padding:"10px 16px",display:"flex",alignItems:"flex-start",gap:"8px"}});
@@ -1374,100 +1444,62 @@ function renderDetalleCliente() {
     inner.appendChild(motBox);
   }
 
-  // Devoluciones registradas
+  // Devoluciones registradas (combinadas: permanentes + temporales)
   if(devsCl.length>0){
+    const hayTemporales = devsTempCliente.length > 0;
     const dvBox=el("div",{style:{background:"#fff5f5",borderRadius:"12px",padding:"16px",marginBottom:"16px"}});
-    dvBox.appendChild(el("p",{style:{margin:"0 0 10px",fontWeight:"700",color:"#c0392b",fontSize:"14px"}},"↩️ Devoluciones registradas"));
+    const dvHdr=el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"10px"}});
+    dvHdr.appendChild(el("p",{style:{margin:"0",fontWeight:"700",color:"#c0392b",fontSize:"14px"}},"↩️ Devoluciones registradas"));
+    if(hayTemporales){
+      dvHdr.appendChild(el("span",{style:{background:"#ff9800",color:"#fff",borderRadius:"5px",padding:"2px 8px",fontSize:"11px",fontWeight:"700"}},"⏳ Pendientes de confirmar"));
+    }
+    dvBox.appendChild(dvHdr);
     devsCl.forEach(d=>{
-      const row=el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #ffd5d5",fontSize:"13px"}});
+      const esTemporal = devsTempCliente.some(dt=>dt.id===d.id);
+      const row=el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #ffd5d5",fontSize:"13px",opacity:esTemporal?"0.85":"1"}});
       const left=el("div");
-      left.appendChild(el("span",{style:{background:"#c0392b",color:"#fff",borderRadius:"4px",padding:"2px 7px",fontSize:"11px",fontWeight:"700",marginRight:"8px"}},d.codigo));
+      if(esTemporal){
+        left.appendChild(el("span",{style:{background:"#ff9800",color:"#fff",borderRadius:"4px",padding:"2px 6px",fontSize:"10px",fontWeight:"700",marginRight:"6px"}},"⏳"));
+      } else if(d.codigo){
+        left.appendChild(el("span",{style:{background:"#c0392b",color:"#fff",borderRadius:"4px",padding:"2px 7px",fontSize:"11px",fontWeight:"700",marginRight:"8px"}},d.codigo));
+      }
       left.appendChild(document.createTextNode(d.producto));
-      left.appendChild(el("span",{style:{color:"#888",marginLeft:"8px"}},`· ${fN(d.unidades)} unid. · ${d.desc}`));
+      left.appendChild(el("span",{style:{color:"#888",marginLeft:"8px"}},`· ${fN(d.unidades)} unid.`+(d.desc?` · ${d.desc}`:"")));
       const right=el("div",{style:{display:"flex",alignItems:"center",gap:"12px"}});
       right.appendChild(el("span",{style:{color:"#c0392b",fontWeight:"700"}},`-${fQ(d.monto)}`));
-      if(!state.modoHistorial && !state.bloqueados[c]) right.appendChild(el("button",{style:{background:"#ffe0e0",color:"#c0392b",border:"none",borderRadius:"5px",padding:"3px 9px",cursor:"pointer",fontSize:"12px"},onClick:()=>setState({devoluciones:state.devoluciones.filter(x=>x.id!==d.id)})},"✕"));
+      if(!state.modoHistorial && !state.bloqueados[c]){
+        const delBtn=el("button",{style:{background:"#ffe0e0",color:"#c0392b",border:"none",borderRadius:"5px",padding:"3px 9px",cursor:"pointer",fontSize:"12px"}},"✕");
+        delBtn.onclick=()=>{
+          if(esTemporal){
+            setState({dvTemporal:state.dvTemporal.filter(x=>x.id!==d.id)});
+          } else {
+            setState({devoluciones:state.devoluciones.filter(x=>x.id!==d.id)});
+          }
+        };
+        right.appendChild(delBtn);
+      }
       row.appendChild(left); row.appendChild(right);
       dvBox.appendChild(row);
     });
     inner.appendChild(dvBox);
   }
 
-  // Formulario devolución
-  if(state.showDvForm && !state.modoHistorial && !state.bloqueados[c] && !esPresupuesto){
-    const dvForm=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"20px",boxShadow:"0 2px 8px rgba(0,0,0,0.1)",marginBottom:"16px"}});
-    dvForm.appendChild(el("p",{style:{margin:"0 0 14px",fontWeight:"700",color:"#c0392b",fontSize:"15px"}},"↩️ Nueva Devolución"));
-    const grid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"12px"}});
-
-    // Pedido select
-    const pedDiv=el("div");
-    pedDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Pedido"));
-    const pedSel=el("select",{style:inp()});
-    pedSel.appendChild(el("option",{value:""},"-- Selecciona --"));
-    pedidosEntregables.forEach(([p])=>pedSel.appendChild(el("option",{value:p},p)));
-    pedSel.value=state.dvPedido;
-    pedSel.onchange=e=>setState({dvPedido:e.target.value,dvProducto:"",dvUnidades:"",dvMonto:""});
-    pedDiv.appendChild(pedSel); grid.appendChild(pedDiv);
-
-    // Producto select
-    const prDiv=el("div");
-    prDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Producto"));
-    const prSel=el("select",{style:inp()});
-    if(!state.dvPedido) prSel.disabled=true;
-    prSel.appendChild(el("option",{value:""},"-- Selecciona --"));
-    prodsSel.forEach(p=>prSel.appendChild(el("option",{value:p.producto},`${p.producto} (disp: ${fN(p.dispU)} u)`)));
-    prSel.value=state.dvProducto;
-    prSel.onchange=e=>setState({dvProducto:e.target.value,dvUnidades:"",dvMonto:""});
-    prDiv.appendChild(prSel); grid.appendChild(prDiv);
-
-    // Unidades
-    const uDiv=el("div");
-    const uLabel=el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Unidades");
-    if(prodSel) uLabel.appendChild(el("span",{style:{color:"#888",fontWeight:"400"}},` (máx ${fN(prodSel.dispU)})`));
-    uDiv.appendChild(uLabel);
-    const uInp=document.createElement("input");
-    uInp.type="number"; uInp.min="0"; uInp.placeholder="0";
-    uInp.style.cssText="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;font-family:sans-serif;";
-    if(!state.dvProducto) uInp.disabled=true;
-    uInp.value=state.dvUnidades||"";
-    uInp.addEventListener("input",e=>{
-      state.dvUnidades=e.target.value;
-      const pu=precioUnit(c,state.dvPedido,state.dvProducto);
-      if(pu>0){ state.dvMonto=((parseFloat(e.target.value)||0)*pu).toFixed(2); }
-      const mInpEl=document.getElementById("dv-monto-inp");
-      if(mInpEl) mInpEl.value=state.dvMonto;
-    });
-    uInp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); document.getElementById("dv-monto-inp")?.focus(); } });
-    uDiv.appendChild(uInp); grid.appendChild(uDiv);
-
-    // Monto
-    const mDiv=el("div");
-    mDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},["Monto Q ",el("span",{style:{color:"#27ae60",fontWeight:"400"}},"(auto)")]));
-    const mInp=document.createElement("input");
-    mInp.type="number"; mInp.min="0"; mInp.step="0.01"; mInp.placeholder="0.00"; mInp.id="dv-monto-inp";
-    mInp.style.cssText="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;background:#f9fff9;font-family:sans-serif;";
-    mInp.value=state.dvMonto||"";
-    mInp.addEventListener("input",e=>{ state.dvMonto=e.target.value; });
-    mInp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); document.getElementById("dv-motivo-sel")?.focus(); } });
-    mDiv.appendChild(mInp); grid.appendChild(mDiv);
-    dvForm.appendChild(grid);
-
-    // Motivo
-    const motDiv=el("div",{style:{marginBottom:"12px"}});
-    motDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Motivo"));
-    const motSel=el("select",{style:inp(),id:"dv-motivo-sel"});
-    MOTIVOS.forEach(m=>motSel.appendChild(el("option",{value:m.codigo},`${m.codigo} — ${m.desc}`)));
-    motSel.value=state.dvCodigo;
-    motSel.onchange=e=>setState({dvCodigo:e.target.value});
-    motDiv.appendChild(motSel); dvForm.appendChild(motDiv);
-
-    if(state.dvError) dvForm.appendChild(el("div",{style:{background:"#ffe0e0",color:"#c00",borderRadius:"6px",padding:"9px",marginBottom:"10px",fontSize:"12px"}},state.dvError));
-
-    const btns=el("div",{style:{display:"flex",gap:"10px"}});
-    btns.appendChild(el("button",{style:{flex:"1",background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"10px 0",fontSize:"13px",fontWeight:"700",cursor:"pointer"},onClick:guardarDev},"✅ Guardar"));
-    btns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px 0",fontSize:"13px",cursor:"pointer"},onClick:()=>setState({showDvForm:false,dvError:""})},"Cancelar"));
-    dvForm.appendChild(btns);
-    inner.appendChild(dvForm);
+  // ── Botón devolución total del cliente (solo si no bloqueado y no presupuesto) ──
+  if(!esPresupuesto && !state.modoHistorial && !state.bloqueados[c] && pedidosEntregables.length>0){
+    const btnDevTotal = el("button",{style:{width:"100%",background:"#e91e8c",color:"#fff",border:"none",borderRadius:"10px",padding:"13px 0",fontSize:"14px",fontWeight:"700",cursor:"pointer",marginBottom:"16px",fontFamily:"sans-serif"}});
+    btnDevTotal.textContent="↩️ Registrar devolución total";
+    btnDevTotal.onclick = ()=>{
+      // Marcar todos los productos como devueltos temporalmente
+      const lineas=[];
+      pedidosEntregables.forEach(([pedido,pData])=>{
+        pData.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{
+          lineas.push({id:Date.now()+Math.random(),cliente:c,pedido,producto:l.producto,unidades:l.unidades,monto:l.monto,codigo:"",desc:""});
+        });
+      });
+      const sinCliente = state.dvTemporal.filter(d=>d.cliente!==c);
+      setState({dvTemporal:[...sinCliente,...lineas], showDvForm:true, _dvTipo:"rosado"});
+    };
+    inner.appendChild(btnDevTotal);
   }
 
   // ── Modal desbloqueo (dentro del detalle) ──
@@ -1497,7 +1529,7 @@ function renderDetalleCliente() {
 
   if(!esPresupuesto && !state.modoHistorial) {
     if(estado && bloqueadoDetalle) {
-      const estadoLabel = estado==="verde"?"✅ Entrega efectiva":estado==="amarillo"?"🟡 Entrega parcial":"🌸 Devolución total";
+      const estadoLabel = estado==="verde"?"✅ Entrega efectiva":estado==="amarillo"?"🟡 Entrega parcial":"↩️ Devolución total";
       const estadoBg = estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":"#fce4ec";
       const estadoColor = estado==="verde"?"#27ae60":estado==="amarillo"?"#f9a825":"#e91e8c";
       const estadoBox = el("div",{style:{background:estadoBg,borderRadius:"12px",padding:"14px 18px",marginBottom:"16px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
@@ -1563,7 +1595,7 @@ function renderDetalleCliente() {
       inner.appendChild(confirmBox);
     }
   } else if(estado && (state.modoHistorial || esPresupuesto)) {
-    const estadoLabel = estado==="verde"?"✅ Entrega efectiva":estado==="amarillo"?"🟡 Entrega parcial":"🌸 Devolución total";
+    const estadoLabel = estado==="verde"?"✅ Entrega efectiva":estado==="amarillo"?"🟡 Entrega parcial":"↩️ Devolución total";
     const estadoBg = estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":"#fce4ec";
     const estadoColor = estado==="verde"?"#27ae60":estado==="amarillo"?"#f9a825":"#e91e8c";
     inner.appendChild(el("div",{style:{background:estadoBg,borderRadius:"12px",padding:"14px 18px",marginBottom:"16px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
@@ -1646,7 +1678,51 @@ function renderMain() {
     box.appendChild(btns); modal.appendChild(box); wrap.appendChild(modal);
   }
 
-  // Modal mover producto
+  // Modal long press cliente → devolución total
+  if(state.longPressModal){
+    const lpm = state.longPressModal;
+    const lModal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999",padding:"16px"}});
+    const lBox=el("div",{style:{background:"#fff",borderRadius:"14px",padding:"28px",width:"100%",maxWidth:"360px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
+    lBox.appendChild(el("div",{style:{fontSize:"36px",textAlign:"center",marginBottom:"8px"}},"↩️"));
+    lBox.appendChild(el("h3",{style:{margin:"0 0 4px",color:"#e91e8c",fontSize:"16px",textAlign:"center"}},"Devolución total"));
+    lBox.appendChild(el("p",{style:{margin:"0 0 18px",fontSize:"12px",color:"#888",textAlign:"center",wordBreak:"break-all"}},lpm.cliente));
+
+    lBox.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"6px"}},"Motivo de la devolución"));
+    const lMotSel=el("select",{style:{width:"100%",padding:"10px 12px",borderRadius:"8px",border:"2px solid #e91e8c",fontSize:"14px",boxSizing:"border-box",fontFamily:"sans-serif",marginBottom:"18px"}});
+    lMotSel.appendChild(el("option",{value:""},"-- Selecciona motivo --"));
+    MOTIVOS.forEach(m=>lMotSel.appendChild(el("option",{value:m.codigo},`${m.codigo} — ${m.desc}`)));
+    lMotSel.value=lpm.codigo||"";
+    lMotSel.onchange=e=>{ state.longPressModal.codigo=e.target.value; };
+    lBox.appendChild(lMotSel);
+
+    const lBtns=el("div",{style:{display:"flex",gap:"10px"}});
+    const lBtnConf=el("button",{style:{flex:"1",background:"#e91e8c",color:"#fff",border:"none",borderRadius:"8px",padding:"13px 0",cursor:"pointer",fontWeight:"700",fontSize:"14px",fontFamily:"sans-serif"}},"✅ Confirmar devolución total");
+    lBtnConf.onclick=()=>{
+      if(!lMotSel.value){ alert("Selecciona un motivo."); return; }
+      const motivo=MOTIVOS.find(x=>x.codigo===lMotSel.value)||{};
+      // Fusionar dvTemporal del cliente con devoluciones permanentes
+      const devsTemp=state.dvTemporal.filter(d=>d.cliente===lpm.cliente).map(d=>({...d,codigo:motivo.codigo,desc:motivo.desc}));
+      const devsOtros=state.devoluciones.filter(d=>d.cliente!==lpm.cliente);
+      const dvTempRest=state.dvTemporal.filter(d=>d.cliente!==lpm.cliente);
+      setState({
+        devoluciones:[...devsOtros,...devsTemp],
+        dvTemporal:dvTempRest,
+        estadoEntrega:{...state.estadoEntrega,[lpm.cliente]:"rosado"},
+        entregados:{...state.entregados,[lpm.cliente]:true},
+        bloqueados:{...state.bloqueados,[lpm.cliente]:true},
+        motivosDevTotal:{...state.motivosDevTotal,[lpm.cliente]:{codigo:motivo.codigo,desc:motivo.desc}},
+        longPressModal:null
+      });
+      showToast("↩️ Devolución total confirmada","#e91e8c");
+    };
+    lBtns.appendChild(lBtnConf);
+    lBtns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"13px 0",cursor:"pointer",fontFamily:"sans-serif"},onClick:()=>{
+      // Cancelar: limpiar dvTemporal de ese cliente
+      setState({dvTemporal:state.dvTemporal.filter(d=>d.cliente!==lpm.cliente),longPressModal:null});
+    }},"Cancelar"));
+    lBox.appendChild(lBtns);
+    lModal.appendChild(lBox); wrap.appendChild(lModal);
+  }
   if(state.showMoverProd){
     const clientes = Object.keys(state.clienteMap);
     const mModal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999",padding:"16px"}});
@@ -1988,7 +2064,20 @@ function renderListaRutas(container, porRuta) {
       const nameBtn=document.createElement("button");
       nameBtn.style.cssText=`background:none;border:none;cursor:pointer;color:${esPresupuesto?"#666":"#1e3a5f"};font-weight:600;font-size:13px;text-decoration:underline;padding:0;text-align:left;font-family:sans-serif;`;
       nameBtn.textContent=cliente;
-      nameBtn.onclick=()=>setState({clienteDetalle:cliente});
+      // Long press en nombre → devolución total del cliente
+      if(!esPresupuesto && !state.bloqueados[cliente] && !state.modoHistorial){
+        let lpTimer=null;
+        const startLp=()=>{ lpTimer=setTimeout(()=>{ lpTimer=null; devolverClienteTotal(cliente); },700); };
+        const cancelLp=()=>clearTimeout(lpTimer);
+        nameBtn.addEventListener("mousedown",startLp);
+        nameBtn.addEventListener("mouseup",()=>{ if(lpTimer){ cancelLp(); setState({clienteDetalle:cliente}); } });
+        nameBtn.addEventListener("mouseleave",cancelLp);
+        nameBtn.addEventListener("touchstart",e=>{ startLp(); },{passive:true});
+        nameBtn.addEventListener("touchend",()=>{ if(lpTimer){ cancelLp(); setState({clienteDetalle:cliente}); } });
+        nameBtn.addEventListener("touchmove",cancelLp);
+      } else {
+        nameBtn.onclick=()=>setState({clienteDetalle:cliente});
+      }
       nameTd.appendChild(nameBtn);
       // Badge presupuesto
       if(esPresupuesto){
