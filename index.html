@@ -47,7 +47,7 @@ const PASS_DESBLOQUEO = "1234";
 // ── Helpers ──
 const fQ = v => `Q ${Number(v||0).toLocaleString("es-GT",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const fN = v => Number(v||0).toLocaleString("es-GT");
-const hoy = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
+const hoy = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
 const toNum = v => { const n=parseFloat(String(v||"").replace(/[Q,\s]/g,"")); return isNaN(n)?0:n; };
 const esRuta = v => typeof v==="string" && /^ruta\s*\d+/i.test(v.trim());
 const esCliente = v => typeof v==="string" && /^PT\d+/i.test(v.trim());
