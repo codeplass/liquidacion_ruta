@@ -347,20 +347,18 @@ async function iniciarSesionConUsuario(usuario) {
 async function iniciarSesion() {
   const nombreInput = (state.appUser||"").trim();
   const pass = (state.appPass||"").trim();
-  if(!nombreInput || !pass) { setState({appPassError:"Ingresa usuario y contraseña."}); return; }
-  setState({appPassError:"", cargandoDatos:true});
+  if(!nombreInput || !pass) { state.appPassError="Ingresa usuario y contraseña."; render(); return; }
+  state.appPassError=""; state.cargandoDatos=true; render();
 
   try {
     const usuarios = await fbGet("usuarios") || {};
-    // Buscar usuario por nombre (case-insensitive)
     const found = Object.values(usuarios).find(u =>
       (u.nombre||"").toLowerCase() === nombreInput.toLowerCase()
     );
 
-    if(!found) { setState({appPassError:"Usuario no encontrado.", cargandoDatos:false}); return; }
+    if(!found) { state.appPassError="Usuario no encontrado."; state.cargandoDatos=false; render(); return; }
 
     if(found.rol === "admin" && found.email) {
-      // Admin: autenticar via Firebase Auth por detrás
       try {
         const cred = await auth.signInWithEmailAndPassword(found.email, pass);
         const usuario = {id:cred.user.uid, nombre:found.nombre, rol:"admin", email:found.email};
@@ -368,16 +366,15 @@ async function iniciarSesion() {
       } catch(e) {
         let msg = "Contraseña incorrecta.";
         if(e.code==="auth/too-many-requests") msg="Demasiados intentos. Intenta más tarde.";
-        setState({appPassError:msg, cargandoDatos:false});
+        state.appPassError=msg; state.cargandoDatos=false; render();
       }
     } else {
-      // Repartidor: validar contra DB directamente
-      if(found.pass !== pass) { setState({appPassError:"Contraseña incorrecta.", cargandoDatos:false}); return; }
+      if(found.pass !== pass) { state.appPassError="Contraseña incorrecta."; state.cargandoDatos=false; render(); return; }
       const usuario = {id:found.id, nombre:found.nombre, rol:found.rol||"repartidor"};
       await iniciarSesionConUsuario(usuario);
     }
   } catch(e) {
-    setState({appPassError:"Error al conectar. Verifica tu conexión.", cargandoDatos:false});
+    state.appPassError="Error al conectar. Verifica tu conexión."; state.cargandoDatos=false; render();
   }
 }
 
@@ -2528,7 +2525,7 @@ function renderLogin() {
   passInp.value = state.appPass || "";
   passInp.style.cssText = "width:100%;padding:10px 40px 10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
   passInp.addEventListener("input", e => { state.appPass = e.target.value; });
-  passInp.addEventListener("keydown", e => { if(e.key==="Enter") iniciarSesion(); });
+  passInp.addEventListener("keydown", e => { if(e.key==="Enter") { document.activeElement?.blur(); iniciarSesion(); } });
   const eyeBtn = document.createElement("button");
   eyeBtn.type = "button"; eyeBtn.textContent = state.verPass ? "🙈" : "👁️";
   eyeBtn.style.cssText = "position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;color:#888;padding:0;line-height:1;";
@@ -2542,7 +2539,7 @@ function renderLogin() {
   loginBtn.textContent = state.cargandoDatos ? "Ingresando..." : "Ingresar";
   loginBtn.disabled = state.cargandoDatos;
   loginBtn.style.cssText = "width:100%;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-bottom:12px;";
-  loginBtn.addEventListener("click", iniciarSesion);
+  loginBtn.addEventListener("click", ()=>{ document.activeElement?.blur(); iniciarSesion(); });
   box.appendChild(loginBtn);
 
   // Olvidé mi contraseña
