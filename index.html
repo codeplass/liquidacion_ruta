@@ -308,6 +308,7 @@ function borrarSesionLocal() {
   try { localStorage.removeItem("liq_session"); } catch(e){} }
 
 async function iniciarSesionConUsuario(usuario) {
+  _loginEnProceso = false;
   const admin = usuario.rol === "admin";
   guardarSesionLocal(usuario);
   setState({autenticado:true, esAdmin:admin, usuarioActual:usuario, appPassError:"", cargandoDatos:true});
@@ -344,11 +345,42 @@ async function iniciarSesionConUsuario(usuario) {
   }
 }
 
+let _loginEnProceso = false;
+
 async function iniciarSesion() {
+  if(_loginEnProceso) return;
   const nombreInput = (state.appUser||"").trim();
   const pass = (state.appPass||"").trim();
   if(!nombreInput || !pass) { state.appPassError="Ingresa usuario y contraseña."; render(); return; }
-  state.appPassError=""; state.cargandoDatos=true; render();
+  state.appPassError=""; state.cargandoDatos=true; _loginEnProceso=true; render();
+
+  try {
+    const usuarios = await fbGet("usuarios") || {};
+    const found = Object.values(usuarios).find(u =>
+      (u.nombre||"").toLowerCase() === nombreInput.toLowerCase()
+    );
+
+    if(!found) { state.appPassError="Usuario no encontrado."; state.cargandoDatos=false; _loginEnProceso=false; render(); return; }
+
+    if(found.rol === "admin" && found.email) {
+      try {
+        const cred = await auth.signInWithEmailAndPassword(found.email, pass);
+        const usuario = {id:cred.user.uid, nombre:found.nombre, rol:"admin", email:found.email};
+        await iniciarSesionConUsuario(usuario);
+      } catch(e) {
+        let msg = "Contraseña incorrecta.";
+        if(e.code==="auth/too-many-requests") msg="Demasiados intentos. Intenta más tarde.";
+        state.appPassError=msg; state.cargandoDatos=false; _loginEnProceso=false; render();
+      }
+    } else {
+      if(found.pass !== pass) { state.appPassError="Contraseña incorrecta."; state.cargandoDatos=false; _loginEnProceso=false; render(); return; }
+      const usuario = {id:found.id, nombre:found.nombre, rol:found.rol||"repartidor"};
+      await iniciarSesionConUsuario(usuario);
+    }
+  } catch(e) {
+    state.appPassError="Error al conectar. Verifica tu conexión."; state.cargandoDatos=false; _loginEnProceso=false; render();
+  }
+}
 
   try {
     const usuarios = await fbGet("usuarios") || {};
@@ -2801,8 +2833,8 @@ function renderAdminUsuarios() {
 
 // ── Arranque: Firebase Auth para admin, DB para repartidores ──
 auth.onAuthStateChanged(async (user) => {
+  if(_loginEnProceso) return; // ya hay login en proceso, ignorar
   if(user && !state.autenticado) {
-    // Usuario admin con sesión activa en Firebase Auth
     try {
       const perfil = await fbGet("usuarios/"+user.uid);
       if(perfil && perfil.rol === "admin") {
