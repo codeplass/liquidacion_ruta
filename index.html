@@ -208,10 +208,7 @@ let state = {
 
 function setState(updates) {
   Object.assign(state, updates);
-  // No re-renderizar si el usuario está escribiendo en un input/textarea/select
-  const activo = document.activeElement;
-  const escribiendo = activo && (activo.tagName==="INPUT"||activo.tagName==="TEXTAREA"||activo.tagName==="SELECT") && !activo.dataset.rerender;
-  if(!escribiendo) render();
+  render();
   // Guardado automático en Firebase cuando cambian datos del día
   const camposGuardar = ["estadoEntrega","entregados","bloqueados",
     "motivosDevTotal","descuentos","comentarios","billetes","monedas",
@@ -299,6 +296,9 @@ function precioUnit(cliente,pedido,producto) {
 
 // ── Acciones ──
 // ── Auth con Firebase Auth ──
+let _loginEnProceso = false;
+let _authResuelto = false;
+
 function guardarSesionLocal(usuario) {
   try { localStorage.setItem("liq_session", JSON.stringify(usuario)); } catch(e){}
 }
@@ -345,8 +345,6 @@ async function iniciarSesionConUsuario(usuario) {
   }
 }
 
-let _loginEnProceso = false;
-
 async function iniciarSesion() {
   if(_loginEnProceso) return;
   const nombreInput = (state.appUser||"").trim();
@@ -379,34 +377,6 @@ async function iniciarSesion() {
     }
   } catch(e) {
     state.appPassError="Error al conectar. Verifica tu conexión."; state.cargandoDatos=false; _loginEnProceso=false; render();
-  }
-}
-
-  try {
-    const usuarios = await fbGet("usuarios") || {};
-    const found = Object.values(usuarios).find(u =>
-      (u.nombre||"").toLowerCase() === nombreInput.toLowerCase()
-    );
-
-    if(!found) { state.appPassError="Usuario no encontrado."; state.cargandoDatos=false; render(); return; }
-
-    if(found.rol === "admin" && found.email) {
-      try {
-        const cred = await auth.signInWithEmailAndPassword(found.email, pass);
-        const usuario = {id:cred.user.uid, nombre:found.nombre, rol:"admin", email:found.email};
-        await iniciarSesionConUsuario(usuario);
-      } catch(e) {
-        let msg = "Contraseña incorrecta.";
-        if(e.code==="auth/too-many-requests") msg="Demasiados intentos. Intenta más tarde.";
-        state.appPassError=msg; state.cargandoDatos=false; render();
-      }
-    } else {
-      if(found.pass !== pass) { state.appPassError="Contraseña incorrecta."; state.cargandoDatos=false; render(); return; }
-      const usuario = {id:found.id, nombre:found.nombre, rol:found.rol||"repartidor"};
-      await iniciarSesionConUsuario(usuario);
-    }
-  } catch(e) {
-    state.appPassError="Error al conectar. Verifica tu conexión."; state.cargandoDatos=false; render();
   }
 }
 
@@ -2831,16 +2801,13 @@ function renderAdminUsuarios() {
   return wrap;
 }
 
-// ── Arranque: Firebase Auth para admin, DB para repartidores ──
 // ── Arranque ──
-let _authResuelto = false;
-
-// Si Firebase tarda más de 3 segundos, mostrar login de todas formas
-setTimeout(()=>{ if(!_authResuelto) { _authResuelto=true; render(); } }, 3000);
+// Si Firebase tarda más de 2 segundos, mostrar login de todas formas
+setTimeout(()=>{ if(!_authResuelto) { _authResuelto=true; render(); } }, 2000);
 
 auth.onAuthStateChanged(async (user) => {
   if(_loginEnProceso) return;
-  if(!_authResuelto) _authResuelto = true;
+  _authResuelto = true;
   if(user && !state.autenticado) {
     try {
       const perfil = await fbGet("usuarios/"+user.uid);
