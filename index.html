@@ -41,8 +41,9 @@ const MOTIVOS = [
   {codigo:"D06",desc:"Producto mal cargado en bodega"},
 ];
 const BILLETES = [1,5,10,20,50,100,200];
-const APP_PASS = "entregascodeplass123";
 const PASS_DESBLOQUEO = "1234";
+// Contraseña de administrador inicial (solo para crear el primer usuario)
+const ADMIN_BOOTSTRAP_PASS = "entregascodeplass123";
 
 // ── Helpers ──
 const fQ = v => `Q ${Number(v||0).toLocaleString("es-GT",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
@@ -134,9 +135,17 @@ let state = {
   esAdmin: false,
   verPass: false,
   appPass: "",
+  appUser: "",
   appPassError: "",
+  loginRecordar: true,
+  usuarioActual: null, // {id, nombre, rol}
   cargandoDatos: false,
   screen: "upload",
+  // Admin usuarios
+  adminUsuarios: {},
+  screenAdmin: null, // "usuarios"
+  adminUsuForm: null, // {id,nombre,pass,rol,editando}
+  adminUsuError: "",
   fileName: "",
   fecha: hoy(),
   clienteMap: {},
@@ -277,65 +286,116 @@ function precioUnit(cliente,pedido,producto) {
 }
 
 // ── Acciones ──
-async function iniciarSesion() {
-  if(state.appPass===APP_PASS){
-    const params=new URLSearchParams(window.location.search);
-    const admin=params.get("admin")==="1";
-    setState({autenticado:true,esAdmin:admin,appPassError:"",cargandoDatos:true});
-    const datos=await fbGet("datos-dia");
-    if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length>0){
-      const yaConfirmado = datos.confirmado === true;
-      if(yaConfirmado && admin){
-        // Mostrar pantalla de opciones para admin
-        setState({
-          clienteMap:datos.clienteMap,
-          fileName:datos.fileName||"",
-          fecha:hoy(),
-          estadoEntrega:datos.estadoEntrega||{},
-          entregados:datos.entregados||{},
-          bloqueados:datos.bloqueados||{},
-          devoluciones:datos.devoluciones||[],
-          motivosDevTotal:datos.motivosDevTotal||{},
-          descuentos:datos.descuentos||{},
-          comentarios:datos.comentarios||{},
-          billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
-          monedas:datos.monedas||"",
-          deposito:datos.deposito||"",
-          transferencia:datos.transferencia||"",
-          gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}],
-          confirmado:true,
-          screen:"opciones",
-          cargandoDatos:false
-        });
-      } else {
-        setState({
-          clienteMap:datos.clienteMap,
-          fileName:datos.fileName||"",
-          fecha:hoy(),
-          screen:"main",
-          cargandoDatos:false,
-          confirmado:yaConfirmado,
-          estadoEntrega:datos.estadoEntrega||{},
-          entregados:datos.entregados||{},
-          bloqueados:datos.bloqueados||{},
-          devoluciones:datos.devoluciones||[],
-          motivosDevTotal:datos.motivosDevTotal||{},
-          descuentos:datos.descuentos||{},
-          comentarios:datos.comentarios||{},
-          billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
-          monedas:datos.monedas||"",
-          deposito:datos.deposito||"",
-          transferencia:datos.transferencia||"",
-          gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}]
-        });
-      }
+// ── Auth helpers ──
+function guardarSesionLocal(usuario) {
+  try { localStorage.setItem("liq_session", JSON.stringify(usuario)); } catch(e){}
+}
+function leerSesionLocal() {
+  try { const s=localStorage.getItem("liq_session"); return s?JSON.parse(s):null; } catch(e){return null;} }
+function borrarSesionLocal() {
+  try { localStorage.removeItem("liq_session"); } catch(e){} }
+
+async function iniciarSesionConUsuario(usuario) {
+  const admin = usuario.rol === "admin";
+  if(state.loginRecordar) guardarSesionLocal(usuario);
+  setState({autenticado:true, esAdmin:admin, usuarioActual:usuario, appPassError:"", cargandoDatos:true});
+  const datos=await fbGet("datos-dia");
+  if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length>0){
+    const yaConfirmado = datos.confirmado === true;
+    if(yaConfirmado && admin){
+      setState({
+        clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:hoy(),
+        estadoEntrega:datos.estadoEntrega||{}, entregados:datos.entregados||{},
+        bloqueados:datos.bloqueados||{}, devoluciones:datos.devoluciones||[],
+        motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
+        comentarios:datos.comentarios||{},
+        billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
+        monedas:datos.monedas||"", deposito:datos.deposito||"", transferencia:datos.transferencia||"",
+        gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}],
+        confirmado:true, screen:"opciones", cargandoDatos:false
+      });
     } else {
-      // Admin va a pantalla de inicio con opciones, repartidor ve nodatos
-      setState({screen:admin?"inicio":"nodatos",cargandoDatos:false});
+      setState({
+        clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:hoy(),
+        screen:admin?"menu":"main", cargandoDatos:false, confirmado:yaConfirmado,
+        estadoEntrega:datos.estadoEntrega||{}, entregados:datos.entregados||{},
+        bloqueados:datos.bloqueados||{}, devoluciones:datos.devoluciones||[],
+        motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
+        comentarios:datos.comentarios||{},
+        billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
+        monedas:datos.monedas||"", deposito:datos.deposito||"", transferencia:datos.transferencia||"",
+        gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}]
+      });
     }
   } else {
-    setState({appPassError:"Contraseña incorrecta."});
+    setState({screen:admin?"menu":"nodatos", cargandoDatos:false});
   }
+}
+
+async function iniciarSesion() {
+  const usuario = state.appUser.trim();
+  const pass = state.appPass;
+  if(!usuario || !pass) { setState({appPassError:"Ingresa usuario y contraseña."}); return; }
+
+  // Bootstrap: si no hay usuarios en Firebase, el primer admin se crea con clave fija
+  const usuarios = await fbGet("usuarios") || {};
+
+  // Si no hay usuarios y se usa la clave bootstrap, crear admin inicial
+  if(Object.keys(usuarios).length === 0 && pass === ADMIN_BOOTSTRAP_PASS) {
+    const adminId = "admin";
+    const adminUser = {id:adminId, nombre:"Administrador", pass:ADMIN_BOOTSTRAP_PASS, rol:"admin"};
+    await fbSet("usuarios/"+adminId, adminUser);
+    await iniciarSesionConUsuario(adminUser);
+    return;
+  }
+
+  // Buscar usuario por nombre (case-insensitive) o id
+  const found = Object.values(usuarios).find(u =>
+    u.nombre?.toLowerCase() === usuario.toLowerCase() || u.id?.toLowerCase() === usuario.toLowerCase()
+  );
+  if(!found || found.pass !== pass) {
+    setState({appPassError:"Usuario o contraseña incorrectos."});
+    return;
+  }
+  await iniciarSesionConUsuario(found);
+}
+
+function cerrarSesion() {
+  borrarSesionLocal();
+  setState({
+    autenticado:false, esAdmin:false, usuarioActual:null,
+    screen:"upload", clienteMap:{}, confirmado:false,
+    appPass:"", appUser:"", appPassError:""
+  });
+}
+
+// ── Admin usuarios ──
+async function cargarUsuarios() {
+  const usu = await fbGet("usuarios") || {};
+  setState({adminUsuarios: usu, screenAdmin:"usuarios"});
+}
+
+async function guardarUsuario() {
+  const f = state.adminUsuForm;
+  if(!f) return;
+  const nombre = (f.nombre||"").trim();
+  const pass = (f.pass||"").trim();
+  const rol = f.rol || "repartidor";
+  if(!nombre || !pass) { setState({adminUsuError:"Nombre y contraseña son requeridos."}); return; }
+  const id = f.editando ? f.id : nombre.toLowerCase().replace(/[^a-z0-9]/g,"_")+"_"+Date.now();
+  const usuario = {id, nombre, pass, rol};
+  await fbSet("usuarios/"+id, usuario);
+  const usu = await fbGet("usuarios") || {};
+  setState({adminUsuarios:usu, adminUsuForm:null, adminUsuError:""});
+  showToast("✅ Usuario guardado","#27ae60");
+}
+
+async function eliminarUsuario(id) {
+  if(!confirm("¿Eliminar este usuario?")) return;
+  await fbRemove("usuarios/"+id);
+  const usu = await fbGet("usuarios") || {};
+  setState({adminUsuarios:usu});
+  showToast("Usuario eliminado","#c0392b");
 }
 
 async function procesarArchivo(file) {
@@ -428,8 +488,9 @@ function renderOpciones() {
     billetes:Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,
     fecha:hoy()
   })));
+  box.appendChild(btn("👥","Administrar usuarios","#6c3483",cargarUsuarios));
 
-  const salir=el("button",{style:{background:"none",border:"none",color:"#aaa",fontSize:"13px",cursor:"pointer",marginTop:"8px"},onClick:()=>setState({autenticado:false,esAdmin:false,screen:"upload",clienteMap:{},confirmado:false})},"🚪 Cerrar sesión");
+  const salir=el("button",{style:{background:"none",border:"none",color:"#aaa",fontSize:"13px",cursor:"pointer",marginTop:"8px"},onClick:cerrarSesion},"🚪 Cerrar sesión");
   box.appendChild(salir);
   wrap.appendChild(box);
   return wrap;
@@ -734,26 +795,15 @@ function toggleEntregado(cliente) {
 function intentarDesbloquear() {
   if(state.passInput===PASS_DESBLOQUEO){
     const c=state.passCliente;
-    const tipoAnterior=state.estadoEntrega[c];
 
+    // Solo quitar el bloqueo — mantener estado, devoluciones y motivos intactos
     const nuevoBloq={...state.bloqueados}; delete nuevoBloq[c];
-    const nuevoEstado={...state.estadoEntrega}; delete nuevoEstado[c];
-    const nuevoEnt={...state.entregados}; delete nuevoEnt[c];
 
-    const updates={bloqueados:nuevoBloq, estadoEntrega:nuevoEstado, entregados:nuevoEnt, passCliente:null, passInput:"", passError:""};
-
-    // Si era devolución total: limpiar motivo guardado
-    if(tipoAnterior==="rosado"){
-      const nuevosMot={...state.motivosDevTotal}; delete nuevosMot[c];
-      updates.motivosDevTotal=nuevosMot;
-    }
-
-    // Si era entrega parcial: borrar devoluciones de ese cliente
-    if(tipoAnterior==="amarillo"){
-      updates.devoluciones=state.devoluciones.filter(d=>d.cliente!==c);
-    }
-
-    setState(updates);
+    setState({
+      bloqueados: nuevoBloq,
+      passCliente: null, passInput: "", passError: ""
+    });
+    showToast("🔓 Entrega desbloqueada para edición","#e67e22");
   } else {
     setState({passError:"Contraseña incorrecta."});
   }
@@ -924,62 +974,21 @@ function renderInicio() {
     <button id="btnCargar" style="width:100%;background:#1e3a5f;color:#fff;border:none;border-radius:10px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;margin-bottom:12px;font-family:sans-serif;">
       📂 Cargar archivo de entregas
     </button>
-    <button id="btnHistorial" style="width:100%;background:#f0f4f8;color:#1e3a5f;border:none;border-radius:10px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;">
+    <button id="btnHistorial" style="width:100%;background:#f0f4f8;color:#1e3a5f;border:none;border-radius:10px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;margin-bottom:12px;font-family:sans-serif;">
       📅 Ver historial de liquidaciones
     </button>
+    <button id="btnSalir" style="background:none;border:none;color:#aaa;font-size:13px;cursor:pointer;font-family:sans-serif;">🚪 Cerrar sesión</button>
   `;
   wrap.appendChild(box);
   setTimeout(() => {
     document.getElementById("btnCargar").addEventListener("click", () => setState({screen:"upload"}));
     document.getElementById("btnHistorial").addEventListener("click", abrirHistorial);
+    document.getElementById("btnSalir").addEventListener("click", cerrarSesion);
   }, 50);
   return wrap;
 }
 
-function renderLogin() {
-  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}});
-  const box = el("div",{style:{background:"#fff",borderRadius:"16px",padding:"36px",width:"340px",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
-  box.appendChild(el("div",{style:{fontSize:"48px",marginBottom:"12px"}},"📦"));
-  box.appendChild(el("h2",{style:{margin:"0 0 4px",color:"#1e3a5f",fontSize:"20px"}},"Liquidación de Entregas"));
-  box.appendChild(el("p",{style:{margin:"0 0 24px",fontSize:"13px",color:"#888"}},"Ingresa la contraseña para continuar"));
 
-  const passWrap = el("div",{style:{position:"relative",marginBottom:"8px"}});
-  const passInp = document.createElement("input");
-  passInp.type = state.verPass ? "text" : "password";
-  passInp.placeholder = "Contraseña";
-  passInp.style.cssText = "width:100%;padding:10px 40px 10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
-  passInp.addEventListener("input", e => { state.appPass = e.target.value; });
-  passInp.addEventListener("keydown", e => { if(e.key==="Enter") iniciarSesion(); });
-  setTimeout(()=>passInp.focus(), 100);
-
-  const eyeBtn = document.createElement("button");
-  eyeBtn.type = "button";
-  eyeBtn.textContent = state.verPass ? "🙈" : "👁️";
-  eyeBtn.style.cssText = "position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;color:#888;padding:0;line-height:1;";
-  eyeBtn.addEventListener("click", () => {
-    state.verPass = !state.verPass;
-    passInp.type = state.verPass ? "text" : "password";
-    eyeBtn.textContent = state.verPass ? "🙈" : "👁️";
-  });
-
-  passWrap.appendChild(passInp);
-  passWrap.appendChild(eyeBtn);
-  box.appendChild(passWrap);
-
-  if(state.appPassError) {
-    const errP = el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.appPassError);
-    box.appendChild(errP);
-  }
-
-  const loginBtn = document.createElement("button");
-  loginBtn.textContent = "Ingresar";
-  loginBtn.style.cssText = "width:100%;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;margin-top:4px;font-family:sans-serif;";
-  loginBtn.addEventListener("click", iniciarSesion);
-  box.appendChild(loginBtn);
-
-  wrap.appendChild(box);
-  return wrap;
-}
 
 function renderCargando() {
   return el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}},
@@ -1002,9 +1011,12 @@ function renderNoDatos() {
 
 function renderUpload() {
   return el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}},
-    el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"18px 28px",marginBottom:"24px",width:"100%",maxWidth:"700px"}},
-      el("h1",{style:{margin:"0",fontSize:"22px"}},"📦 Liquidación de Entregas"),
-      el("p",{style:{margin:"4px 0 0",fontSize:"12px",opacity:"0.7"}},"Panel de Administrador")
+    el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"18px 28px",marginBottom:"24px",width:"100%",maxWidth:"700px",display:"flex",justifyContent:"space-between",alignItems:"center"}},
+      el("div",{},
+        el("h1",{style:{margin:"0",fontSize:"22px"}},"📦 Liquidación de Entregas"),
+        el("p",{style:{margin:"4px 0 0",fontSize:"12px",opacity:"0.7"}},"Panel de Administrador")
+      ),
+      el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"menu"})},"☰ Menú")
     ),
     el("div",{style:{background:"#fff",borderRadius:"12px",padding:"16px",marginBottom:"16px",width:"100%",maxWidth:"700px"}},
       el("label",{style:{fontSize:"13px",fontWeight:"600",color:"#555"}},"Fecha de liquidación"),
@@ -1032,7 +1044,7 @@ function renderHistorial() {
   wrap.appendChild(inner);
   const hdr=el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 24px",marginBottom:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
   const hdrL=el("div");
-  hdrL.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>setState({screen:"inicio",modoHistorial:false})},"<- Volver"));
+  hdrL.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>setState({screen:"menu",modoHistorial:false})},"← Volver"));
   hdrL.appendChild(el("h1",{style:{margin:"0",fontSize:"20px"}},"Historial de Liquidaciones"));
   hdr.appendChild(hdrL); inner.appendChild(hdr);
   if(fechas.length===0){
@@ -1885,10 +1897,11 @@ function renderMain() {
     if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(220,53,69,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:async()=>{
       if(!confirm("¿Seguro que deseas quitar el archivo del día? Se borrarán todos los datos no confirmados.")) return;
       await fbRemove("datos-dia");
-      setState({screen:"inicio",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()});
+      setState({screen:"menu",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()});
     }},"🗑️ Quitar archivo"));
+    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"menu"})},"☰ Menú"));
   }
-  hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"600"},onClick:()=>setState({autenticado:false,esAdmin:false,screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()})},"🚪 Salir"));
+  hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"600"},onClick:cerrarSesion},"🚪 Salir"));
   hdr.appendChild(hdrBtns); inner.appendChild(hdr);
 
   // Cards
@@ -2362,6 +2375,8 @@ function render() {
   let content;
   if(!state.autenticado) content=renderLogin();
   else if(state.cargandoDatos) content=renderCargando();
+  else if(state.screenAdmin==="usuarios") content=renderAdminUsuarios();
+  else if(state.screen==="menu") content=renderMenu();
   else if(state.screen==="inicio") content=renderInicio();
   else if(state.screen==="nodatos") content=renderNoDatos();
   else if(state.screen==="upload") content=renderUpload();
@@ -2392,7 +2407,205 @@ function render() {
   }
 }
 
-render();
+// ── Render Login (nuevo: usuario + contraseña + recordar) ──
+function renderLogin() {
+  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}});
+  const box = el("div",{style:{background:"#fff",borderRadius:"16px",padding:"36px",width:"340px",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
+  box.appendChild(el("div",{style:{fontSize:"48px",marginBottom:"12px"}},"📦"));
+  box.appendChild(el("h2",{style:{margin:"0 0 4px",color:"#1e3a5f",fontSize:"20px"}},"Liquidación de Entregas"));
+  box.appendChild(el("p",{style:{margin:"0 0 24px",fontSize:"13px",color:"#888"}},"Ingresa tus credenciales para continuar"));
+
+  // Usuario
+  const userInp = document.createElement("input");
+  userInp.type = "text"; userInp.placeholder = "Usuario";
+  userInp.value = state.appUser || "";
+  userInp.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:10px;";
+  userInp.addEventListener("input", e => { state.appUser = e.target.value; });
+  userInp.addEventListener("keydown", e => { if(e.key==="Enter") passInp.focus(); });
+  setTimeout(()=>userInp.focus(), 100);
+  box.appendChild(userInp);
+
+  // Contraseña
+  const passWrap = el("div",{style:{position:"relative",marginBottom:"8px"}});
+  const passInp = document.createElement("input");
+  passInp.type = state.verPass ? "text" : "password";
+  passInp.placeholder = "Contraseña";
+  passInp.value = state.appPass || "";
+  passInp.style.cssText = "width:100%;padding:10px 40px 10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
+  passInp.addEventListener("input", e => { state.appPass = e.target.value; });
+  passInp.addEventListener("keydown", e => { if(e.key==="Enter") iniciarSesion(); });
+  const eyeBtn = document.createElement("button");
+  eyeBtn.type = "button"; eyeBtn.textContent = state.verPass ? "🙈" : "👁️";
+  eyeBtn.style.cssText = "position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;color:#888;padding:0;line-height:1;";
+  eyeBtn.addEventListener("click", () => { state.verPass=!state.verPass; passInp.type=state.verPass?"text":"password"; eyeBtn.textContent=state.verPass?"🙈":"👁️"; });
+  passWrap.appendChild(passInp); passWrap.appendChild(eyeBtn);
+  box.appendChild(passWrap);
+
+  if(state.appPassError) box.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.appPassError));
+
+  // Checkbox recordar dispositivo
+  const recRow = el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"14px",marginTop:"4px",justifyContent:"flex-start"}});
+  const recChk = document.createElement("input"); recChk.type="checkbox"; recChk.checked=state.loginRecordar;
+  recChk.style.cssText="width:16px;height:16px;cursor:pointer;accent-color:#1e3a5f;";
+  recChk.addEventListener("change",e=>{state.loginRecordar=e.target.checked;});
+  recRow.appendChild(recChk);
+  recRow.appendChild(el("label",{style:{fontSize:"13px",color:"#555",cursor:"pointer"},onClick:()=>{recChk.checked=!recChk.checked;state.loginRecordar=recChk.checked;}},"Recordar en este dispositivo"));
+  box.appendChild(recRow);
+
+  const loginBtn = document.createElement("button");
+  loginBtn.textContent = "Ingresar";
+  loginBtn.style.cssText = "width:100%;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  loginBtn.addEventListener("click", iniciarSesion);
+  box.appendChild(loginBtn);
+  wrap.appendChild(box);
+  return wrap;
+}
+
+// ── Menú principal (para todos los roles después de login) ──
+function renderMenu() {
+  const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
+  const box=el("div",{style:{background:"#fff",borderRadius:"16px",padding:"36px 28px",maxWidth:"380px",width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
+  const nombre = state.usuarioActual?.nombre || "Usuario";
+  const esAdmin = state.esAdmin;
+  box.appendChild(el("div",{style:{fontSize:"48px",marginBottom:"10px"}},"📦"));
+  box.appendChild(el("h2",{style:{margin:"0 0 4px",color:"#1e3a5f",fontSize:"20px"}},"Liquidación de Entregas"));
+  box.appendChild(el("p",{style:{margin:"0 0 24px",fontSize:"13px",color:"#888"}},"Bienvenido, "+nombre+" "+(esAdmin?"👑":"")));
+
+  const btn=(icon,label,bg,color,onClick)=>{
+    const b=el("button",{style:{width:"100%",background:bg,color:color||"#fff",border:"none",borderRadius:"12px",padding:"15px 20px",fontSize:"15px",fontWeight:"700",cursor:"pointer",marginBottom:"12px",display:"flex",alignItems:"center",gap:"14px",textAlign:"left"},onClick});
+    b.appendChild(el("span",{style:{fontSize:"24px"}},icon));
+    b.appendChild(el("span",{},label));
+    return b;
+  };
+
+  // Ver entregas del día (siempre)
+  const tieneData = Object.keys(state.clienteMap||{}).length>0;
+  if(tieneData) {
+    box.appendChild(btn("📋","Ver entregas del día","#1e3a5f","#fff",()=>setState({screen:"main"})));
+  }
+
+  if(esAdmin) {
+    if(!tieneData) box.appendChild(btn("📂","Cargar archivo de entregas","#1e3a5f","#fff",()=>setState({screen:"upload"})));
+    else box.appendChild(btn("📂","Cargar nuevo archivo","#7f8c8d","#fff",()=>setState({
+      screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},
+      bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],
+      billetes:Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()
+    })));
+    box.appendChild(btn("📅","Ver historial","#2980b9","#fff",abrirHistorial));
+    box.appendChild(btn("👥","Administrar usuarios","#6c3483","#fff",cargarUsuarios));
+  } else {
+    if(!tieneData) {
+      box.appendChild(el("div",{style:{background:"#f0f4f8",borderRadius:"12px",padding:"20px",marginBottom:"12px",color:"#888",fontSize:"13px"}},"⏳ Esperando que el administrador cargue las entregas del día."));
+    }
+    box.appendChild(btn("📅","Ver historial","#2980b9","#fff",abrirHistorial));
+  }
+
+  box.appendChild(el("button",{style:{background:"none",border:"none",color:"#aaa",fontSize:"13px",cursor:"pointer",marginTop:"8px"},onClick:cerrarSesion},"🚪 Cerrar sesión"));
+  wrap.appendChild(box);
+  return wrap;
+}
+
+// ── Admin: gestión de usuarios ──
+function renderAdminUsuarios() {
+  const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
+  const inner=el("div",{style:{maxWidth:"600px",margin:"0 auto"}});
+  wrap.appendChild(inner);
+
+  const hdr=el("div",{style:{background:"#6c3483",color:"#fff",borderRadius:"12px",padding:"16px 24px",marginBottom:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
+  hdr.appendChild(el("div",{},[
+    el("h1",{style:{margin:"0",fontSize:"20px"}},"👥 Usuarios"),
+    el("p",{style:{margin:"4px 0 0",fontSize:"12px",opacity:"0.7"}},"Administrar acceso a la aplicación")
+  ]));
+  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.2)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screenAdmin:null,screen:"menu"})},"← Volver"));
+  inner.appendChild(hdr);
+
+  // Botón nuevo usuario
+  if(!state.adminUsuForm) {
+    inner.appendChild(el("button",{style:{width:"100%",background:"#6c3483",color:"#fff",border:"none",borderRadius:"10px",padding:"12px",fontSize:"14px",fontWeight:"700",cursor:"pointer",marginBottom:"16px"},onClick:()=>setState({adminUsuForm:{nombre:"",pass:"",rol:"repartidor",editando:false},adminUsuError:""})},"+ Nuevo usuario"));
+  }
+
+  // Formulario nuevo/editar usuario
+  if(state.adminUsuForm) {
+    const f = state.adminUsuForm;
+    const fBox=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"20px",marginBottom:"16px",boxShadow:"0 2px 8px rgba(0,0,0,0.08)"}});
+    fBox.appendChild(el("h3",{style:{margin:"0 0 16px",color:"#6c3483",fontSize:"15px"}},f.editando?"✏️ Editar usuario":"➕ Nuevo usuario"));
+
+    const campo=(label,tipo,val,onChange,placeholder="")=>{
+      const d=el("div",{style:{marginBottom:"12px"}});
+      d.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},label));
+      const inp2=document.createElement("input"); inp2.type=tipo; inp2.value=val; inp2.placeholder=placeholder;
+      inp2.style.cssText="width:100%;padding:9px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
+      inp2.addEventListener("input",e=>onChange(e.target.value));
+      d.appendChild(inp2); return d;
+    };
+    fBox.appendChild(campo("Nombre de usuario","text",f.nombre,v=>setState({adminUsuForm:{...state.adminUsuForm,nombre:v}}),"Ej: Juan"));
+    fBox.appendChild(campo("Contraseña","password",f.pass,v=>setState({adminUsuForm:{...state.adminUsuForm,pass:v}}),"Mínimo 4 caracteres"));
+
+    const rolDiv=el("div",{style:{marginBottom:"12px"}});
+    rolDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Rol"));
+    const rolSel=document.createElement("select");
+    rolSel.style.cssText="width:100%;padding:9px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
+    [["admin","👑 Administrador"],["repartidor","🚚 Repartidor"]].forEach(([v,t])=>{
+      const o=document.createElement("option"); o.value=v; o.textContent=t; if(f.rol===v) o.selected=true;
+      rolSel.appendChild(o);
+    });
+    rolSel.addEventListener("change",e=>setState({adminUsuForm:{...state.adminUsuForm,rol:e.target.value}}));
+    rolDiv.appendChild(rolSel); fBox.appendChild(rolDiv);
+
+    if(state.adminUsuError) fBox.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.adminUsuError));
+
+    const btnRow=el("div",{style:{display:"flex",gap:"10px"}});
+    btnRow.appendChild(el("button",{style:{flex:"1",background:"#6c3483",color:"#fff",border:"none",borderRadius:"8px",padding:"10px",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:guardarUsuario},"💾 Guardar"));
+    btnRow.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:()=>setState({adminUsuForm:null,adminUsuError:""})},"Cancelar"));
+    fBox.appendChild(btnRow);
+    inner.appendChild(fBox);
+  }
+
+  // Lista de usuarios
+  const usu = state.adminUsuarios || {};
+  const lista = Object.values(usu);
+  if(lista.length===0) {
+    inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"32px",textAlign:"center",color:"#aaa"}},"No hay usuarios registrados."));
+  } else {
+    lista.sort((a,b)=>(a.nombre||"").localeCompare(b.nombre||"")).forEach(u=>{
+      const row=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"16px 20px",marginBottom:"10px",display:"flex",alignItems:"center",gap:"12px",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}});
+      const ava=el("div",{style:{width:"40px",height:"40px",borderRadius:"50%",background:u.rol==="admin"?"#6c3483":"#2980b9",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"20px",flexShrink:"0"}},u.rol==="admin"?"👑":"🚚");
+      row.appendChild(ava);
+      const info=el("div",{style:{flex:"1"}});
+      info.appendChild(el("div",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"14px"}},u.nombre));
+      info.appendChild(el("div",{style:{fontSize:"12px",color:"#888",marginTop:"2px"}},(u.rol==="admin"?"Administrador":"Repartidor")+" · "+u.id));
+      row.appendChild(info);
+      // No permitir eliminar el usuario actual
+      const esCurrent = state.usuarioActual?.id === u.id;
+      if(!esCurrent) {
+        const acciones=el("div",{style:{display:"flex",gap:"8px"}});
+        acciones.appendChild(el("button",{style:{background:"#eef2f7",border:"none",borderRadius:"6px",padding:"6px 12px",cursor:"pointer",fontSize:"12px",color:"#1e3a5f",fontWeight:"700"},onClick:()=>setState({adminUsuForm:{...u,editando:true},adminUsuError:""})},"✏️"));
+        acciones.appendChild(el("button",{style:{background:"#fdecea",border:"none",borderRadius:"6px",padding:"6px 12px",cursor:"pointer",fontSize:"12px",color:"#c0392b",fontWeight:"700"},onClick:()=>eliminarUsuario(u.id)},"🗑️"));
+        row.appendChild(acciones);
+      } else {
+        row.appendChild(el("span",{style:{fontSize:"11px",color:"#27ae60",fontWeight:"700"}},"(tú)"));
+      }
+      inner.appendChild(row);
+    });
+  }
+  return wrap;
+}
+
+// ── Arranque: restaurar sesión si estaba guardada ──
+(async function arrancar() {
+  const sesion = leerSesionLocal();
+  if(sesion && sesion.id) {
+    try {
+      const usu = await fbGet("usuarios/"+sesion.id);
+      if(usu && usu.id) {
+        await iniciarSesionConUsuario(usu);
+        return;
+      }
+    } catch(e){}
+    borrarSesionLocal();
+  }
+  render();
+})();
 </script>
 </body>
 </html>
