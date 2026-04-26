@@ -2832,8 +2832,15 @@ function renderAdminUsuarios() {
 }
 
 // ── Arranque: Firebase Auth para admin, DB para repartidores ──
+// ── Arranque ──
+let _authResuelto = false;
+
+// Si Firebase tarda más de 3 segundos, mostrar login de todas formas
+setTimeout(()=>{ if(!_authResuelto) { _authResuelto=true; render(); } }, 3000);
+
 auth.onAuthStateChanged(async (user) => {
-  if(_loginEnProceso) return; // ya hay login en proceso, ignorar
+  if(_loginEnProceso) return;
+  if(!_authResuelto) _authResuelto = true;
   if(user && !state.autenticado) {
     try {
       const perfil = await fbGet("usuarios/"+user.uid);
