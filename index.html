@@ -2622,15 +2622,16 @@ function renderAdminUsuarios() {
     const fBox=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"20px",marginBottom:"16px",boxShadow:"0 2px 8px rgba(0,0,0,0.08)"}});
     fBox.appendChild(el("h3",{style:{margin:"0 0 16px",color:"#6c3483",fontSize:"15px"}},f.editando?"✏️ Editar usuario":"➕ Nuevo usuario"));
 
-    const campo=(label,tipo,val,onChange,placeholder="")=>{
+    const campo=(label,tipo,val,key,placeholder="")=>{
       const d=el("div",{style:{marginBottom:"12px"}});
       d.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},label));
       const inp2=document.createElement("input"); inp2.type=tipo; inp2.value=val; inp2.placeholder=placeholder;
       inp2.style.cssText="width:100%;padding:9px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
-      inp2.addEventListener("input",e=>onChange(e.target.value));
+      // Solo actualiza state sin re-renderizar
+      inp2.addEventListener("input",e=>{ if(state.adminUsuForm) state.adminUsuForm[key]=e.target.value; });
       d.appendChild(inp2); return d;
     };
-    fBox.appendChild(campo("Nombre de usuario","text",f.nombre||"",v=>setState({adminUsuForm:{...state.adminUsuForm,nombre:v}}),"Ej: Juan"));
+    fBox.appendChild(campo("Nombre de usuario","text",f.nombre||"","nombre","Ej: Juan"));
 
     // Rol primero para condicionar los campos
     const rolDiv=el("div",{style:{marginBottom:"12px"}});
@@ -2641,18 +2642,24 @@ function renderAdminUsuarios() {
       const o=document.createElement("option"); o.value=v; o.textContent=t; if((f.rol||"repartidor")===v) o.selected=true;
       rolSel.appendChild(o);
     });
-    rolSel.addEventListener("change",e=>setState({adminUsuForm:{...state.adminUsuForm,rol:e.target.value}}));
+    rolSel.addEventListener("change",e=>{
+      // Leer valores actuales de los inputs antes de re-renderizar
+      const nombreActual = fBox.querySelector('input[type="text"]')?.value || state.adminUsuForm.nombre || "";
+      const emailActual = fBox.querySelector('input[type="email"]')?.value || state.adminUsuForm.email || "";
+      const passActual = fBox.querySelector('input[type="password"]')?.value || state.adminUsuForm.pass || "";
+      setState({adminUsuForm:{...state.adminUsuForm, nombre:nombreActual, email:emailActual, pass:passActual, rol:e.target.value}});
+    });
     rolDiv.appendChild(rolSel); fBox.appendChild(rolDiv);
 
     // Correo solo para admin
     if(f.rol === "admin") {
-      fBox.appendChild(campo("Correo electrónico (para recuperación)","email",f.email||"",v=>setState({adminUsuForm:{...state.adminUsuForm,email:v}}),"correo@ejemplo.com"));
+      fBox.appendChild(campo("Correo electrónico (para recuperación)","email",f.email||"","email","correo@ejemplo.com"));
     }
 
     if(!f.editando) {
-      fBox.appendChild(campo("Contraseña","password",f.pass||"",v=>setState({adminUsuForm:{...state.adminUsuForm,pass:v}}),f.rol==="admin"?"Mínimo 6 caracteres":"Contraseña de acceso"));
+      fBox.appendChild(campo("Contraseña","password",f.pass||"","pass",f.rol==="admin"?"Mínimo 6 caracteres":"Contraseña de acceso"));
     } else if(f.rol === "repartidor") {
-      fBox.appendChild(campo("Nueva contraseña (dejar vacío para no cambiar)","password",f.pass||"",v=>setState({adminUsuForm:{...state.adminUsuForm,pass:v}}),"Nueva contraseña"));
+      fBox.appendChild(campo("Nueva contraseña (dejar vacío para no cambiar)","password",f.pass||"","pass","Nueva contraseña"));
     } else {
       fBox.appendChild(el("div",{style:{background:"#fff8e1",borderRadius:"8px",padding:"10px 12px",marginBottom:"12px",fontSize:"12px",color:"#795548"}},"💡 Para cambiar la contraseña del admin, usa '¿Olvidaste tu contraseña?' en el login."));
     }
