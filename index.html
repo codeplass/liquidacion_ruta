@@ -208,7 +208,10 @@ let state = {
 
 function setState(updates) {
   Object.assign(state, updates);
-  render();
+  // No re-renderizar si el usuario está escribiendo en un input/textarea/select
+  const activo = document.activeElement;
+  const escribiendo = activo && (activo.tagName==="INPUT"||activo.tagName==="TEXTAREA"||activo.tagName==="SELECT") && !activo.dataset.rerender;
+  if(!escribiendo) render();
   // Guardado automático en Firebase cuando cambian datos del día
   const camposGuardar = ["estadoEntrega","entregados","bloqueados",
     "motivosDevTotal","descuentos","comentarios","billetes","monedas",
@@ -2597,6 +2600,162 @@ function renderMenu() {
   return wrap;
 }
 
+// ── Modal de usuario (independiente del ciclo render) ──
+function abrirModalUsuario(usuarioExistente) {
+  // Eliminar modal previo si existe
+  const prev = document.getElementById("modal-usuario");
+  if(prev) prev.remove();
+
+  const editando = !!usuarioExistente;
+  const datos = usuarioExistente ? {...usuarioExistente} : {nombre:"",email:"",pass:"",rol:"repartidor",id:null};
+
+  const overlay = document.createElement("div");
+  overlay.id = "modal-usuario";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;font-family:sans-serif;";
+
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:28px;width:100%;max-width:400px;max-height:90vh;overflow-y:auto;";
+
+  const titulo = document.createElement("h3");
+  titulo.textContent = editando ? "✏️ Editar usuario" : "➕ Nuevo usuario";
+  titulo.style.cssText = "margin:0 0 20px;color:#6c3483;font-size:16px;";
+  box.appendChild(titulo);
+
+  // Helper campo
+  const campo = (label, tipo, valorInicial, placeholder) => {
+    const wrap = document.createElement("div");
+    wrap.style.marginBottom = "14px";
+    const lbl = document.createElement("label");
+    lbl.textContent = label;
+    lbl.style.cssText = "display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px;";
+    const inp = document.createElement("input");
+    inp.type = tipo; inp.value = valorInicial; inp.placeholder = placeholder;
+    inp.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
+    wrap.appendChild(lbl); wrap.appendChild(inp);
+    return {wrap, inp};
+  };
+
+  const {wrap:wNombre, inp:iNombre} = campo("Nombre de usuario","text",datos.nombre,"Ej: Juan");
+  box.appendChild(wNombre);
+
+  // Select rol
+  const wRol = document.createElement("div"); wRol.style.marginBottom="14px";
+  const lRol = document.createElement("label"); lRol.textContent="Rol";
+  lRol.style.cssText="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px;";
+  const selRol = document.createElement("select");
+  selRol.style.cssText="width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
+  [["repartidor","🚚 Repartidor"],["admin","👑 Administrador"]].forEach(([v,t])=>{
+    const o=document.createElement("option"); o.value=v; o.textContent=t;
+    if(datos.rol===v) o.selected=true;
+    selRol.appendChild(o);
+  });
+  wRol.appendChild(lRol); wRol.appendChild(selRol); box.appendChild(wRol);
+
+  // Correo (solo admin)
+  const {wrap:wEmail, inp:iEmail} = campo("Correo (para recuperación de contraseña)","email",datos.email||"","correo@ejemplo.com");
+  box.appendChild(wEmail);
+
+  // Contraseña
+  const passLabel = editando && datos.rol==="repartidor" ? "Nueva contraseña (vacío = no cambiar)" : "Contraseña";
+  const passPlaceholder = datos.rol==="admin" ? "Mínimo 6 caracteres" : "Contraseña de acceso";
+  const {wrap:wPass, inp:iPass} = campo(passLabel,"password",datos.pass||"",passPlaceholder);
+
+  // Nota admin no puede cambiar pass aquí
+  const notaAdmin = document.createElement("div");
+  notaAdmin.style.cssText="background:#fff8e1;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#795548;";
+  notaAdmin.textContent="💡 Para cambiar la contraseña del admin, usa '¿Olvidaste tu contraseña?' en el login.";
+
+  const actualizarCamposRol = () => {
+    const esAdmin = selRol.value === "admin";
+    wEmail.style.display = esAdmin ? "block" : "none";
+    if(editando && esAdmin) {
+      if(wPass.parentNode) wPass.remove();
+      if(!notaAdmin.parentNode) box.insertBefore(notaAdmin, errP.parentNode ? errP : btnRow);
+    } else {
+      if(notaAdmin.parentNode) notaAdmin.remove();
+      if(!wPass.parentNode) box.insertBefore(wPass, errP.parentNode ? errP : btnRow);
+    }
+  };
+  selRol.addEventListener("change", actualizarCamposRol);
+
+  // Error
+  const errP = document.createElement("p");
+  errP.style.cssText="color:#c00;font-size:12px;margin:0 0 10px;display:none;";
+  box.appendChild(errP);
+
+  // Botones
+  const btnRow = document.createElement("div");
+  btnRow.style.cssText="display:flex;gap:10px;margin-top:4px;";
+  const btnGuardar = document.createElement("button");
+  btnGuardar.textContent="💾 Guardar";
+  btnGuardar.style.cssText="flex:1;background:#6c3483;color:#fff;border:none;border-radius:8px;padding:11px;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  const btnCancelar = document.createElement("button");
+  btnCancelar.textContent="Cancelar";
+  btnCancelar.style.cssText="flex:1;background:#eee;color:#555;border:none;border-radius:8px;padding:11px;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  btnCancelar.addEventListener("click",()=>overlay.remove());
+  btnRow.appendChild(btnGuardar); btnRow.appendChild(btnCancelar);
+  box.appendChild(wPass); box.appendChild(btnRow);
+
+  // Inicializar visibilidad
+  actualizarCamposRol();
+
+  btnGuardar.addEventListener("click", async () => {
+    const nombre = iNombre.value.trim();
+    const rol = selRol.value;
+    const email = iEmail.value.trim();
+    const pass = iPass.value.trim();
+    const esAdmin = rol === "admin";
+
+    errP.style.display="none";
+    const mostrarError = (msg) => { errP.textContent=msg; errP.style.display="block"; };
+
+    if(!nombre) { mostrarError("El nombre es requerido."); return; }
+    if(esAdmin && !email) { mostrarError("El correo es requerido para el administrador."); return; }
+    if(!editando && !pass) { mostrarError("La contraseña es requerida."); return; }
+    if(esAdmin && !editando && pass.length < 6) { mostrarError("La contraseña debe tener mínimo 6 caracteres."); return; }
+
+    btnGuardar.disabled=true; btnGuardar.textContent="Guardando...";
+    try {
+      let uid = datos.id;
+      if(!editando) {
+        if(esAdmin) {
+          const cred = await auth.createUserWithEmailAndPassword(email, pass);
+          uid = cred.user.uid;
+          const adminPerfil = await fbGet("usuarios/"+state.usuarioActual.id);
+          if(adminPerfil?.email) {
+            const adminPass = prompt("Confirma tu contraseña de administrador para continuar:");
+            if(adminPass) await auth.signInWithEmailAndPassword(adminPerfil.email, adminPass);
+          }
+          await fbSet("usuarios/"+uid, {id:uid, nombre, email, rol:"admin"});
+        } else {
+          uid = nombre.toLowerCase().replace(/[^a-z0-9]/g,"_")+"_"+Date.now();
+          await fbSet("usuarios/"+uid, {id:uid, nombre, pass, rol:"repartidor"});
+        }
+      } else {
+        const updates = {...datos, nombre, rol};
+        if(esAdmin) updates.email = email;
+        if(!esAdmin && pass) updates.pass = pass;
+        await fbSet("usuarios/"+uid, updates);
+      }
+      const usu = await fbGet("usuarios") || {};
+      state.adminUsuarios = usu;
+      overlay.remove();
+      render();
+      showToast("✅ Usuario guardado","#27ae60");
+    } catch(e) {
+      let msg="Error al guardar.";
+      if(e.code==="auth/email-already-in-use") msg="Ese correo ya está registrado.";
+      else if(e.code==="auth/weak-password") msg="Contraseña muy débil (mín. 6 caracteres).";
+      mostrarError(msg);
+      btnGuardar.disabled=false; btnGuardar.textContent="💾 Guardar";
+    }
+  });
+
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  setTimeout(()=>iNombre.focus(),100);
+}
+
 // ── Admin: gestión de usuarios ──
 function renderAdminUsuarios() {
   const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
@@ -2612,88 +2771,7 @@ function renderAdminUsuarios() {
   inner.appendChild(hdr);
 
   // Botón nuevo usuario
-  if(!state.adminUsuForm) {
-    inner.appendChild(el("button",{style:{width:"100%",background:"#6c3483",color:"#fff",border:"none",borderRadius:"10px",padding:"12px",fontSize:"14px",fontWeight:"700",cursor:"pointer",marginBottom:"16px"},onClick:()=>setState({adminUsuForm:{nombre:"",email:"",pass:"",rol:"repartidor",editando:false},adminUsuError:""})},"+ Nuevo usuario"));
-  }
-
-  // Formulario nuevo/editar usuario
-  if(state.adminUsuForm) {
-    const f = state.adminUsuForm;
-    const fBox=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"20px",marginBottom:"16px",boxShadow:"0 2px 8px rgba(0,0,0,0.08)"}});
-    fBox.appendChild(el("h3",{style:{margin:"0 0 16px",color:"#6c3483",fontSize:"15px"}},f.editando?"✏️ Editar usuario":"➕ Nuevo usuario"));
-
-    const campo=(label,tipo,val,key,placeholder="")=>{
-      const d=el("div",{style:{marginBottom:"12px"}});
-      d.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},label));
-      const inp2=document.createElement("input"); inp2.type=tipo; inp2.value=val; inp2.placeholder=placeholder;
-      inp2.style.cssText="width:100%;padding:9px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
-      // Solo actualiza state sin re-renderizar
-      inp2.addEventListener("input",e=>{ if(state.adminUsuForm) state.adminUsuForm[key]=e.target.value; });
-      d.appendChild(inp2); return d;
-    };
-    fBox.appendChild(campo("Nombre de usuario","text",f.nombre||"","nombre","Ej: Juan"));
-
-    // Rol primero para condicionar los campos
-    const rolDiv=el("div",{style:{marginBottom:"12px"}});
-    rolDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Rol"));
-    const rolSel=document.createElement("select");
-    rolSel.style.cssText="width:100%;padding:9px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
-    [["admin","👑 Administrador"],["repartidor","🚚 Repartidor"]].forEach(([v,t])=>{
-      const o=document.createElement("option"); o.value=v; o.textContent=t; if((f.rol||"repartidor")===v) o.selected=true;
-      rolSel.appendChild(o);
-    });
-    rolSel.addEventListener("change",e=>{
-      // Leer valores actuales de los inputs antes de re-renderizar
-      const nombreActual = fBox.querySelector('input[type="text"]')?.value || state.adminUsuForm.nombre || "";
-      const emailActual = fBox.querySelector('input[type="email"]')?.value || state.adminUsuForm.email || "";
-      const passActual = fBox.querySelector('input[type="password"]')?.value || state.adminUsuForm.pass || "";
-      setState({adminUsuForm:{...state.adminUsuForm, nombre:nombreActual, email:emailActual, pass:passActual, rol:e.target.value}});
-    });
-    rolDiv.appendChild(rolSel); fBox.appendChild(rolDiv);
-
-    // Correo solo para admin
-    if(f.rol === "admin") {
-      fBox.appendChild(campo("Correo electrónico (para recuperación)","email",f.email||"","email","correo@ejemplo.com"));
-    }
-
-    if(!f.editando) {
-      fBox.appendChild(campo("Contraseña","password",f.pass||"","pass",f.rol==="admin"?"Mínimo 6 caracteres":"Contraseña de acceso"));
-    } else if(f.rol === "repartidor") {
-      fBox.appendChild(campo("Nueva contraseña (dejar vacío para no cambiar)","password",f.pass||"","pass","Nueva contraseña"));
-    } else {
-      fBox.appendChild(el("div",{style:{background:"#fff8e1",borderRadius:"8px",padding:"10px 12px",marginBottom:"12px",fontSize:"12px",color:"#795548"}},"💡 Para cambiar la contraseña del admin, usa '¿Olvidaste tu contraseña?' en el login."));
-    }
-
-    if(state.adminUsuError) fBox.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.adminUsuError));
-
-    const btnRow=el("div",{style:{display:"flex",gap:"10px"}});
-    const guardBtn = el("button",{style:{flex:"1",background:"#6c3483",color:"#fff",border:"none",borderRadius:"8px",padding:"10px",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:guardarUsuario}, state.guardandoUsuario?"Guardando...":"💾 Guardar");
-    if(state.guardandoUsuario) guardBtn.disabled=true;
-    btnRow.appendChild(guardBtn);
-    btnRow.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:()=>setState({adminUsuForm:null,adminUsuError:""})},"Cancelar"));
-    fBox.appendChild(btnRow);
-    inner.appendChild(fBox);
-  }
-
-  // Modal re-autenticación admin
-  if(state.showReauthModal) {
-    const modal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999",padding:"16px"}});
-    const mBox=el("div",{style:{background:"#fff",borderRadius:"14px",padding:"28px",width:"100%",maxWidth:"340px"}});
-    mBox.appendChild(el("h3",{style:{margin:"0 0 8px",color:"#1e3a5f"}},"🔑 Confirma tu contraseña"));
-    mBox.appendChild(el("p",{style:{fontSize:"13px",color:"#888",margin:"0 0 14px"}},"Necesitamos verificar tu identidad para crear el usuario."));
-    const rInp=document.createElement("input"); rInp.type="password"; rInp.placeholder="Tu contraseña actual";
-    rInp.style.cssText="width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:14px;";
-    rInp.addEventListener("input",e=>{ state.reauthPass=e.target.value; });
-    rInp.addEventListener("keydown",e=>{ if(e.key==="Enter") confirmarReauth(); });
-    setTimeout(()=>rInp.focus(),100);
-    mBox.appendChild(rInp);
-    const rBtns=el("div",{style:{display:"flex",gap:"10px"}});
-    rBtns.appendChild(el("button",{style:{flex:"1",background:"#6c3483",color:"#fff",border:"none",borderRadius:"8px",padding:"10px",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:confirmarReauth},"Confirmar"));
-    rBtns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px",cursor:"pointer"},onClick:()=>setState({showReauthModal:false,reauthPass:"",adminUsuForm:null,guardandoUsuario:false})},"Cancelar"));
-    mBox.appendChild(rBtns);
-    modal.appendChild(mBox);
-    inner.appendChild(modal);
-  }
+  inner.appendChild(el("button",{style:{width:"100%",background:"#6c3483",color:"#fff",border:"none",borderRadius:"10px",padding:"12px",fontSize:"14px",fontWeight:"700",cursor:"pointer",marginBottom:"16px"},onClick:()=>abrirModalUsuario(null)},"+ Nuevo usuario"));
 
   // Lista de usuarios
   const usu = state.adminUsuarios || {};
@@ -2712,7 +2790,7 @@ function renderAdminUsuarios() {
       const esCurrent = state.usuarioActual?.id === u.id;
       if(!esCurrent) {
         const acciones=el("div",{style:{display:"flex",gap:"8px"}});
-        acciones.appendChild(el("button",{style:{background:"#eef2f7",border:"none",borderRadius:"6px",padding:"6px 12px",cursor:"pointer",fontSize:"12px",color:"#1e3a5f",fontWeight:"700"},onClick:()=>setState({adminUsuForm:{...u,editando:true},adminUsuError:""})},"✏️"));
+        acciones.appendChild(el("button",{style:{background:"#eef2f7",border:"none",borderRadius:"6px",padding:"6px 12px",cursor:"pointer",fontSize:"12px",color:"#1e3a5f",fontWeight:"700"},onClick:()=>abrirModalUsuario({...u,editando:true})},"✏️"));
         acciones.appendChild(el("button",{style:{background:"#fdecea",border:"none",borderRadius:"6px",padding:"6px 12px",cursor:"pointer",fontSize:"12px",color:"#c0392b",fontWeight:"700"},onClick:()=>eliminarUsuario(u.id)},"🗑️"));
         row.appendChild(acciones);
       } else {
