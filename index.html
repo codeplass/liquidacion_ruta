@@ -19,10 +19,17 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
 <script>
 // ── Firebase config ──
 const firebaseConfig = {
-  databaseURL: "https://entregas-diarias-default-rtdb.firebaseio.com"
+  apiKey: "AIzaSyArC0WWkGR8EsdGZfoPr3t1qiqYMqWZAS8",
+  authDomain: "entregas-diarias.firebaseapp.com",
+  databaseURL: "https://entregas-diarias-default-rtdb.firebaseio.com",
+  projectId: "entregas-diarias",
+  storageBucket: "entregas-diarias.firebasestorage.app",
+  messagingSenderId: "377216404666",
+  appId: "1:377216404666:web:8c38acb2f4766ecbba8683"
 };
 if (typeof firebase === 'undefined') {
   document.getElementById('app').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#c00;font-size:15px;text-align:center;padding:20px;">❌ Error: No se pudo cargar Firebase.<br>Verifica tu conexión a internet e intenta de nuevo.</div>';
@@ -30,6 +37,7 @@ if (typeof firebase === 'undefined') {
 }
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
+const auth = firebase.auth();
 
 // ── Constantes ──
 const MOTIVOS = [
@@ -42,8 +50,6 @@ const MOTIVOS = [
 ];
 const BILLETES = [1,5,10,20,50,100,200];
 const PASS_DESBLOQUEO = "1234";
-// Contraseña de administrador inicial (solo para crear el primer usuario)
-const ADMIN_BOOTSTRAP_PASS = "entregascodeplass123";
 
 // ── Helpers ──
 const fQ = v => `Q ${Number(v||0).toLocaleString("es-GT",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
@@ -137,7 +143,10 @@ let state = {
   appPass: "",
   appUser: "",
   appPassError: "",
-  loginRecordar: true,
+  resetEnviado: false,
+  showReauthModal: false,
+  reauthPass: "",
+  guardandoUsuario: false,
   usuarioActual: null, // {id, nombre, rol}
   cargandoDatos: false,
   screen: "upload",
@@ -286,7 +295,7 @@ function precioUnit(cliente,pedido,producto) {
 }
 
 // ── Acciones ──
-// ── Auth helpers ──
+// ── Auth con Firebase Auth ──
 function guardarSesionLocal(usuario) {
   try { localStorage.setItem("liq_session", JSON.stringify(usuario)); } catch(e){}
 }
@@ -297,7 +306,7 @@ function borrarSesionLocal() {
 
 async function iniciarSesionConUsuario(usuario) {
   const admin = usuario.rol === "admin";
-  if(state.loginRecordar) guardarSesionLocal(usuario);
+  guardarSesionLocal(usuario);
   setState({autenticado:true, esAdmin:admin, usuarioActual:usuario, appPassError:"", cargandoDatos:true});
   const datos=await fbGet("datos-dia");
   if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length>0){
@@ -333,43 +342,72 @@ async function iniciarSesionConUsuario(usuario) {
 }
 
 async function iniciarSesion() {
-  const usuario = state.appUser.trim();
-  const pass = state.appPass;
-  if(!usuario || !pass) { setState({appPassError:"Ingresa usuario y contraseña."}); return; }
+  const nombreInput = (state.appUser||"").trim();
+  const pass = (state.appPass||"").trim();
+  if(!nombreInput || !pass) { setState({appPassError:"Ingresa usuario y contraseña."}); return; }
+  setState({appPassError:"", cargandoDatos:true});
 
-  // Bootstrap: si no hay usuarios en Firebase, el primer admin se crea con clave fija
-  const usuarios = await fbGet("usuarios") || {};
+  try {
+    const usuarios = await fbGet("usuarios") || {};
+    // Buscar usuario por nombre (case-insensitive)
+    const found = Object.values(usuarios).find(u =>
+      (u.nombre||"").toLowerCase() === nombreInput.toLowerCase()
+    );
 
-  // Si no hay usuarios y se usa la clave bootstrap, crear admin inicial
-  if(Object.keys(usuarios).length === 0 && pass === ADMIN_BOOTSTRAP_PASS) {
-    const adminId = "admin";
-    const adminUser = {id:adminId, nombre:"Administrador", pass:ADMIN_BOOTSTRAP_PASS, rol:"admin"};
-    await fbSet("usuarios/"+adminId, adminUser);
-    await iniciarSesionConUsuario(adminUser);
-    return;
+    if(!found) { setState({appPassError:"Usuario no encontrado.", cargandoDatos:false}); return; }
+
+    if(found.rol === "admin" && found.email) {
+      // Admin: autenticar via Firebase Auth por detrás
+      try {
+        const cred = await auth.signInWithEmailAndPassword(found.email, pass);
+        const usuario = {id:cred.user.uid, nombre:found.nombre, rol:"admin", email:found.email};
+        await iniciarSesionConUsuario(usuario);
+      } catch(e) {
+        let msg = "Contraseña incorrecta.";
+        if(e.code==="auth/too-many-requests") msg="Demasiados intentos. Intenta más tarde.";
+        setState({appPassError:msg, cargandoDatos:false});
+      }
+    } else {
+      // Repartidor: validar contra DB directamente
+      if(found.pass !== pass) { setState({appPassError:"Contraseña incorrecta.", cargandoDatos:false}); return; }
+      const usuario = {id:found.id, nombre:found.nombre, rol:found.rol||"repartidor"};
+      await iniciarSesionConUsuario(usuario);
+    }
+  } catch(e) {
+    setState({appPassError:"Error al conectar. Verifica tu conexión.", cargandoDatos:false});
   }
-
-  // Buscar usuario por nombre (case-insensitive) o id
-  const found = Object.values(usuarios).find(u =>
-    u.nombre?.toLowerCase() === usuario.toLowerCase() || u.id?.toLowerCase() === usuario.toLowerCase()
-  );
-  if(!found || found.pass !== pass) {
-    setState({appPassError:"Usuario o contraseña incorrectos."});
-    return;
-  }
-  await iniciarSesionConUsuario(found);
 }
 
-function cerrarSesion() {
+async function recuperarContrasena() {
+  const nombreInput = (state.appUser||"").trim();
+  if(!nombreInput) { setState({appPassError:"Ingresa tu nombre de usuario primero."}); return; }
+  try {
+    const usuarios = await fbGet("usuarios") || {};
+    const found = Object.values(usuarios).find(u =>
+      (u.nombre||"").toLowerCase() === nombreInput.toLowerCase()
+    );
+    if(!found || found.rol !== "admin" || !found.email) {
+      setState({appPassError:"Solo el administrador puede recuperar su contraseña por correo."});
+      return;
+    }
+    await auth.sendPasswordResetEmail(found.email);
+    setState({appPassError:"", resetEnviado:true});
+  } catch(e) {
+    setState({appPassError:"No se pudo enviar el correo de recuperación."});
+  }
+}
+
+async function cerrarSesion() {
   borrarSesionLocal();
+  await auth.signOut();
   setState({
     autenticado:false, esAdmin:false, usuarioActual:null,
     screen:"upload", clienteMap:{}, confirmado:false,
-    appPass:"", appUser:"", appPassError:""
+    appPass:"", appUser:"", appPassError:"", resetEnviado:false
   });
 }
 
-// ── Admin usuarios ──
+// ── Admin usuarios (Firebase Auth + DB) ──
 async function cargarUsuarios() {
   const usu = await fbGet("usuarios") || {};
   setState({adminUsuarios: usu, screenAdmin:"usuarios"});
@@ -381,17 +419,65 @@ async function guardarUsuario() {
   const nombre = (f.nombre||"").trim();
   const pass = (f.pass||"").trim();
   const rol = f.rol || "repartidor";
-  if(!nombre || !pass) { setState({adminUsuError:"Nombre y contraseña son requeridos."}); return; }
-  const id = f.editando ? f.id : nombre.toLowerCase().replace(/[^a-z0-9]/g,"_")+"_"+Date.now();
-  const usuario = {id, nombre, pass, rol};
-  await fbSet("usuarios/"+id, usuario);
-  const usu = await fbGet("usuarios") || {};
-  setState({adminUsuarios:usu, adminUsuForm:null, adminUsuError:""});
-  showToast("✅ Usuario guardado","#27ae60");
+  const email = (f.email||"").trim();
+
+  if(!nombre) { setState({adminUsuError:"El nombre es requerido."}); return; }
+  if(!f.editando && !pass) { setState({adminUsuError:"La contraseña es requerida."}); return; }
+  if(rol === "admin" && !email) { setState({adminUsuError:"El correo es requerido para el administrador."}); return; }
+
+  setState({adminUsuError:"", guardandoUsuario:true});
+  try {
+    let uid = f.id;
+    if(!f.editando) {
+      if(rol === "admin") {
+        // Crear en Firebase Auth
+        if(pass.length < 6) { setState({adminUsuError:"La contraseña debe tener mínimo 6 caracteres.", guardandoUsuario:false}); return; }
+        const cred = await auth.createUserWithEmailAndPassword(email, pass);
+        uid = cred.user.uid;
+        // Re-autenticar al admin actual
+        const adminPerfil = await fbGet("usuarios/"+state.usuarioActual.id);
+        if(adminPerfil?.email) {
+          const adminPass = prompt("Para continuar, confirma tu contraseña de administrador:");
+          if(adminPass) await auth.signInWithEmailAndPassword(adminPerfil.email, adminPass);
+        }
+        await fbSet("usuarios/"+uid, {id:uid, nombre, email, rol:"admin"});
+      } else {
+        // Repartidor: solo en DB
+        uid = nombre.toLowerCase().replace(/[^a-z0-9]/g,"_")+"_"+Date.now();
+        await fbSet("usuarios/"+uid, {id:uid, nombre, pass, rol:"repartidor"});
+      }
+    } else {
+      // Editar: actualizar perfil
+      const updates = {id:uid, nombre, rol};
+      if(rol === "admin") updates.email = email;
+      if(rol === "repartidor" && pass) updates.pass = pass;
+      await fbSet("usuarios/"+uid, {...f, ...updates});
+    }
+    const usu = await fbGet("usuarios") || {};
+    setState({adminUsuarios:usu, adminUsuForm:null, adminUsuError:"", guardandoUsuario:false});
+    showToast("✅ Usuario guardado","#27ae60");
+  } catch(e) {
+    let msg = "Error al guardar usuario.";
+    if(e.code==="auth/email-already-in-use") msg="Ese correo ya está registrado.";
+    else if(e.code==="auth/weak-password") msg="Contraseña muy débil (mín. 6 caracteres).";
+    setState({adminUsuError:msg, guardandoUsuario:false});
+  }
+}
+
+// Para re-autenticar al admin después de crear usuario
+let _adminPassResolver = null;
+function pedirPassAdmin() {
+  return new Promise(resolve => { _adminPassResolver = resolve; setState({showReauthModal:true}); });
+}
+
+async function confirmarReauth() {
+  const pass = state.reauthPass||"";
+  setState({showReauthModal:false, reauthPass:""});
+  if(_adminPassResolver) { _adminPassResolver(pass); _adminPassResolver=null; }
 }
 
 async function eliminarUsuario(id) {
-  if(!confirm("¿Eliminar este usuario?")) return;
+  if(!confirm("¿Eliminar este usuario? Solo se elimina el perfil, no la cuenta de acceso.")) return;
   await fbRemove("usuarios/"+id);
   const usu = await fbGet("usuarios") || {};
   setState({adminUsuarios:usu});
@@ -2407,7 +2493,7 @@ function render() {
   }
 }
 
-// ── Render Login (nuevo: usuario + contraseña + recordar) ──
+// ── Render Login ──
 function renderLogin() {
   const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}});
   const box = el("div",{style:{background:"#fff",borderRadius:"16px",padding:"36px",width:"340px",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
@@ -2415,15 +2501,21 @@ function renderLogin() {
   box.appendChild(el("h2",{style:{margin:"0 0 4px",color:"#1e3a5f",fontSize:"20px"}},"Liquidación de Entregas"));
   box.appendChild(el("p",{style:{margin:"0 0 24px",fontSize:"13px",color:"#888"}},"Ingresa tus credenciales para continuar"));
 
-  // Usuario
-  const userInp = document.createElement("input");
-  userInp.type = "text"; userInp.placeholder = "Usuario";
-  userInp.value = state.appUser || "";
-  userInp.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:10px;";
-  userInp.addEventListener("input", e => { state.appUser = e.target.value; });
-  userInp.addEventListener("keydown", e => { if(e.key==="Enter") passInp.focus(); });
-  setTimeout(()=>userInp.focus(), 100);
-  box.appendChild(userInp);
+  if(state.resetEnviado) {
+    box.appendChild(el("div",{style:{background:"#e8f5e9",borderRadius:"10px",padding:"16px",marginBottom:"16px",fontSize:"13px",color:"#27ae60",fontWeight:"600"}},"✅ Correo enviado. Revisa tu bandeja de entrada para restablecer tu contraseña."));
+    box.appendChild(el("button",{style:{width:"100%",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"8px",padding:"11px 0",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:()=>setState({resetEnviado:false})},"Volver al login"));
+    wrap.appendChild(box); return wrap;
+  }
+
+  // Correo
+  const emailInp = document.createElement("input");
+  emailInp.type = "text"; emailInp.placeholder = "Usuario";
+  emailInp.value = state.appUser || "";
+  emailInp.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:10px;";
+  emailInp.addEventListener("input", e => { state.appUser = e.target.value; });
+  emailInp.addEventListener("keydown", e => { if(e.key==="Enter") passInp.focus(); });
+  setTimeout(()=>emailInp.focus(), 100);
+  box.appendChild(emailInp);
 
   // Contraseña
   const passWrap = el("div",{style:{position:"relative",marginBottom:"8px"}});
@@ -2441,22 +2533,22 @@ function renderLogin() {
   passWrap.appendChild(passInp); passWrap.appendChild(eyeBtn);
   box.appendChild(passWrap);
 
-  if(state.appPassError) box.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.appPassError));
-
-  // Checkbox recordar dispositivo
-  const recRow = el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"14px",marginTop:"4px",justifyContent:"flex-start"}});
-  const recChk = document.createElement("input"); recChk.type="checkbox"; recChk.checked=state.loginRecordar;
-  recChk.style.cssText="width:16px;height:16px;cursor:pointer;accent-color:#1e3a5f;";
-  recChk.addEventListener("change",e=>{state.loginRecordar=e.target.checked;});
-  recRow.appendChild(recChk);
-  recRow.appendChild(el("label",{style:{fontSize:"13px",color:"#555",cursor:"pointer"},onClick:()=>{recChk.checked=!recChk.checked;state.loginRecordar=recChk.checked;}},"Recordar en este dispositivo"));
-  box.appendChild(recRow);
+  if(state.appPassError) box.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"4px 0 10px"}},state.appPassError));
 
   const loginBtn = document.createElement("button");
-  loginBtn.textContent = "Ingresar";
-  loginBtn.style.cssText = "width:100%;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  loginBtn.textContent = state.cargandoDatos ? "Ingresando..." : "Ingresar";
+  loginBtn.disabled = state.cargandoDatos;
+  loginBtn.style.cssText = "width:100%;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-bottom:12px;";
   loginBtn.addEventListener("click", iniciarSesion);
   box.appendChild(loginBtn);
+
+  // Olvidé mi contraseña
+  const forgotBtn = document.createElement("button");
+  forgotBtn.textContent = "¿Olvidaste tu contraseña?";
+  forgotBtn.style.cssText = "background:none;border:none;color:#2980b9;font-size:12px;cursor:pointer;font-family:sans-serif;text-decoration:underline;";
+  forgotBtn.addEventListener("click", recuperarContrasena);
+  box.appendChild(forgotBtn);
+
   wrap.appendChild(box);
   return wrap;
 }
@@ -2521,7 +2613,7 @@ function renderAdminUsuarios() {
 
   // Botón nuevo usuario
   if(!state.adminUsuForm) {
-    inner.appendChild(el("button",{style:{width:"100%",background:"#6c3483",color:"#fff",border:"none",borderRadius:"10px",padding:"12px",fontSize:"14px",fontWeight:"700",cursor:"pointer",marginBottom:"16px"},onClick:()=>setState({adminUsuForm:{nombre:"",pass:"",rol:"repartidor",editando:false},adminUsuError:""})},"+ Nuevo usuario"));
+    inner.appendChild(el("button",{style:{width:"100%",background:"#6c3483",color:"#fff",border:"none",borderRadius:"10px",padding:"12px",fontSize:"14px",fontWeight:"700",cursor:"pointer",marginBottom:"16px"},onClick:()=>setState({adminUsuForm:{nombre:"",email:"",pass:"",rol:"repartidor",editando:false},adminUsuError:""})},"+ Nuevo usuario"));
   }
 
   // Formulario nuevo/editar usuario
@@ -2538,27 +2630,62 @@ function renderAdminUsuarios() {
       inp2.addEventListener("input",e=>onChange(e.target.value));
       d.appendChild(inp2); return d;
     };
-    fBox.appendChild(campo("Nombre de usuario","text",f.nombre,v=>setState({adminUsuForm:{...state.adminUsuForm,nombre:v}}),"Ej: Juan"));
-    fBox.appendChild(campo("Contraseña","password",f.pass,v=>setState({adminUsuForm:{...state.adminUsuForm,pass:v}}),"Mínimo 4 caracteres"));
+    fBox.appendChild(campo("Nombre de usuario","text",f.nombre||"",v=>setState({adminUsuForm:{...state.adminUsuForm,nombre:v}}),"Ej: Juan"));
 
+    // Rol primero para condicionar los campos
     const rolDiv=el("div",{style:{marginBottom:"12px"}});
     rolDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Rol"));
     const rolSel=document.createElement("select");
     rolSel.style.cssText="width:100%;padding:9px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;";
     [["admin","👑 Administrador"],["repartidor","🚚 Repartidor"]].forEach(([v,t])=>{
-      const o=document.createElement("option"); o.value=v; o.textContent=t; if(f.rol===v) o.selected=true;
+      const o=document.createElement("option"); o.value=v; o.textContent=t; if((f.rol||"repartidor")===v) o.selected=true;
       rolSel.appendChild(o);
     });
     rolSel.addEventListener("change",e=>setState({adminUsuForm:{...state.adminUsuForm,rol:e.target.value}}));
     rolDiv.appendChild(rolSel); fBox.appendChild(rolDiv);
 
+    // Correo solo para admin
+    if(f.rol === "admin") {
+      fBox.appendChild(campo("Correo electrónico (para recuperación)","email",f.email||"",v=>setState({adminUsuForm:{...state.adminUsuForm,email:v}}),"correo@ejemplo.com"));
+    }
+
+    if(!f.editando) {
+      fBox.appendChild(campo("Contraseña","password",f.pass||"",v=>setState({adminUsuForm:{...state.adminUsuForm,pass:v}}),f.rol==="admin"?"Mínimo 6 caracteres":"Contraseña de acceso"));
+    } else if(f.rol === "repartidor") {
+      fBox.appendChild(campo("Nueva contraseña (dejar vacío para no cambiar)","password",f.pass||"",v=>setState({adminUsuForm:{...state.adminUsuForm,pass:v}}),"Nueva contraseña"));
+    } else {
+      fBox.appendChild(el("div",{style:{background:"#fff8e1",borderRadius:"8px",padding:"10px 12px",marginBottom:"12px",fontSize:"12px",color:"#795548"}},"💡 Para cambiar la contraseña del admin, usa '¿Olvidaste tu contraseña?' en el login."));
+    }
+
     if(state.adminUsuError) fBox.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.adminUsuError));
 
     const btnRow=el("div",{style:{display:"flex",gap:"10px"}});
-    btnRow.appendChild(el("button",{style:{flex:"1",background:"#6c3483",color:"#fff",border:"none",borderRadius:"8px",padding:"10px",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:guardarUsuario},"💾 Guardar"));
+    const guardBtn = el("button",{style:{flex:"1",background:"#6c3483",color:"#fff",border:"none",borderRadius:"8px",padding:"10px",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:guardarUsuario}, state.guardandoUsuario?"Guardando...":"💾 Guardar");
+    if(state.guardandoUsuario) guardBtn.disabled=true;
+    btnRow.appendChild(guardBtn);
     btnRow.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:()=>setState({adminUsuForm:null,adminUsuError:""})},"Cancelar"));
     fBox.appendChild(btnRow);
     inner.appendChild(fBox);
+  }
+
+  // Modal re-autenticación admin
+  if(state.showReauthModal) {
+    const modal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999",padding:"16px"}});
+    const mBox=el("div",{style:{background:"#fff",borderRadius:"14px",padding:"28px",width:"100%",maxWidth:"340px"}});
+    mBox.appendChild(el("h3",{style:{margin:"0 0 8px",color:"#1e3a5f"}},"🔑 Confirma tu contraseña"));
+    mBox.appendChild(el("p",{style:{fontSize:"13px",color:"#888",margin:"0 0 14px"}},"Necesitamos verificar tu identidad para crear el usuario."));
+    const rInp=document.createElement("input"); rInp.type="password"; rInp.placeholder="Tu contraseña actual";
+    rInp.style.cssText="width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:14px;";
+    rInp.addEventListener("input",e=>{ state.reauthPass=e.target.value; });
+    rInp.addEventListener("keydown",e=>{ if(e.key==="Enter") confirmarReauth(); });
+    setTimeout(()=>rInp.focus(),100);
+    mBox.appendChild(rInp);
+    const rBtns=el("div",{style:{display:"flex",gap:"10px"}});
+    rBtns.appendChild(el("button",{style:{flex:"1",background:"#6c3483",color:"#fff",border:"none",borderRadius:"8px",padding:"10px",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:confirmarReauth},"Confirmar"));
+    rBtns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px",cursor:"pointer"},onClick:()=>setState({showReauthModal:false,reauthPass:"",adminUsuForm:null,guardandoUsuario:false})},"Cancelar"));
+    mBox.appendChild(rBtns);
+    modal.appendChild(mBox);
+    inner.appendChild(modal);
   }
 
   // Lista de usuarios
@@ -2572,10 +2699,9 @@ function renderAdminUsuarios() {
       const ava=el("div",{style:{width:"40px",height:"40px",borderRadius:"50%",background:u.rol==="admin"?"#6c3483":"#2980b9",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"20px",flexShrink:"0"}},u.rol==="admin"?"👑":"🚚");
       row.appendChild(ava);
       const info=el("div",{style:{flex:"1"}});
-      info.appendChild(el("div",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"14px"}},u.nombre));
-      info.appendChild(el("div",{style:{fontSize:"12px",color:"#888",marginTop:"2px"}},(u.rol==="admin"?"Administrador":"Repartidor")+" · "+u.id));
+      info.appendChild(el("div",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"14px"}},u.nombre||u.email));
+      info.appendChild(el("div",{style:{fontSize:"12px",color:"#888",marginTop:"2px"}},(u.rol==="admin"?"👑 Administrador":"🚚 Repartidor")+" · "+(u.email||"")));
       row.appendChild(info);
-      // No permitir eliminar el usuario actual
       const esCurrent = state.usuarioActual?.id === u.id;
       if(!esCurrent) {
         const acciones=el("div",{style:{display:"flex",gap:"8px"}});
@@ -2591,21 +2717,21 @@ function renderAdminUsuarios() {
   return wrap;
 }
 
-// ── Arranque: restaurar sesión si estaba guardada ──
-(async function arrancar() {
-  const sesion = leerSesionLocal();
-  if(sesion && sesion.id) {
+// ── Arranque: Firebase Auth para admin, DB para repartidores ──
+auth.onAuthStateChanged(async (user) => {
+  if(user && !state.autenticado) {
+    // Usuario admin con sesión activa en Firebase Auth
     try {
-      const usu = await fbGet("usuarios/"+sesion.id);
-      if(usu && usu.id) {
-        await iniciarSesionConUsuario(usu);
+      const perfil = await fbGet("usuarios/"+user.uid);
+      if(perfil && perfil.rol === "admin") {
+        const usuario = {id:user.uid, nombre:perfil.nombre||user.email, rol:"admin", email:user.email};
+        await iniciarSesionConUsuario(usuario);
         return;
       }
     } catch(e){}
-    borrarSesionLocal();
   }
-  render();
-})();
+  if(!state.autenticado) render();
+});
 </script>
 </body>
 </html>
