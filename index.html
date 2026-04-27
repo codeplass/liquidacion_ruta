@@ -415,7 +415,7 @@ async function iniciarSesion() {
       }
     } else {
       if(found.pass !== pass) { state.appPassError="Contraseña incorrecta."; state.cargandoDatos=false; _loginEnProceso=false; render(); return; }
-      const usuario = {id:found.id, nombre:found.nombre, rol:found.rol||"repartidor"};
+      const usuario = {id:found.id, nombre:found.nombre, rol:found.rol||"repartidor", repartidorVinculado:found.repartidorVinculado||""};
       await iniciarSesionConUsuario(usuario);
     }
   } catch(e) {
