@@ -409,7 +409,6 @@ async function iniciarSesion() {
         const dd = await fbGet("datos-dia");
         const repActivo = dd?.repartidor || "";
         const repVinc = found.repartidorVinculado || "";
-        // Hay repartidor activo y no es este usuario → bloquear
         if(repActivo && repVinc && repActivo !== repVinc) {
           state.appPassError = `Ya hay una sesión activa del repartidor "${repActivo}". Solo el administrador puede ingresar mientras haya una sesión de entrega activa.`;
           state.cargandoDatos=false; _loginEnProceso=false; render(); return;
@@ -1522,18 +1521,30 @@ function renderDetalleCliente() {
   const hdr=el("div",{style:{background: esPresupuesto?"#616161":"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 22px",marginBottom:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
   const hdrLeft=el("div");
   hdrLeft.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>{
-    const devsTemporales = state.dvTemporal.filter(d=>d.cliente===c);
-    if(devsTemporales.length > 0) {
-      if(!confirm("Si sale sin confirmar, no se grabarán los cambios de devolución. ¿Desea salir?")) return;
-    }
-    // Si el cliente estaba desbloqueado (tenía estado previo pero fue editado sin re-confirmar), preguntar y volver a bloquear
     const estadoAct = state.estadoEntrega[c];
-    const fueDesbloqueado = estadoAct && !state.bloqueados[c];
-    if(fueDesbloqueado) {
-      if(!confirm("Si sale, se perderán los cambios realizados. ¿Desea salir?")) return;
+    const bloqueadoAct = !!state.bloqueados[c];
+    const hayTemporales = state.dvTemporal.filter(d=>d.cliente===c).length > 0;
+    const fueDesbloqueado = !bloqueadoAct;
+    const sinConfirmarPendiente = !!state._sinConfirmarPendiente;
+    const hayPendientes = fueDesbloqueado || hayTemporales || sinConfirmarPendiente;
+    if(hayPendientes) {
+      const confirmar = confirm("¿Confirmar los cambios realizados?\n\nAceptar = guardar cambios y volver\nCancelar = volver sin guardar");
+      if(!confirmar) {
+        // Salir SIN guardar: si marcó sin confirmar, revertir al estado original re-bloqueado
+        // Si tenía estado anterior guardado, restaurarlo
+        const upd = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
+        if(estadoAct) upd.bloqueados = {...state.bloqueados,[c]:true};
+        setState(upd); return;
+      }
+      // Aceptar con temporales sin confirmar: forzar confirmar primero
+      if(hayTemporales) {
+        alert("Confirma la entrega primero con el botón '✅ Confirmar entrega'.");
+        return;
+      }
+      // Aceptar con sin confirmar pendiente: guardar el estado actual (sin estado) y salir
     }
-    const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
-    if(fueDesbloqueado) updVolver.bloqueados = {...state.bloqueados, [c]: true};
+    const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
+    if(!bloqueadoAct && estadoAct) updVolver.bloqueados = {...state.bloqueados,[c]:true};
     setState(updVolver);
   }},"← Volver"));
   hdrLeft.appendChild(el("h2",{style:{margin:"0",fontSize:"17px"}},c));
@@ -1837,6 +1848,83 @@ function renderDetalleCliente() {
       unlockBtn.onclick = () => setState({passCliente:c, passInput:"", passError:""});
       estadoBox.appendChild(unlockBtn);
       inner.appendChild(estadoBox);
+    } else if(estado && !bloqueadoDetalle) {
+      // Desbloqueado: mostrar estado anterior atenuado + botón confirmar activo
+      const estadoLabel = estado==="verde"?"✅ Entrega efectiva":estado==="amarillo"?"🟡 Entrega parcial":"↩️ Devolución total";
+      const estadoBg = estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":"#fce4ec";
+      const estadoColor = estado==="verde"?"#27ae60":estado==="amarillo"?"#f9a825":"#e91e8c";
+      const estadoBox = el("div",{style:{background:estadoBg,borderRadius:"12px",padding:"10px 18px",marginBottom:"12px",display:"flex",justifyContent:"space-between",alignItems:"center",opacity:"0.7"}});
+      estadoBox.appendChild(el("span",{style:{fontWeight:"600",color:estadoColor,fontSize:"13px"}},"Estado anterior: "+estadoLabel));
+      estadoBox.appendChild(el("span",{style:{fontSize:"11px",color:"#888"}},"🔓 Editando"));
+      inner.appendChild(estadoBox);
+
+      const confirmBox=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"16px"}});
+      confirmBox.appendChild(el("p",{style:{margin:"0 0 14px",fontWeight:"700",color:"#1e3a5f",fontSize:"14px"}},"✅ Confirmar entrega"));
+
+      const tieneDevsParciales = devsCl.length > 0;
+
+      if(state.showDvForm && tieneDevsParciales){
+        const motDiv=el("div",{style:{marginBottom:"12px"}});
+        motDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Motivo de la devolución"));
+        const motSel=el("select",{style:{width:"100%",padding:"8px 10px",borderRadius:"6px",border:"1px solid #ccc",fontSize:"13px",boxSizing:"border-box",fontFamily:"sans-serif"}});
+        motSel.appendChild(el("option",{value:""},"-- Selecciona motivo --"));
+        MOTIVOS.forEach(m=>motSel.appendChild(el("option",{value:m.codigo},`${m.codigo} — ${m.desc}`)));
+        motSel.value = state.dvCodigo||"";
+        motSel.onchange = e=>{ state.dvCodigo=e.target.value; };
+        motDiv.appendChild(motSel);
+        confirmBox.appendChild(motDiv);
+        const btnFinal = document.createElement("button");
+        const dvTipo = state._dvTipo || "amarillo";
+        btnFinal.style.cssText=`width:100%;background:${dvTipo==="rosado"?"#e91e8c":"#f9a825"};color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-bottom:8px;`;
+        btnFinal.textContent="✅ Confirmar";
+        btnFinal.onclick = () => {
+          if(!motSel.value){ alert("Selecciona un motivo."); return; }
+          const motivo = MOTIVOS.find(x=>x.codigo===motSel.value)||{};
+          const newDevs = state.devoluciones.map(d=>d.cliente===c?{...d,codigo:motivo.codigo,desc:motivo.desc}:d);
+          setState({devoluciones:newDevs, dvCodigo:"D01", showDvForm:false, _dvTipo:undefined});
+          confirmarDesdeDetalle(c, dvTipo, motivo.codigo, motivo.desc);
+        };
+        confirmBox.appendChild(btnFinal);
+        confirmBox.appendChild(el("button",{style:{width:"100%",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px 0",fontSize:"13px",cursor:"pointer",fontFamily:"sans-serif"},onClick:()=>setState({showDvForm:false})},"Cancelar"));
+      } else {
+        const btnConfirmar = document.createElement("button");
+        btnConfirmar.style.cssText="width:100%;background:#27ae60;color:#fff;border:none;border-radius:8px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+        btnConfirmar.textContent="✅ Confirmar entrega";
+        btnConfirmar.onclick = () => {
+          if(tieneDevsParciales){
+            const totalUnidadesEntregables = pedidosEntregables.reduce((s,[,p])=>s+p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).reduce((ss,l)=>ss+l.unidades,0),0);
+            const totalDevUnidades = devsCl.reduce((s,d)=>s+d.unidades,0);
+            const esDevTotal = totalDevUnidades >= totalUnidadesEntregables;
+            setState({showDvForm:true, _dvTipo: esDevTotal?"rosado":"amarillo"});
+          } else {
+            confirmarDesdeDetalle(c,"verde");
+          }
+        };
+        confirmBox.appendChild(btnConfirmar);
+      }
+      inner.appendChild(confirmBox);
+
+      // Botón "Sin confirmar" — quita el estado, limpia devoluciones y vuelve al listado
+      const btnSinConf = el("button",{style:{width:"100%",background:"#fff",border:"2px solid #e0e0e0",borderRadius:"10px",padding:"11px 0",fontSize:"13px",fontWeight:"600",color:"#888",cursor:"pointer",fontFamily:"sans-serif",marginBottom:"16px"}});
+      btnSinConf.textContent = "✖ Dejar sin confirmar";
+      btnSinConf.onclick = () => {
+        if(!confirm("La entrega quedará sin confirmar. ¿Estás seguro?")) return;
+        const nuevoEstado={...state.estadoEntrega}; delete nuevoEstado[c];
+        const nuevoBloq={...state.bloqueados}; delete nuevoBloq[c];
+        const nuevoEnt={...state.entregados}; delete nuevoEnt[c];
+        const nuevoMotivos={...state.motivosDevTotal}; delete nuevoMotivos[c];
+        const nuevasDevs=state.devoluciones.filter(d=>d.cliente!==c);
+        // Quitar estado pero NO volver al listado — el Volver pedirá confirmación
+        setState({
+          estadoEntrega:nuevoEstado, bloqueados:nuevoBloq, entregados:nuevoEnt,
+          motivosDevTotal:nuevoMotivos, devoluciones:nuevasDevs,
+          dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),
+          showDvForm:false, _dvTipo:undefined, _sinConfirmarPendiente:true
+        });
+        showToast("✖ Entrega marcada sin confirmar","#888");
+      };
+      inner.appendChild(btnSinConf);
+
     } else if(!estado) {
       const confirmBox=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"16px"}});
       confirmBox.appendChild(el("p",{style:{margin:"0 0 14px",fontWeight:"700",color:"#1e3a5f",fontSize:"14px"}},"✅ Confirmar entrega"));
@@ -2344,11 +2432,37 @@ function renderListaRutas(container, porRuta) {
         // Solo ícono de presupuesto, sin acción
         cbTd.appendChild(el("span",{title:"Presupuesto - Solo consulta",style:{fontSize:"16px",cursor:"default"}},"📋"));
       } else if(bloqueado){
-        // Mostrar solo el estado visual (el desbloqueo se hace desde adentro del detalle)
+        // Long press en ícono → quitar confirmación con mensaje
         const estadoIcon = estado==="verde"?"✅":estado==="amarillo"?"🟡":"🔴";
         const estadoSpan = document.createElement("span");
-        estadoSpan.style.cssText="font-size:18px;";
+        estadoSpan.style.cssText="font-size:18px;cursor:pointer;user-select:none;";
+        estadoSpan.title="Mantén presionado para quitar confirmación";
         estadoSpan.textContent=estadoIcon;
+        let _lpEstado=null;
+        const _startLpEstado=()=>{
+          _lpEstado=setTimeout(()=>{
+            _lpEstado=null;
+            if(!confirm("La entrega quedará sin confirmar. ¿Estás seguro?")) return;
+            const nuevoEstado2={...state.estadoEntrega}; delete nuevoEstado2[cliente];
+            const nuevoBloq2={...state.bloqueados}; delete nuevoBloq2[cliente];
+            const nuevoEnt2={...state.entregados}; delete nuevoEnt2[cliente];
+            const nuevoMot2={...state.motivosDevTotal}; delete nuevoMot2[cliente];
+            setState({
+              estadoEntrega:nuevoEstado2, bloqueados:nuevoBloq2, entregados:nuevoEnt2,
+              motivosDevTotal:nuevoMot2,
+              devoluciones:state.devoluciones.filter(d=>d.cliente!==cliente),
+              dvTemporal:state.dvTemporal.filter(d=>d.cliente!==cliente)
+            });
+            showToast("✖ Entrega sin confirmar","#888");
+          },700);
+        };
+        const _cancelLpEstado=()=>clearTimeout(_lpEstado);
+        estadoSpan.addEventListener("mousedown",_startLpEstado);
+        estadoSpan.addEventListener("mouseup",_cancelLpEstado);
+        estadoSpan.addEventListener("mouseleave",_cancelLpEstado);
+        estadoSpan.addEventListener("touchstart",e=>{e.preventDefault();_startLpEstado();},{passive:false});
+        estadoSpan.addEventListener("touchend",_cancelLpEstado);
+        estadoSpan.addEventListener("touchmove",_cancelLpEstado);
         cbTd.appendChild(estadoSpan);
       } else {
         const cb=document.createElement("input");
@@ -3055,7 +3169,7 @@ function renderSeleccionEntrega() {
   selAux.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:12px;background:#fff;";
   selAux.appendChild(Object.assign(document.createElement("option"),{value:"",textContent:"-- Seleccionar auxiliar --"}));
   (state.listaAuxiliares||[]).forEach(a=>{ const nom=typeof a==="string"?a:(a.nombre||""); const alias=typeof a==="object"&&a.alias?a.alias:nom; const o=document.createElement("option"); o.value=nom; o.textContent=alias; selAux.appendChild(o); });
-  selAux.value = state.loginAuxiliar || "";
+  selAux.value = "";
   selAux.addEventListener("change", e=>{
     state.loginAuxiliar=e.target.value;
     selAux.style.borderColor=e.target.value?"#ccc":"#ccc";
