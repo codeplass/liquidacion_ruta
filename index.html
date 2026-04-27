@@ -394,20 +394,6 @@ async function iniciarSesion() {
 
     if(!found) { state.appPassError="Usuario no encontrado."; state.cargandoDatos=false; _loginEnProceso=false; render(); return; }
 
-    // Validar repartidor y auxiliar para usuarios no-admin
-    if(found.rol !== "admin") {
-      if(!state.loginRepartidor || !state.loginAuxiliar) {
-        state.appPassError="Selecciona los campos obligatorios marcados con *.";
-        state.cargandoDatos=false; _loginEnProceso=false;
-        setTimeout(()=>{
-          const ar=document.getElementById("ast-rep"); if(ar && !state.loginRepartidor) ar.style.color="#e53935";
-          const aa=document.getElementById("ast-aux"); if(aa && !state.loginAuxiliar) aa.style.color="#e53935";
-          const ley=document.getElementById("leyenda-oblig"); if(ley) ley.style.color="#e53935";
-        },50);
-        render(); return;
-      }
-    }
-
     if(found.rol === "admin" && found.email) {
       try {
         const cred = await auth.signInWithEmailAndPassword(found.email, pass);
@@ -2678,85 +2664,17 @@ function renderLogin() {
   passWrap.appendChild(passInp); passWrap.appendChild(eyeBtn);
   box.appendChild(passWrap);
 
-  // ── Separador ──
-  const sep = document.createElement("hr");
-  sep.style.cssText = "border:none;border-top:1px solid #eee;margin:4px 0 14px;";
-  box.appendChild(sep);
 
-  // ── Repartidor ──
-  // Label repartidor con asterisco
-  const lblRepRow = document.createElement("div");
-  lblRepRow.style.cssText = "display:flex;align-items:center;gap:4px;margin-bottom:3px;";
-  const lblRepTxt = document.createElement("span");
-  lblRepTxt.textContent = "🚚 Repartidor";
-  lblRepTxt.style.cssText = "font-size:11px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:0.4px;";
-  const astRep = document.createElement("span");
-  astRep.id = "ast-rep";
-  astRep.textContent = "*";
-  astRep.style.cssText = "font-size:13px;font-weight:700;color:#bbb;";
-  lblRepRow.appendChild(lblRepTxt); lblRepRow.appendChild(astRep);
-  box.appendChild(lblRepRow);
-  const selRep = document.createElement("select");
-  selRep.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:12px;background:#fff;";
-  selRep.appendChild(Object.assign(document.createElement("option"),{value:"",textContent:"-- Seleccionar repartidor --"}));
-  (state.listaRepartidores||[]).forEach(r=>{ const nom=typeof r==="string"?r:(r.nombre||""); const alias=typeof r==="object"&&r.alias?r.alias:nom; const o=document.createElement("option"); o.value=nom; o.textContent=alias; selRep.appendChild(o); });
-  selRep.value = ""; // siempre en blanco al cargar
-  selRep.addEventListener("change", e=>{ state.loginRepartidor=e.target.value; const a=document.getElementById("ast-rep"); if(a) a.style.color=e.target.value?"#bbb":"#e53935"; });
-  box.appendChild(selRep);
-
-  // ── Auxiliar ──
-  // Label auxiliar con asterisco
-  const lblAuxRow = document.createElement("div");
-  lblAuxRow.style.cssText = "display:flex;align-items:center;gap:4px;margin-bottom:3px;";
-  const lblAuxTxt = document.createElement("span");
-  lblAuxTxt.textContent = "👷 Auxiliar";
-  lblAuxTxt.style.cssText = "font-size:11px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:0.4px;";
-  const astAux = document.createElement("span");
-  astAux.id = "ast-aux";
-  astAux.textContent = "*";
-  astAux.style.cssText = "font-size:13px;font-weight:700;color:#bbb;";
-  lblAuxRow.appendChild(lblAuxTxt); lblAuxRow.appendChild(astAux);
-  box.appendChild(lblAuxRow);
-  const selAux = document.createElement("select");
-  selAux.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:12px;background:#fff;";
-  selAux.appendChild(Object.assign(document.createElement("option"),{value:"",textContent:"-- Seleccionar auxiliar --"}));
-  (state.listaAuxiliares||[]).forEach(a=>{ const nom=typeof a==="string"?a:(a.nombre||""); const alias=typeof a==="object"&&a.alias?a.alias:nom; const o=document.createElement("option"); o.value=nom; o.textContent=alias; selAux.appendChild(o); });
-  selAux.value = ""; // siempre en blanco al cargar
-  selAux.addEventListener("change", e=>{ state.loginAuxiliar=e.target.value; const a=document.getElementById("ast-aux"); if(a) a.style.color=e.target.value?"#bbb":"#e53935"; });
-  box.appendChild(selAux);
-
-  // ── Leyenda campos obligatorios ──
-  const leyendaOblig = document.createElement("div");
-  leyendaOblig.id = "leyenda-oblig";
-  leyendaOblig.style.cssText = "font-size:11px;color:#bbb;text-align:left;margin-bottom:14px;margin-top:-4px;";
-  leyendaOblig.textContent = "* campos obligatorios";
-  box.appendChild(leyendaOblig);
-
-  // ── Fecha de entrega ──
-  // La fecha solo es editable si el usuario que está ingresando es admin
-  // Como en este punto aún no sabemos el rol (requiere fetch), usamos un flag en state
-  // que se activa si en alguna sesión previa fue admin en este dispositivo
+  // ── Fecha de entrega (solo editable para admin, readonly para repartidor) ──
   const esAdminLocal = (() => { try { const s=localStorage.getItem("liq_session"); if(s){const u=JSON.parse(s);return u.rol==="admin";}} catch(e){} return false; })();
-  box.appendChild(lbl("📅 Fecha de entrega"));
   if(esAdminLocal) {
+    box.appendChild(lbl("📅 Fecha de entrega"));
     const fechaInp = document.createElement("input");
     fechaInp.type = "date";
     fechaInp.value = state.loginFechaEntrega || hoy();
     fechaInp.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:16px;";
     fechaInp.addEventListener("change", e=>{ state.loginFechaEntrega=e.target.value; });
     box.appendChild(fechaInp);
-  } else {
-    // Solo lectura: mostrar la fecha como texto
-    if(!state.loginFechaEntrega) state.loginFechaEntrega = hoy();
-    const [fy,fm,fd] = state.loginFechaEntrega.split("-");
-    const diasN=["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
-    const mesesN=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
-    const dtN=new Date(Number(fy),Number(fm)-1,Number(fd));
-    const fechaTextual=`${diasN[dtN.getDay()]}, ${Number(fd)} de ${mesesN[dtN.getMonth()]} de ${fy}`;
-    const fechaReadOnly = document.createElement("div");
-    fechaReadOnly.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #e0e0e0;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:16px;background:#f8f8f8;color:#555;text-align:left;";
-    fechaReadOnly.textContent = fechaTextual;
-    box.appendChild(fechaReadOnly);
   }
 
   if(state.appPassError) box.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.appPassError));
@@ -2764,7 +2682,7 @@ function renderLogin() {
   const loginBtn = document.createElement("button");
   loginBtn.textContent = state.cargandoDatos ? "Ingresando..." : "Ingresar";
   loginBtn.disabled = state.cargandoDatos;
-  loginBtn.style.cssText = "width:100%;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-bottom:12px;";
+  loginBtn.style.cssText = "width:100%;background:#1e3a5f;color:#fff;border:none;border-radius:10px;padding:13px 0;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-bottom:12px;";
   loginBtn.addEventListener("click", ()=>{ document.activeElement?.blur(); iniciarSesion(); });
   box.appendChild(loginBtn);
 
