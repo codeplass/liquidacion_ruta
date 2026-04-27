@@ -347,7 +347,12 @@ async function iniciarSesionConUsuario(usuario) {
     if(repVinculado) state.loginRepartidor = typeof repVinculado==="string"?repVinculado:(repVinculado.nombre||"");
   } catch(e){}
   const datos=await fbGet("datos-dia");
-  if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length>0){
+  // Para repartidores: verificar que los datos-dia les pertenecen
+  // Si el campo repartidor existe y no coincide, ignorar los datos
+  const repNombreActual = usuario.repartidorVinculado || "";
+  const datosValidos = datos && datos.clienteMap && Object.keys(datos.clienteMap).length>0
+    && (admin || !datos.repartidor || !repNombreActual || datos.repartidor===repNombreActual);
+  if(datosValidos){
     const yaConfirmado = datos.confirmado === true;
     if(yaConfirmado && admin){
       setState({
@@ -375,7 +380,11 @@ async function iniciarSesionConUsuario(usuario) {
       });
     }
   } else {
-    setState({screen:admin?"menu":"menuRepartidor", cargandoDatos:false});
+    setState({screen:admin?"menu":"menuRepartidor", cargandoDatos:false,
+      // Limpiar clienteMap si los datos no le pertenecen a este repartidor
+      clienteMap:{}, devoluciones:[], estadoEntrega:{}, bloqueados:{},
+      descuentos:{}, comentarios:{}, confirmado:false
+    });
   }
 }
 
@@ -1185,14 +1194,17 @@ function renderHistorial() {
       (state.listaRepartidores||[]).forEach(r=>{ const n=typeof r==="string"?r:(r.nombre||""); if(n) repsSet.add(n); });
       const reps = [...repsSet].sort();
 
-      if(reps.length===0){
-        inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"48px",textAlign:"center",color:"#aaa"}},"No hay repartidores registrados aún."));
+      // Contar fechas sin repartidor asignado
+      const sinAsignar = Object.entries(data).filter(([,v])=>!v.repartidor);
+
+      if(reps.length===0 && sinAsignar.length===0){
+        inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"48px",textAlign:"center",color:"#aaa"}},"No hay liquidaciones registradas aún."));
         return wrap;
       }
-      const titulo = el("p",{style:{fontSize:"13px",fontWeight:"600",color:"#555",margin:"0 0 12px"}},"Selecciona un repartidor:");
-      inner.appendChild(titulo);
+      inner.appendChild(el("p",{style:{fontSize:"13px",fontWeight:"600",color:"#555",margin:"0 0 12px"}},"Selecciona un repartidor:"));
+
+      // Cards de repartidores conocidos
       reps.forEach(rep => {
-        // Contar fechas de ese repartidor
         const fechasRep = Object.entries(data).filter(([,v])=>v.repartidor===rep).length;
         const card = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"16px 20px",marginBottom:"10px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"},
           onClick:()=>setState({historialRepSelec:rep})});
@@ -1203,41 +1215,107 @@ function renderHistorial() {
         card.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
         inner.appendChild(card);
       });
+
+      // Card "Sin asignar" para liquidaciones sin repartidor
+      if(sinAsignar.length>0){
+        const cardSin = el("div",{style:{background:"#fff8e1",border:"1px solid #ffe082",borderRadius:"12px",padding:"16px 20px",marginBottom:"10px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"},
+          onClick:()=>setState({historialRepSelec:"__sin_asignar__"})});
+        const leftSin = el("div");
+        leftSin.appendChild(el("div",{style:{fontWeight:"700",fontSize:"15px",color:"#795548"}},"⚠️ Sin asignar"));
+        leftSin.appendChild(el("div",{style:{fontSize:"12px",color:"#aaa",marginTop:"2px"}},sinAsignar.length+" liquidación"+(sinAsignar.length>1?"es":"")+" sin repartidor"));
+        cardSin.appendChild(leftSin);
+        cardSin.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
+        inner.appendChild(cardSin);
+      }
       return wrap;
     }
 
-    // ── Vista admin: fechas del repartidor seleccionado ──
+    // ── Vista admin: fechas del repartidor seleccionado (o sin asignar) ──
     if(state.historialRepSelec && !state.fechaSelec) {
       const repSelec = state.historialRepSelec;
+      const esSinAsignar = repSelec === "__sin_asignar__";
       const fechasRep = Object.entries(data)
-        .filter(([,v])=>v.repartidor===repSelec)
+        .filter(([,v])=> esSinAsignar ? !v.repartidor : v.repartidor===repSelec)
         .map(([f])=>f).sort().reverse();
 
       const hdrRep = el("div",{style:{display:"flex",alignItems:"center",gap:"10px",marginBottom:"16px"}});
       hdrRep.appendChild(el("button",{style:{background:"#f0f4f8",border:"none",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"13px",color:"#555"},
         onClick:()=>setState({historialRepSelec:"",fechaSelec:""})},"← Repartidores"));
-      hdrRep.appendChild(el("h2",{style:{margin:"0",fontSize:"16px",color:"#1e3a5f"}},repSelec));
+      hdrRep.appendChild(el("h2",{style:{margin:"0",fontSize:"16px",color:esSinAsignar?"#795548":"#1e3a5f"}},
+        esSinAsignar?"⚠️ Sin asignar":repSelec));
       inner.appendChild(hdrRep);
+
+      if(esSinAsignar && fechasRep.length>0){
+        const nota=el("div",{style:{background:"#fff8e1",border:"1px solid #ffe082",borderRadius:"10px",padding:"10px 14px",fontSize:"12px",color:"#795548",marginBottom:"14px"}});
+        nota.textContent="Estas liquidaciones no tienen repartidor asignado. Puedes asignarlas haciendo click en cada una.";
+        inner.appendChild(nota);
+      }
 
       if(fechasRep.length===0){
         inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"32px",textAlign:"center",color:"#aaa"}},"Este repartidor no tiene liquidaciones registradas."));
         return wrap;
       }
-      fechasRep.forEach(f => {
-        const reg = data[f];
-        const [fy,fm,fd] = f.split("-");
+
+      const fmtFecha = f => {
+        const [fy,fm,fd]=f.split("-");
         const diasN=["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
         const mesesN=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
         const dtF=new Date(Number(fy),Number(fm)-1,Number(fd));
-        const fechaLabel=`${diasN[dtF.getDay()]} ${Number(fd)} ${mesesN[dtF.getMonth()]} ${fy}`;
+        return `${diasN[dtF.getDay()]} ${Number(fd)} ${mesesN[dtF.getMonth()]} ${fy}`;
+      };
+
+      fechasRep.forEach(f => {
+        const reg = data[f];
         const totalClientes = Object.keys(reg.estadoEntrega||{}).length;
-        const card = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"10px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"},
+        const card = el("div",{style:{background:esSinAsignar?"#fffde7":"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"10px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}});
+        const cardTop = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"},
           onClick:()=>cargarFechaHistorial(f)});
         const left = el("div");
-        left.appendChild(el("div",{style:{fontWeight:"700",fontSize:"14px",color:"#1e3a5f"}},fechaLabel));
+        left.appendChild(el("div",{style:{fontWeight:"700",fontSize:"14px",color:"#1e3a5f"}},fmtFecha(f)));
         left.appendChild(el("div",{style:{fontSize:"12px",color:"#aaa",marginTop:"2px"}},totalClientes+" cliente"+(totalClientes!==1?"s":"")));
-        card.appendChild(left);
-        card.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
+        cardTop.appendChild(left);
+        cardTop.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
+        card.appendChild(cardTop);
+
+        // Botón asignar (solo en vista sin asignar)
+        if(esSinAsignar){
+          const asigRow = el("div",{style:{marginTop:"10px",display:"flex",gap:"8px",alignItems:"center",flexWrap:"wrap"}});
+          const selAsig = document.createElement("select");
+          selAsig.style.cssText="flex:1;padding:6px 10px;border-radius:8px;border:1px solid #ccc;font-size:13px;font-family:sans-serif;min-width:140px;";
+          selAsig.appendChild(Object.assign(document.createElement("option"),{value:"",textContent:"-- Asignar a... --"}));
+          (state.listaRepartidores||[]).forEach(r=>{
+            const nom=typeof r==="string"?r:(r.nombre||"");
+            const alias=typeof r==="object"&&r.alias?r.alias:nom;
+            const o=document.createElement("option"); o.value=nom; o.textContent=alias+(alias!==nom?" ("+nom+")":"");
+            selAsig.appendChild(o);
+          });
+          selAsig.addEventListener("click", e=>e.stopPropagation());
+          const btnAsig = document.createElement("button");
+          btnAsig.textContent="✅ Asignar";
+          btnAsig.style.cssText="background:#27ae60;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;flex-shrink:0;";
+          btnAsig.addEventListener("click", async e=>{
+            e.stopPropagation();
+            const repElegido=selAsig.value;
+            if(!repElegido){alert("Selecciona un repartidor.");return;}
+            btnAsig.textContent="Guardando..."; btnAsig.disabled=true;
+            try {
+              const existing=await fbGet("historial")||{};
+              if(existing[f]){
+                existing[f].repartidor=repElegido;
+                await fbSet("historial/"+f, existing[f]);
+                data[f].repartidor=repElegido;
+                showToast("✅ Asignado a "+repElegido,"#27ae60");
+                setState({historialData:{...data}});
+              }
+            } catch(err){
+              btnAsig.textContent="✅ Asignar"; btnAsig.disabled=false;
+              showToast("Error al asignar","#c0392b");
+            }
+          });
+          asigRow.appendChild(selAsig);
+          asigRow.appendChild(btnAsig);
+          card.appendChild(asigRow);
+        }
         inner.appendChild(card);
       });
       return wrap;
@@ -2881,11 +2959,14 @@ function abrirModalPersonal() {
 // ── Menú del repartidor (después del login, antes de seleccionar acción) ──
 function renderMenuRepartidor() {
   const nombre = state.usuarioActual?.nombre || "Repartidor";
+  const rep = state.repartidorVinculado;
+  const alias = rep && typeof rep==="object" && rep.alias ? rep.alias : "";
+  const saludoNombre = alias ? nombre+" ("+alias+")" : nombre;
   const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
   const box  = el("div",{style:{background:"#fff",borderRadius:"16px",padding:"36px 28px",maxWidth:"380px",width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
   box.appendChild(el("div",{style:{fontSize:"48px",marginBottom:"10px"}},"📦"));
   box.appendChild(el("h2",{style:{margin:"0 0 2px",color:"#1e3a5f",fontSize:"20px"}},"Liquidación de Entregas"));
-  box.appendChild(el("p",{style:{margin:"0 0 28px",fontSize:"13px",color:"#888"}},"Bienvenido, "+nombre));
+  box.appendChild(el("p",{style:{margin:"0 0 28px",fontSize:"13px",color:"#888"}},"Bienvenido, "+saludoNombre));
 
   const btn = (icon,label,bg,onClick) => {
     const b = el("button",{style:{width:"100%",background:bg,color:"#fff",border:"none",borderRadius:"12px",padding:"18px 20px",fontSize:"16px",fontWeight:"700",cursor:"pointer",marginBottom:"14px",display:"flex",alignItems:"center",gap:"16px",textAlign:"left"},onClick});
@@ -3012,6 +3093,13 @@ function renderSeleccionEntrega() {
     // Guardar en state y continuar
     state.loginRepartidor = repFinal;
     guardarPersonalLocal();
+    // Marcar en datos-dia a quién pertenece esta sesión de entrega
+    try {
+      const dd = await fbGet("datos-dia") || {};
+      if(!dd.repartidor || dd.repartidor !== repFinal) {
+        await fbSet("datos-dia", {...dd, repartidor: repFinal, auxiliar: auxFinal});
+      }
+    } catch(e){}
     setState({screen: tieneData ? "main" : "nodatos"});
   };
   box.appendChild(btnCont);
