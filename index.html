@@ -40,7 +40,7 @@ const db = firebase.database();
 const auth = firebase.auth();
 
 // ── Constantes ──
-const MOTIVOS = [
+let MOTIVOS = [
   {codigo:"D01",desc:"Cliente rechazó el pedido"},
   {codigo:"D02",desc:"Producto incorrecto"},
   {codigo:"D03",desc:"Sin dinero"},
@@ -49,7 +49,7 @@ const MOTIVOS = [
   {codigo:"D06",desc:"Producto mal cargado en bodega"},
 ];
 const BILLETES = [1,5,10,20,50,100,200];
-const PASS_DESBLOQUEO = "1234";
+let PASS_DESBLOQUEO = "1234"; // sobreescrito por Firebase
 
 // ── Helpers ──
 const fQ = v => `Q ${Number(v||0).toLocaleString("es-GT",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
@@ -204,6 +204,12 @@ let state = {
   dvPopup: null, // {cliente, pedido, producto, dispU, dispM, unidades, error}
   dvTemporal: [], // devoluciones temporales (no guardadas en Firebase hasta confirmar)
   longPressModal: null, // {cliente, paso:"motivo"|"confirmar", codigo, tipo:"cliente"|"producto"}
+  // Tripulación y fecha de entrega (pantalla login)
+  loginRepartidor: "",
+  loginAuxiliar: "",
+  loginFechaEntrega: hoy(),
+  listaRepartidores: [], // cargada de Firebase config/personal
+  listaAuxiliares: [],
 };
 
 function setState(updates) {
@@ -301,6 +307,10 @@ let _authResuelto = false;
 
 function guardarSesionLocal(usuario) {
   try { localStorage.setItem("liq_session", JSON.stringify(usuario)); } catch(e){}
+  try { localStorage.setItem("liq_lastuser", usuario.nombre||""); } catch(e){}
+}
+function guardarPersonalLocal() {
+  // No guardar repartidor/auxiliar: deben seleccionarse siempre al entrar
 }
 function leerSesionLocal() {
   try { const s=localStorage.getItem("liq_session"); return s?JSON.parse(s):null; } catch(e){return null;} }
@@ -311,7 +321,21 @@ async function iniciarSesionConUsuario(usuario) {
   _loginEnProceso = false;
   const admin = usuario.rol === "admin";
   guardarSesionLocal(usuario);
+  guardarPersonalLocal();
   setState({autenticado:true, esAdmin:admin, usuarioActual:usuario, appPassError:"", cargandoDatos:true});
+  // Cargar config desde Firebase (pass desbloqueo, motivos, personal)
+  try {
+    const cfg=await fbGet("config")||{};
+    if(cfg.passDesbloqueo) PASS_DESBLOQUEO=cfg.passDesbloqueo;
+    if(cfg.motivos && Array.isArray(cfg.motivos) && cfg.motivos.length>0) MOTIVOS=cfg.motivos;
+    const reps=Array.isArray(cfg.personal?.repartidores)?cfg.personal.repartidores:[];
+    const auxs=Array.isArray(cfg.personal?.auxiliares)?cfg.personal.auxiliares:[];
+    state.listaRepartidores=reps;
+    state.listaAuxiliares=auxs;
+    // Siempre en blanco al iniciar sesión (selección obligatoria cada vez)
+    state.loginRepartidor="";
+    state.loginAuxiliar="";
+  } catch(e){}
   const datos=await fbGet("datos-dia");
   if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length>0){
     const yaConfirmado = datos.confirmado === true;
@@ -330,7 +354,7 @@ async function iniciarSesionConUsuario(usuario) {
     } else {
       setState({
         clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:hoy(),
-        screen:"menu", cargandoDatos:false, confirmado:yaConfirmado,
+        screen:admin?"menu":"main", cargandoDatos:false, confirmado:yaConfirmado,
         estadoEntrega:datos.estadoEntrega||{}, entregados:datos.entregados||{},
         bloqueados:datos.bloqueados||{}, devoluciones:datos.devoluciones||[],
         motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
@@ -341,7 +365,7 @@ async function iniciarSesionConUsuario(usuario) {
       });
     }
   } else {
-    setState({screen:"menu", cargandoDatos:false});
+    setState({screen:admin?"menu":"nodatos", cargandoDatos:false});
   }
 }
 
@@ -359,6 +383,20 @@ async function iniciarSesion() {
     );
 
     if(!found) { state.appPassError="Usuario no encontrado."; state.cargandoDatos=false; _loginEnProceso=false; render(); return; }
+
+    // Validar repartidor y auxiliar para usuarios no-admin
+    if(found.rol !== "admin") {
+      if(!state.loginRepartidor || !state.loginAuxiliar) {
+        state.appPassError="Selecciona los campos obligatorios marcados con *.";
+        state.cargandoDatos=false; _loginEnProceso=false;
+        setTimeout(()=>{
+          const ar=document.getElementById("ast-rep"); if(ar && !state.loginRepartidor) ar.style.color="#e53935";
+          const aa=document.getElementById("ast-aux"); if(aa && !state.loginAuxiliar) aa.style.color="#e53935";
+          const ley=document.getElementById("leyenda-oblig"); if(ley) ley.style.color="#e53935";
+        },50);
+        render(); return;
+      }
+    }
 
     if(found.rol === "admin" && found.email) {
       try {
@@ -1336,7 +1374,15 @@ function renderDetalleCliente() {
     if(devsTemporales.length > 0) {
       if(!confirm("Si sale sin confirmar, no se grabarán los cambios de devolución. ¿Desea salir?")) return;
     }
-    setState({clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c});
+    // Si el cliente estaba desbloqueado (tenía estado previo pero fue editado sin re-confirmar), preguntar y volver a bloquear
+    const estadoAct = state.estadoEntrega[c];
+    const fueDesbloqueado = estadoAct && !state.bloqueados[c];
+    if(fueDesbloqueado) {
+      if(!confirm("Si sale, se perderán los cambios realizados. ¿Desea salir?")) return;
+    }
+    const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
+    if(fueDesbloqueado) updVolver.bloqueados = {...state.bloqueados, [c]: true};
+    setState(updVolver);
   }},"← Volver"));
   hdrLeft.appendChild(el("h2",{style:{margin:"0",fontSize:"17px"}},c));
   const subtitleRow=el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginTop:"3px"}});
@@ -2497,11 +2543,27 @@ function render() {
 
 // ── Render Login ──
 function renderLogin() {
-  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}});
-  const box = el("div",{style:{background:"#fff",borderRadius:"16px",padding:"36px",width:"340px",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
-  box.appendChild(el("div",{style:{fontSize:"48px",marginBottom:"12px"}},"📦"));
-  box.appendChild(el("h2",{style:{margin:"0 0 4px",color:"#1e3a5f",fontSize:"20px"}},"Liquidación de Entregas"));
-  box.appendChild(el("p",{style:{margin:"0 0 24px",fontSize:"13px",color:"#888"}},"Ingresa tus credenciales para continuar"));
+  // Precargar último usuario usado en este dispositivo
+  if(!state.appUser) { try { const lu=localStorage.getItem("liq_lastuser"); if(lu) state.appUser=lu; } catch(e){} }
+
+  // Formatear fecha legible para mostrar
+  const fechaDisplay = (() => {
+    const [y,m,d] = state.loginFechaEntrega.split("-");
+    const dias=["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
+    const meses=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+    const dt=new Date(Number(y),Number(m)-1,Number(d));
+    return `${dias[dt.getDay()]}, ${Number(d)} de ${meses[dt.getMonth()]} de ${y}`;
+  })();
+
+  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"16px"}});
+  const box = el("div",{style:{background:"#fff",borderRadius:"16px",padding:"32px 28px",width:"100%",maxWidth:"360px",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
+  box.appendChild(el("div",{style:{fontSize:"48px",marginBottom:"10px"}},"📦"));
+  box.appendChild(el("h2",{style:{margin:"0 0 2px",color:"#1e3a5f",fontSize:"20px"}},"Liquidación de Entregas"));
+
+  // Mostrar fecha de entrega
+  const fechaBox = el("div",{style:{background:"#e8f0fe",borderRadius:"8px",padding:"8px 14px",marginBottom:"20px",display:"inline-block"}});
+  fechaBox.appendChild(el("span",{style:{fontSize:"13px",color:"#1e3a5f",fontWeight:"600"}},"📅 "+fechaDisplay));
+  box.appendChild(fechaBox);
 
   if(state.resetEnviado) {
     box.appendChild(el("div",{style:{background:"#e8f5e9",borderRadius:"10px",padding:"16px",marginBottom:"16px",fontSize:"13px",color:"#27ae60",fontWeight:"600"}},"✅ Correo enviado. Revisa tu bandeja de entrada para restablecer tu contraseña."));
@@ -2509,18 +2571,23 @@ function renderLogin() {
     wrap.appendChild(box); return wrap;
   }
 
-  // Correo
+  // ── Helper label ──
+  const lbl = (txt) => { const l=document.createElement("label"); l.textContent=txt; l.style.cssText="display:block;font-size:11px;font-weight:600;color:#666;text-align:left;margin-bottom:3px;text-transform:uppercase;letter-spacing:0.4px;"; return l; };
+
+  // ── Usuario ──
+  box.appendChild(lbl("Usuario"));
   const emailInp = document.createElement("input");
-  emailInp.type = "text"; emailInp.placeholder = "Usuario";
+  emailInp.type = "text"; emailInp.placeholder = "Nombre de usuario";
   emailInp.value = state.appUser || "";
-  emailInp.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:10px;";
+  emailInp.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:12px;";
   emailInp.addEventListener("input", e => { state.appUser = e.target.value; });
   emailInp.addEventListener("keydown", e => { if(e.key==="Enter") passInp.focus(); });
   setTimeout(()=>emailInp.focus(), 100);
   box.appendChild(emailInp);
 
-  // Contraseña
-  const passWrap = el("div",{style:{position:"relative",marginBottom:"8px"}});
+  // ── Contraseña ──
+  box.appendChild(lbl("Contraseña"));
+  const passWrap = el("div",{style:{position:"relative",marginBottom:"12px"}});
   const passInp = document.createElement("input");
   passInp.type = state.verPass ? "text" : "password";
   passInp.placeholder = "Contraseña";
@@ -2535,7 +2602,88 @@ function renderLogin() {
   passWrap.appendChild(passInp); passWrap.appendChild(eyeBtn);
   box.appendChild(passWrap);
 
-  if(state.appPassError) box.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"4px 0 10px"}},state.appPassError));
+  // ── Separador ──
+  const sep = document.createElement("hr");
+  sep.style.cssText = "border:none;border-top:1px solid #eee;margin:4px 0 14px;";
+  box.appendChild(sep);
+
+  // ── Repartidor ──
+  // Label repartidor con asterisco
+  const lblRepRow = document.createElement("div");
+  lblRepRow.style.cssText = "display:flex;align-items:center;gap:4px;margin-bottom:3px;";
+  const lblRepTxt = document.createElement("span");
+  lblRepTxt.textContent = "🚚 Repartidor";
+  lblRepTxt.style.cssText = "font-size:11px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:0.4px;";
+  const astRep = document.createElement("span");
+  astRep.id = "ast-rep";
+  astRep.textContent = "*";
+  astRep.style.cssText = "font-size:13px;font-weight:700;color:#bbb;";
+  lblRepRow.appendChild(lblRepTxt); lblRepRow.appendChild(astRep);
+  box.appendChild(lblRepRow);
+  const selRep = document.createElement("select");
+  selRep.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:12px;background:#fff;";
+  selRep.appendChild(Object.assign(document.createElement("option"),{value:"",textContent:"-- Seleccionar repartidor --"}));
+  (state.listaRepartidores||[]).forEach(r=>{ const o=document.createElement("option"); o.value=r; o.textContent=r; selRep.appendChild(o); });
+  selRep.value = ""; // siempre en blanco al cargar
+  selRep.addEventListener("change", e=>{ state.loginRepartidor=e.target.value; const a=document.getElementById("ast-rep"); if(a) a.style.color=e.target.value?"#bbb":"#e53935"; });
+  box.appendChild(selRep);
+
+  // ── Auxiliar ──
+  // Label auxiliar con asterisco
+  const lblAuxRow = document.createElement("div");
+  lblAuxRow.style.cssText = "display:flex;align-items:center;gap:4px;margin-bottom:3px;";
+  const lblAuxTxt = document.createElement("span");
+  lblAuxTxt.textContent = "👷 Auxiliar";
+  lblAuxTxt.style.cssText = "font-size:11px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:0.4px;";
+  const astAux = document.createElement("span");
+  astAux.id = "ast-aux";
+  astAux.textContent = "*";
+  astAux.style.cssText = "font-size:13px;font-weight:700;color:#bbb;";
+  lblAuxRow.appendChild(lblAuxTxt); lblAuxRow.appendChild(astAux);
+  box.appendChild(lblAuxRow);
+  const selAux = document.createElement("select");
+  selAux.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:12px;background:#fff;";
+  selAux.appendChild(Object.assign(document.createElement("option"),{value:"",textContent:"-- Seleccionar auxiliar --"}));
+  (state.listaAuxiliares||[]).forEach(a=>{ const o=document.createElement("option"); o.value=a; o.textContent=a; selAux.appendChild(o); });
+  selAux.value = ""; // siempre en blanco al cargar
+  selAux.addEventListener("change", e=>{ state.loginAuxiliar=e.target.value; const a=document.getElementById("ast-aux"); if(a) a.style.color=e.target.value?"#bbb":"#e53935"; });
+  box.appendChild(selAux);
+
+  // ── Leyenda campos obligatorios ──
+  const leyendaOblig = document.createElement("div");
+  leyendaOblig.id = "leyenda-oblig";
+  leyendaOblig.style.cssText = "font-size:11px;color:#bbb;text-align:left;margin-bottom:14px;margin-top:-4px;";
+  leyendaOblig.textContent = "* campos obligatorios";
+  box.appendChild(leyendaOblig);
+
+  // ── Fecha de entrega ──
+  // La fecha solo es editable si el usuario que está ingresando es admin
+  // Como en este punto aún no sabemos el rol (requiere fetch), usamos un flag en state
+  // que se activa si en alguna sesión previa fue admin en este dispositivo
+  const esAdminLocal = (() => { try { const s=localStorage.getItem("liq_session"); if(s){const u=JSON.parse(s);return u.rol==="admin";}} catch(e){} return false; })();
+  box.appendChild(lbl("📅 Fecha de entrega"));
+  if(esAdminLocal) {
+    const fechaInp = document.createElement("input");
+    fechaInp.type = "date";
+    fechaInp.value = state.loginFechaEntrega || hoy();
+    fechaInp.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:16px;";
+    fechaInp.addEventListener("change", e=>{ state.loginFechaEntrega=e.target.value; });
+    box.appendChild(fechaInp);
+  } else {
+    // Solo lectura: mostrar la fecha como texto
+    if(!state.loginFechaEntrega) state.loginFechaEntrega = hoy();
+    const [fy,fm,fd] = state.loginFechaEntrega.split("-");
+    const diasN=["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
+    const mesesN=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+    const dtN=new Date(Number(fy),Number(fm)-1,Number(fd));
+    const fechaTextual=`${diasN[dtN.getDay()]}, ${Number(fd)} de ${mesesN[dtN.getMonth()]} de ${fy}`;
+    const fechaReadOnly = document.createElement("div");
+    fechaReadOnly.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #e0e0e0;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:16px;background:#f8f8f8;color:#555;text-align:left;";
+    fechaReadOnly.textContent = fechaTextual;
+    box.appendChild(fechaReadOnly);
+  }
+
+  if(state.appPassError) box.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.appPassError));
 
   const loginBtn = document.createElement("button");
   loginBtn.textContent = state.cargandoDatos ? "Ingresando..." : "Ingresar";
@@ -2544,7 +2692,6 @@ function renderLogin() {
   loginBtn.addEventListener("click", ()=>{ document.activeElement?.blur(); iniciarSesion(); });
   box.appendChild(loginBtn);
 
-  // Olvidé mi contraseña
   const forgotBtn = document.createElement("button");
   forgotBtn.textContent = "¿Olvidaste tu contraseña?";
   forgotBtn.style.cssText = "background:none;border:none;color:#2980b9;font-size:12px;cursor:pointer;font-family:sans-serif;text-decoration:underline;";
@@ -2554,6 +2701,121 @@ function renderLogin() {
   wrap.appendChild(box);
   return wrap;
 }
+
+
+// ── Modal gestionar personal (repartidores y auxiliares) ──
+function abrirModalPersonal() {
+  const prev = document.getElementById("modal-personal");
+  if(prev) prev.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "modal-personal";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;font-family:sans-serif;";
+
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:24px;width:100%;max-width:440px;max-height:90vh;overflow-y:auto;";
+
+  // Estado local
+  let reps = [...(state.listaRepartidores||[])];
+  let auxs = [...(state.listaAuxiliares||[])];
+
+  const renderLista = (arr, onUpdate, colorAccent) => {
+    const cont = document.createElement("div");
+    arr.forEach((nombre, idx) => {
+      const fila = document.createElement("div");
+      fila.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:8px;";
+      const inp = document.createElement("input");
+      inp.type = "text"; inp.value = nombre; inp.placeholder = "Nombre completo";
+      inp.style.cssText = "flex:1;padding:8px 10px;border-radius:8px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;font-family:sans-serif;";
+      inp.addEventListener("input", e => { arr[idx]=e.target.value; onUpdate(arr); });
+      const btnDel = document.createElement("button");
+      btnDel.textContent = "🗑️"; btnDel.title = "Eliminar";
+      btnDel.style.cssText = "background:#fce4ec;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;font-size:14px;flex-shrink:0;";
+      btnDel.onclick = () => { if(!confirm("¿Eliminar a \""+nombre+"\"?")) return; arr.splice(idx,1); onUpdate(arr); renderContenido(); };
+      fila.appendChild(inp); fila.appendChild(btnDel);
+      cont.appendChild(fila);
+    });
+    return cont;
+  };
+
+  const renderContenido = () => {
+    box.innerHTML = "";
+    const titulo = document.createElement("h3");
+    titulo.textContent = "🚚 Gestionar personal";
+    titulo.style.cssText = "margin:0 0 4px;color:#1a6e3c;font-size:16px;";
+    box.appendChild(titulo);
+    const desc = document.createElement("p");
+    desc.textContent = "Define los repartidores y auxiliares disponibles para seleccionar en el login.";
+    desc.style.cssText = "font-size:12px;color:#888;margin:0 0 18px;";
+    box.appendChild(desc);
+
+    // Sección Repartidores
+    const hRep = document.createElement("p");
+    hRep.textContent = "🚚 Repartidores";
+    hRep.style.cssText = "font-size:13px;font-weight:700;color:#1a6e3c;margin:0 0 8px;";
+    box.appendChild(hRep);
+    box.appendChild(renderLista(reps, arr=>{ reps=arr; }, "#1a6e3c"));
+    const btnAgrRep = document.createElement("button");
+    btnAgrRep.textContent = "➕ Agregar repartidor";
+    btnAgrRep.style.cssText = "width:100%;background:#e8f5e9;color:#1a6e3c;border:2px dashed #1a6e3c;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-bottom:18px;";
+    btnAgrRep.onclick = () => { reps.push(""); renderContenido(); };
+    box.appendChild(btnAgrRep);
+
+    // Sección Auxiliares
+    const hAux = document.createElement("p");
+    hAux.textContent = "👷 Auxiliares";
+    hAux.style.cssText = "font-size:13px;font-weight:700;color:#1565c0;margin:0 0 8px;";
+    box.appendChild(hAux);
+    box.appendChild(renderLista(auxs, arr=>{ auxs=arr; }, "#1565c0"));
+    const btnAgrAux = document.createElement("button");
+    btnAgrAux.textContent = "➕ Agregar auxiliar";
+    btnAgrAux.style.cssText = "width:100%;background:#e3f2fd;color:#1565c0;border:2px dashed #1565c0;border-radius:8px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-bottom:16px;";
+    btnAgrAux.onclick = () => { auxs.push(""); renderContenido(); };
+    box.appendChild(btnAgrAux);
+
+    const errP = document.createElement("p");
+    errP.style.cssText = "color:#c00;font-size:12px;margin:0 0 10px;min-height:16px;";
+    box.appendChild(errP);
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:10px;";
+
+    const btnGuardar = document.createElement("button");
+    btnGuardar.textContent = "💾 Guardar";
+    btnGuardar.style.cssText = "flex:1;background:#1a6e3c;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+    btnGuardar.onclick = async () => {
+      const repsLimpios = reps.map(r=>r.trim()).filter(Boolean);
+      const auxsLimpios = auxs.map(a=>a.trim()).filter(Boolean);
+      btnGuardar.textContent = "Guardando..."; btnGuardar.disabled = true;
+      try {
+        const cfgActual = await fbGet("config") || {};
+        await fbSet("config", {...cfgActual, personal:{repartidores:repsLimpios, auxiliares:auxsLimpios}});
+        state.listaRepartidores = repsLimpios;
+        state.listaAuxiliares = auxsLimpios;
+        overlay.remove();
+        showToast("✅ Personal actualizado","#27ae60");
+      } catch(e) {
+        errP.textContent = "Error al guardar. Intenta de nuevo.";
+        btnGuardar.textContent = "💾 Guardar"; btnGuardar.disabled = false;
+      }
+    };
+    btnRow.appendChild(btnGuardar);
+
+    const btnCancelar = document.createElement("button");
+    btnCancelar.textContent = "Cancelar";
+    btnCancelar.style.cssText = "flex:1;background:#eee;color:#555;border:none;border-radius:8px;padding:11px 0;font-size:14px;cursor:pointer;font-family:sans-serif;";
+    btnCancelar.onclick = () => overlay.remove();
+    btnRow.appendChild(btnCancelar);
+    box.appendChild(btnRow);
+  };
+
+  renderContenido();
+  overlay.appendChild(box);
+  overlay.addEventListener("click", e=>{ if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+// ── Modal cambiar contraseña de desbloqueo ──
 
 // ── Menú principal (para todos los roles después de login) ──
 function renderMenu() {
@@ -2587,6 +2849,9 @@ function renderMenu() {
     })));
     box.appendChild(btn("📅","Ver historial","#2980b9","#fff",abrirHistorial));
     box.appendChild(btn("👥","Administrar usuarios","#6c3483","#fff",cargarUsuarios));
+    box.appendChild(btn("🚚","Gestionar personal (repartidores/auxiliares)","#1a6e3c","#fff",abrirModalPersonal));
+    box.appendChild(btn("🔑","Cambiar contraseña de desbloqueo","#c0392b","#fff",abrirModalCambiarPassDesbloqueo));
+    box.appendChild(btn("↩️","Gestionar tipos de devolución","#d35400","#fff",abrirModalMotivos));
   } else {
     if(!tieneData) {
       box.appendChild(el("div",{style:{background:"#f0f4f8",borderRadius:"12px",padding:"20px",marginBottom:"12px",color:"#888",fontSize:"13px"}},"⏳ Esperando que el administrador cargue las entregas del día."));
@@ -2597,6 +2862,125 @@ function renderMenu() {
   box.appendChild(el("button",{style:{background:"none",border:"none",color:"#aaa",fontSize:"13px",cursor:"pointer",marginTop:"8px"},onClick:cerrarSesion},"🚪 Cerrar sesión"));
   wrap.appendChild(box);
   return wrap;
+}
+
+
+// ── Modal cambiar contraseña de desbloqueo ──
+function abrirModalCambiarPassDesbloqueo() {
+  const prev = document.getElementById("modal-pass-desbloqueo");
+  if(prev) prev.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "modal-pass-desbloqueo";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;font-family:sans-serif;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:28px;width:100%;max-width:380px;";
+  const titulo = document.createElement("h3");
+  titulo.textContent = "🔑 Contraseña de desbloqueo";
+  titulo.style.cssText = "margin:0 0 6px;color:#c0392b;font-size:16px;";
+  box.appendChild(titulo);
+  const desc = document.createElement("p");
+  desc.textContent = "Contraseña para desbloquear entregas ya confirmadas.";
+  desc.style.cssText = "font-size:12px;color:#888;margin:0 0 18px;";
+  box.appendChild(desc);
+  const mkInp = (lbl,ph) => {
+    const l=document.createElement("label"); l.textContent=lbl; l.style.cssText="display:block;font-size:11px;font-weight:600;color:#555;margin-bottom:3px;text-transform:uppercase;";
+    const i=document.createElement("input"); i.type="password"; i.placeholder=ph;
+    i.style.cssText="width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:12px;";
+    box.appendChild(l); box.appendChild(i); return i;
+  };
+  const iActual=mkInp("Contraseña actual","Contraseña actual");
+  const iNueva=mkInp("Nueva contraseña","Nueva (mín. 4 caracteres)");
+  const iConf=mkInp("Confirmar nueva","Repite la nueva contraseña");
+  const errP=document.createElement("p"); errP.style.cssText="color:#c00;font-size:12px;margin:0 0 10px;min-height:16px;"; box.appendChild(errP);
+  const btnRow=document.createElement("div"); btnRow.style.cssText="display:flex;gap:10px;";
+  const btnG=document.createElement("button"); btnG.textContent="💾 Guardar";
+  btnG.style.cssText="flex:1;background:#c0392b;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  btnG.onclick=async()=>{
+    const a=iActual.value.trim(),n=iNueva.value.trim(),c=iConf.value.trim();
+    if(!a||!n||!c){errP.textContent="Completa todos los campos.";return;}
+    if(a!==PASS_DESBLOQUEO){errP.textContent="La contraseña actual no es correcta.";return;}
+    if(n.length<4){errP.textContent="Mínimo 4 caracteres.";return;}
+    if(n!==c){errP.textContent="Las contraseñas no coinciden.";return;}
+    btnG.textContent="Guardando..."; btnG.disabled=true;
+    try {
+      const cfg=await fbGet("config")||{};
+      await fbSet("config",{...cfg,passDesbloqueo:n});
+      PASS_DESBLOQUEO=n; overlay.remove(); showToast("✅ Contraseña de desbloqueo actualizada","#27ae60");
+    } catch(e){ errP.textContent="Error al guardar."; btnG.textContent="💾 Guardar"; btnG.disabled=false; }
+  };
+  btnRow.appendChild(btnG);
+  const btnC=document.createElement("button"); btnC.textContent="Cancelar";
+  btnC.style.cssText="flex:1;background:#eee;color:#555;border:none;border-radius:8px;padding:11px 0;font-size:14px;cursor:pointer;font-family:sans-serif;";
+  btnC.onclick=()=>overlay.remove();
+  btnRow.appendChild(btnC); box.appendChild(btnRow);
+  overlay.appendChild(box);
+  overlay.addEventListener("click",e=>{if(e.target===overlay)overlay.remove();});
+  document.body.appendChild(overlay);
+  setTimeout(()=>iActual.focus(),100);
+}
+
+// ── Modal gestionar tipos de devolución ──
+function abrirModalMotivos() {
+  const prev = document.getElementById("modal-motivos");
+  if(prev) prev.remove();
+  let motivosLocal = JSON.parse(JSON.stringify(MOTIVOS));
+  const overlay = document.createElement("div");
+  overlay.id = "modal-motivos";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;font-family:sans-serif;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:24px;width:100%;max-width:420px;max-height:90vh;overflow-y:auto;";
+
+  const renderContenido = () => {
+    box.innerHTML = "";
+    const titulo=document.createElement("h3"); titulo.textContent="↩️ Tipos de devolución";
+    titulo.style.cssText="margin:0 0 4px;color:#d35400;font-size:16px;"; box.appendChild(titulo);
+    const desc=document.createElement("p"); desc.textContent="Agrega, edita o elimina los motivos de devolución disponibles.";
+    desc.style.cssText="font-size:12px;color:#888;margin:0 0 16px;"; box.appendChild(desc);
+    motivosLocal.forEach((m,idx)=>{
+      const fila=document.createElement("div"); fila.style.cssText="display:flex;gap:8px;align-items:center;margin-bottom:10px;";
+      const iCod=document.createElement("input"); iCod.type="text"; iCod.value=m.codigo; iCod.placeholder="Cód";
+      iCod.style.cssText="width:70px;padding:8px 10px;border-radius:8px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;font-family:sans-serif;flex-shrink:0;";
+      iCod.addEventListener("input",e=>{motivosLocal[idx].codigo=e.target.value.toUpperCase().slice(0,5);iCod.value=motivosLocal[idx].codigo;});
+      const iDesc=document.createElement("input"); iDesc.type="text"; iDesc.value=m.desc; iDesc.placeholder="Descripción";
+      iDesc.style.cssText="flex:1;padding:8px 10px;border-radius:8px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;font-family:sans-serif;";
+      iDesc.addEventListener("input",e=>{motivosLocal[idx].desc=e.target.value;});
+      const btnD=document.createElement("button"); btnD.textContent="🗑️";
+      btnD.style.cssText="background:#fce4ec;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;font-size:14px;flex-shrink:0;";
+      btnD.onclick=()=>{if(!confirm("¿Eliminar \""+m.desc+"\"?"))return;motivosLocal.splice(idx,1);renderContenido();};
+      fila.appendChild(iCod);fila.appendChild(iDesc);fila.appendChild(btnD);box.appendChild(fila);
+    });
+    const btnAgr=document.createElement("button"); btnAgr.textContent="➕ Agregar motivo";
+    btnAgr.style.cssText="width:100%;background:#fff3e0;color:#d35400;border:2px dashed #d35400;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-top:4px;margin-bottom:18px;";
+    btnAgr.onclick=()=>{
+      const nums=motivosLocal.map(m=>parseInt((m.codigo||"").replace(/[^0-9]/g,""))||0);
+      const next="D"+String(Math.max(0,...nums)+1).padStart(2,"0");
+      motivosLocal.push({codigo:next,desc:""}); renderContenido();
+    };
+    box.appendChild(btnAgr);
+    const errP=document.createElement("p"); errP.style.cssText="color:#c00;font-size:12px;margin:0 0 10px;min-height:16px;"; box.appendChild(errP);
+    const btnRow=document.createElement("div"); btnRow.style.cssText="display:flex;gap:10px;";
+    const btnG=document.createElement("button"); btnG.textContent="💾 Guardar cambios";
+    btnG.style.cssText="flex:1;background:#d35400;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+    btnG.onclick=async()=>{
+      for(const m of motivosLocal){if(!m.codigo.trim()||!m.desc.trim()){errP.textContent="Todos deben tener código y descripción.";return;}}
+      const cods=motivosLocal.map(m=>m.codigo.trim());
+      if(new Set(cods).size!==cods.length){errP.textContent="Hay códigos repetidos.";return;}
+      btnG.textContent="Guardando..."; btnG.disabled=true;
+      try {
+        const cfg=await fbGet("config")||{};
+        await fbSet("config",{...cfg,motivos:motivosLocal});
+        MOTIVOS=motivosLocal; overlay.remove(); showToast("✅ Tipos de devolución actualizados","#27ae60");
+      } catch(e){errP.textContent="Error al guardar."; btnG.textContent="💾 Guardar cambios"; btnG.disabled=false;}
+    };
+    btnRow.appendChild(btnG);
+    const btnC=document.createElement("button"); btnC.textContent="Cancelar";
+    btnC.style.cssText="flex:1;background:#eee;color:#555;border:none;border-radius:8px;padding:11px 0;font-size:14px;cursor:pointer;font-family:sans-serif;";
+    btnC.onclick=()=>overlay.remove(); btnRow.appendChild(btnC); box.appendChild(btnRow);
+  };
+  renderContenido();
+  overlay.appendChild(box);
+  overlay.addEventListener("click",e=>{if(e.target===overlay)overlay.remove();});
+  document.body.appendChild(overlay);
 }
 
 // ── Modal de usuario (independiente del ciclo render) ──
