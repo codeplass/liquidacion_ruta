@@ -403,6 +403,20 @@ async function iniciarSesion() {
 
     if(!found) { state.appPassError="Usuario no encontrado."; state.cargandoDatos=false; _loginEnProceso=false; render(); return; }
 
+    // Si es repartidor, verificar que no haya otro repartidor activo en datos-dia
+    if(found.rol !== "admin") {
+      try {
+        const dd = await fbGet("datos-dia");
+        const repActivo = dd?.repartidor || "";
+        const repVinc = found.repartidorVinculado || "";
+        // Hay repartidor activo y no es este usuario → bloquear
+        if(repActivo && repVinc && repActivo !== repVinc) {
+          state.appPassError = `Ya hay una sesión activa del repartidor "${repActivo}". Solo el administrador puede ingresar mientras haya una sesión de entrega activa.`;
+          state.cargandoDatos=false; _loginEnProceso=false; render(); return;
+        }
+      } catch(e) {}
+    }
+
     if(found.rol === "admin" && found.email) {
       try {
         const cred = await auth.signInWithEmailAndPassword(found.email, pass);
@@ -3041,7 +3055,7 @@ function renderSeleccionEntrega() {
   selAux.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:12px;background:#fff;";
   selAux.appendChild(Object.assign(document.createElement("option"),{value:"",textContent:"-- Seleccionar auxiliar --"}));
   (state.listaAuxiliares||[]).forEach(a=>{ const nom=typeof a==="string"?a:(a.nombre||""); const alias=typeof a==="object"&&a.alias?a.alias:nom; const o=document.createElement("option"); o.value=nom; o.textContent=alias; selAux.appendChild(o); });
-  selAux.value = "";
+  selAux.value = state.loginAuxiliar || "";
   selAux.addEventListener("change", e=>{
     state.loginAuxiliar=e.target.value;
     selAux.style.borderColor=e.target.value?"#ccc":"#ccc";
