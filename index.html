@@ -1566,9 +1566,10 @@ function renderDetalleCliente() {
     const estadoAct = state.estadoEntrega[c];
     const bloqueadoAct = !!state.bloqueados[c];
     const hayTemporales = state.dvTemporal.filter(d=>d.cliente===c).length > 0;
-    const fueDesbloqueado = !bloqueadoAct;
     const sinConfirmarPendiente = !!state._sinConfirmarPendiente;
-    const hayPendientes = fueDesbloqueado || hayTemporales || sinConfirmarPendiente;
+    // fueDesbloqueado: tenía estado previo Y fue desbloqueado, O marcó sin confirmar
+    const fueDesbloqueado = (!bloqueadoAct && !!estadoAct) || sinConfirmarPendiente;
+    const hayPendientes = fueDesbloqueado || hayTemporales;
     if(hayPendientes) {
       showModal({
         titulo:"💾 Cambios pendientes",
