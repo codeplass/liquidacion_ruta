@@ -330,7 +330,7 @@ async function iniciarSesionConUsuario(usuario) {
     } else {
       setState({
         clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:hoy(),
-        screen:admin?"menu":"main", cargandoDatos:false, confirmado:yaConfirmado,
+        screen:"menu", cargandoDatos:false, confirmado:yaConfirmado,
         estadoEntrega:datos.estadoEntrega||{}, entregados:datos.entregados||{},
         bloqueados:datos.bloqueados||{}, devoluciones:datos.devoluciones||[],
         motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
@@ -341,7 +341,7 @@ async function iniciarSesionConUsuario(usuario) {
       });
     }
   } else {
-    setState({screen:admin?"menu":"nodatos", cargandoDatos:false});
+    setState({screen:"menu", cargandoDatos:false});
   }
 }
 
