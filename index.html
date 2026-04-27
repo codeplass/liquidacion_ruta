@@ -208,6 +208,9 @@ let state = {
   loginRepartidor: "",
   loginAuxiliar: "",
   loginFechaEntrega: hoy(),
+  repartidorVinculado: null, // {nombre, alias} del repartidor vinculado al usuario
+  historialFiltroRep: "", // filtro de repartidor en historial (admin navega por repartidor)
+  historialRepSelec: "", // repartidor seleccionado en historial admin
   listaRepartidores: [], // cargada de Firebase config/personal
   listaAuxiliares: [],
 };
@@ -335,6 +338,13 @@ async function iniciarSesionConUsuario(usuario) {
     // Siempre en blanco al iniciar sesión (selección obligatoria cada vez)
     state.loginRepartidor="";
     state.loginAuxiliar="";
+    // Vincular usuario al repartidor por el campo repartidorVinculado guardado en Firebase
+    const nomVinc = usuario.repartidorVinculado || "";
+    const repVinculado = nomVinc
+      ? (reps.find(r=>(typeof r==="string"?r:(r.nombre||""))===nomVinc) || {nombre:nomVinc, alias:""})
+      : null;
+    state.repartidorVinculado = repVinculado;
+    if(repVinculado) state.loginRepartidor = typeof repVinculado==="string"?repVinculado:(repVinculado.nombre||"");
   } catch(e){}
   const datos=await fbGet("datos-dia");
   if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length>0){
@@ -354,7 +364,7 @@ async function iniciarSesionConUsuario(usuario) {
     } else {
       setState({
         clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:hoy(),
-        screen:admin?"menu":"main", cargandoDatos:false, confirmado:yaConfirmado,
+        screen:admin?"menu":"menuRepartidor", cargandoDatos:false, confirmado:yaConfirmado,
         estadoEntrega:datos.estadoEntrega||{}, entregados:datos.entregados||{},
         bloqueados:datos.bloqueados||{}, devoluciones:datos.devoluciones||[],
         motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
@@ -365,7 +375,7 @@ async function iniciarSesionConUsuario(usuario) {
       });
     }
   } else {
-    setState({screen:admin?"menu":"nodatos", cargandoDatos:false});
+    setState({screen:admin?"menu":"menuRepartidor", cargandoDatos:false});
   }
 }
 
@@ -570,6 +580,8 @@ async function confirmarLiquidacion() {
 
     existing[state.fecha]={
       fecha:state.fecha,fileName:state.fileName,
+      repartidor:state.loginRepartidor||"",
+      auxiliar:state.loginAuxiliar||"",
       entregados:state.entregados,
       estadoEntrega:state.estadoEntrega,
       motivosDevTotal:state.motivosDevTotal,
@@ -641,7 +653,7 @@ function renderConfirmado() {
 async function abrirHistorial() {
   const data=await fbGet("historial")||{};
   const fechas=Object.keys(data).sort().reverse();
-  setState({historialData:data,fechaSelec:fechas[0]||"",screen:"historial"});
+  setState({historialData:data,fechaSelec:"",historialRepSelec:"",screen:"historial"});
 }
 
 async function exportarExcel(reg) {
@@ -1164,55 +1176,116 @@ function renderUpload() {
 }
 
 function renderHistorial() {
-  const fechas=Object.keys(state.historialData).sort().reverse();
-  const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
-  const inner=el("div",{style:{maxWidth:"980px",margin:"0 auto"}});
+  const esAdmin = state.esAdmin;
+  const data = state.historialData || {};
+  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
+  const inner = el("div",{style:{maxWidth:"680px",margin:"0 auto"}});
   wrap.appendChild(inner);
-  const hdr=el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 24px",marginBottom:"20px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
-  const hdrL=el("div");
-  hdrL.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"6px",display:"block"},onClick:()=>setState({screen:"menu",modoHistorial:false})},"← Volver"));
-  hdrL.appendChild(el("h1",{style:{margin:"0",fontSize:"20px"}},"Historial de Liquidaciones"));
-  hdr.appendChild(hdrL); inner.appendChild(hdr);
-  if(fechas.length===0){
-    inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"48px",textAlign:"center",color:"#aaa"}},el("p",{},"No hay liquidaciones aun.")));
-    return wrap;
-  }
-  const selRow=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"16px",marginBottom:"16px",display:"flex",gap:"12px",alignItems:"center",flexWrap:"wrap"}});
-  selRow.appendChild(el("span",{style:{fontSize:"13px",fontWeight:"600",color:"#555"}},"Fecha:"));
-  const fBtns=el("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap"}});
-  fechas.forEach(f=>{
-    fBtns.appendChild(el("button",{style:{padding:"6px 14px",borderRadius:"8px",border:"none",cursor:"pointer",fontSize:"13px",fontWeight:"600",background:f===state.fechaSelec?"#1e3a5f":"#eef2f7",color:f===state.fechaSelec?"#fff":"#555"},onClick:()=>cargarFechaHistorial(f)},f));
-  });
-  selRow.appendChild(fBtns); inner.appendChild(selRow);
-  const reg2=state.historialData[state.fechaSelec];
-  if(reg2){
-    const banner=el("div",{style:{background:"#fff8e1",border:"1px solid #ffe082",borderRadius:"10px",padding:"10px 16px",fontSize:"13px",color:"#795548",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}});
-    banner.appendChild(el("span",{},"Liquidacion del "+state.fechaSelec+" - solo lectura"));
-    banner.appendChild(el("button",{style:{marginLeft:"auto",background:"#27ae60",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 14px",cursor:"pointer",fontSize:"12px",fontWeight:"700"},onClick:()=>exportarExcel(reg2)},"Exportar Excel"));
-    if(state.esAdmin && state.fechaSelec===hoy()){
-      banner.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"6px",padding:"5px 14px",cursor:"pointer",fontSize:"12px",fontWeight:"700"},onClick:async()=>{
-        const reg=state.historialData[hoy()];
-        if(!reg) return;
-        // Cargar datos del historial de hoy al estado editable
-        const datosParaGuardar = {
-          clienteMap:reg.clienteMap||{}, fileName:reg.fileName||"", fecha:reg.fecha||hoy(),
-          devoluciones:reg.devoluciones||[], estadoEntrega:reg.estadoEntrega||{},
-          motivosDevTotal:reg.motivosDevTotal||{}, descuentos:reg.descuentos||{},
-          comentarios:reg.comentarios||{}, deposito:reg.deposito||"",
-          transferencia:reg.transferencia||"", gastosDetalle:reg.gastosDetalle||[{desc:"",monto:"",comentario:"",deCuenta:true}],
-          billetes:reg.billetes||Object.fromEntries(BILLETES.map(b=>[b,""])), monedas:reg.monedas||"",
-          confirmado:true
-        };
-        // Guardar en datos-dia para que el flujo automático funcione de ahora en adelante
-        await fbSet("datos-dia", datosParaGuardar);
-        setState({
-          ...datosParaGuardar,
-          bloqueados:Object.fromEntries(Object.keys(reg.estadoEntrega||{}).map(k=>[k,true])),
-          busqueda:"", clienteDetalle:null, modoHistorial:false, screen:"main"
-        });
-      }},"✏️ Editar"));
+
+  // Header
+  const hdr = el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 24px",marginBottom:"20px",display:"flex",alignItems:"center",gap:"12px"}});
+  const volverScreen = esAdmin ? "menu" : "menuRepartidor";
+  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>setState({screen:volverScreen,modoHistorial:false,historialRepSelec:""})},"← Volver"));
+  hdr.appendChild(el("h1",{style:{margin:"0",fontSize:"18px",fontWeight:"700"}},"Historial de Liquidaciones"));
+  inner.appendChild(hdr);
+
+  if(esAdmin) {
+    // ── Vista admin: primero lista de repartidores ──
+    if(!state.historialRepSelec) {
+      // Extraer todos los repartidores únicos del historial
+      const repsSet = new Set();
+      Object.values(data).forEach(dia => { if(dia.repartidor) repsSet.add(dia.repartidor); });
+      // También incluir repartidores de la lista aunque no tengan historial aún
+      (state.listaRepartidores||[]).forEach(r=>{ const n=typeof r==="string"?r:(r.nombre||""); if(n) repsSet.add(n); });
+      const reps = [...repsSet].sort();
+
+      if(reps.length===0){
+        inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"48px",textAlign:"center",color:"#aaa"}},"No hay repartidores registrados aún."));
+        return wrap;
+      }
+      const titulo = el("p",{style:{fontSize:"13px",fontWeight:"600",color:"#555",margin:"0 0 12px"}},"Selecciona un repartidor:");
+      inner.appendChild(titulo);
+      reps.forEach(rep => {
+        // Contar fechas de ese repartidor
+        const fechasRep = Object.entries(data).filter(([,v])=>v.repartidor===rep).length;
+        const card = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"16px 20px",marginBottom:"10px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"},
+          onClick:()=>setState({historialRepSelec:rep})});
+        const left = el("div");
+        left.appendChild(el("div",{style:{fontWeight:"700",fontSize:"15px",color:"#1e3a5f"}},rep));
+        left.appendChild(el("div",{style:{fontSize:"12px",color:"#aaa",marginTop:"2px"}},fechasRep>0?fechasRep+" liquidación"+(fechasRep>1?"es":"")+" registrada"+(fechasRep>1?"s":""):"Sin liquidaciones aún"));
+        card.appendChild(left);
+        card.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
+        inner.appendChild(card);
+      });
+      return wrap;
     }
-    inner.appendChild(banner);
+
+    // ── Vista admin: fechas del repartidor seleccionado ──
+    if(state.historialRepSelec && !state.fechaSelec) {
+      const repSelec = state.historialRepSelec;
+      const fechasRep = Object.entries(data)
+        .filter(([,v])=>v.repartidor===repSelec)
+        .map(([f])=>f).sort().reverse();
+
+      const hdrRep = el("div",{style:{display:"flex",alignItems:"center",gap:"10px",marginBottom:"16px"}});
+      hdrRep.appendChild(el("button",{style:{background:"#f0f4f8",border:"none",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"13px",color:"#555"},
+        onClick:()=>setState({historialRepSelec:"",fechaSelec:""})},"← Repartidores"));
+      hdrRep.appendChild(el("h2",{style:{margin:"0",fontSize:"16px",color:"#1e3a5f"}},repSelec));
+      inner.appendChild(hdrRep);
+
+      if(fechasRep.length===0){
+        inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"32px",textAlign:"center",color:"#aaa"}},"Este repartidor no tiene liquidaciones registradas."));
+        return wrap;
+      }
+      fechasRep.forEach(f => {
+        const reg = data[f];
+        const [fy,fm,fd] = f.split("-");
+        const diasN=["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
+        const mesesN=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+        const dtF=new Date(Number(fy),Number(fm)-1,Number(fd));
+        const fechaLabel=`${diasN[dtF.getDay()]} ${Number(fd)} ${mesesN[dtF.getMonth()]} ${fy}`;
+        const totalClientes = Object.keys(reg.estadoEntrega||{}).length;
+        const card = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"10px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"},
+          onClick:()=>cargarFechaHistorial(f)});
+        const left = el("div");
+        left.appendChild(el("div",{style:{fontWeight:"700",fontSize:"14px",color:"#1e3a5f"}},fechaLabel));
+        left.appendChild(el("div",{style:{fontSize:"12px",color:"#aaa",marginTop:"2px"}},totalClientes+" cliente"+(totalClientes!==1?"s":"")));
+        card.appendChild(left);
+        card.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
+        inner.appendChild(card);
+      });
+      return wrap;
+    }
+  } else {
+    // ── Vista repartidor: sus propias fechas directamente ──
+    const repNombre = state.loginRepartidor || (state.repartidorVinculado
+      ? (typeof state.repartidorVinculado==="string"?state.repartidorVinculado:(state.repartidorVinculado.nombre||"")) : "");
+    const fechasRep = Object.entries(data)
+      .filter(([,v])=>!repNombre || v.repartidor===repNombre)
+      .map(([f])=>f).sort().reverse();
+
+    if(fechasRep.length===0){
+      inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"48px",textAlign:"center",color:"#aaa"}},"No tienes liquidaciones registradas aún."));
+      return wrap;
+    }
+    inner.appendChild(el("p",{style:{fontSize:"13px",fontWeight:"600",color:"#555",margin:"0 0 12px"}},"Tus liquidaciones:"));
+    fechasRep.forEach(f => {
+      const reg = data[f];
+      const [fy,fm,fd] = f.split("-");
+      const diasN=["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
+      const mesesN=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+      const dtF=new Date(Number(fy),Number(fm)-1,Number(fd));
+      const fechaLabel=`${diasN[dtF.getDay()]} ${Number(fd)} ${mesesN[dtF.getMonth()]} ${fy}`;
+      const totalClientes=Object.keys(reg.estadoEntrega||{}).length;
+      const card=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"10px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"},
+        onClick:()=>cargarFechaHistorial(f)});
+      const left=el("div");
+      left.appendChild(el("div",{style:{fontWeight:"700",fontSize:"14px",color:"#1e3a5f"}},fechaLabel));
+      left.appendChild(el("div",{style:{fontSize:"12px",color:"#aaa",marginTop:"2px"}},totalClientes+" cliente"+(totalClientes!==1?"s":"")));
+      card.appendChild(left);
+      card.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
+      inner.appendChild(card);
+    });
   }
   return wrap;
 }
@@ -1233,6 +1306,7 @@ function cargarFechaHistorial(fecha) {
     monedas:reg.monedas||"",
     bloqueados:Object.fromEntries(Object.keys(reg.estadoEntrega||{}).map(k=>[k,true])),
     busqueda:"", clienteDetalle:null, confirmado:true, modoHistorial:true,
+    // historialRepSelec se mantiene para poder volver correctamente al nivel de fechas
   });
 }
 
@@ -2022,7 +2096,7 @@ function renderMain() {
   const hdrBtns=el("div",{style:{display:"flex",gap:"8px",alignItems:"center"}});
   if(state.modoHistorial){
     hdrBtns.appendChild(el("span",{style:{background:"#f39c12",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Solo lectura"));
-    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"historial",modoHistorial:false})},"<- Historial"));
+    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"historial",modoHistorial:false,fechaSelec:""})},"← Historial"));
   } else {
     if(state.confirmado) hdrBtns.appendChild(el("span",{style:{background:"#27ae60",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Confirmada"));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:abrirHistorial},"Historial"));
@@ -2511,6 +2585,8 @@ function render() {
   else if(state.cargandoDatos) content=renderCargando();
   else if(state.screenAdmin==="usuarios") content=renderAdminUsuarios();
   else if(state.screen==="menu") content=renderMenu();
+  else if(state.screen==="menuRepartidor") content=renderMenuRepartidor();
+  else if(state.screen==="seleccionEntrega") content=renderSeleccionEntrega();
   else if(state.screen==="inicio") content=renderInicio();
   else if(state.screen==="nodatos") content=renderNoDatos();
   else if(state.screen==="upload") content=renderUpload();
@@ -2883,6 +2959,162 @@ function abrirModalPersonal() {
 
 // ── Modal cambiar contraseña de desbloqueo ──
 
+
+// ── Menú del repartidor (después del login, antes de seleccionar acción) ──
+function renderMenuRepartidor() {
+  const nombre = state.usuarioActual?.nombre || "Repartidor";
+  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
+  const box  = el("div",{style:{background:"#fff",borderRadius:"16px",padding:"36px 28px",maxWidth:"380px",width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
+  box.appendChild(el("div",{style:{fontSize:"48px",marginBottom:"10px"}},"📦"));
+  box.appendChild(el("h2",{style:{margin:"0 0 2px",color:"#1e3a5f",fontSize:"20px"}},"Liquidación de Entregas"));
+  box.appendChild(el("p",{style:{margin:"0 0 28px",fontSize:"13px",color:"#888"}},"Bienvenido, "+nombre));
+
+  const btn = (icon,label,bg,onClick) => {
+    const b = el("button",{style:{width:"100%",background:bg,color:"#fff",border:"none",borderRadius:"12px",padding:"18px 20px",fontSize:"16px",fontWeight:"700",cursor:"pointer",marginBottom:"14px",display:"flex",alignItems:"center",gap:"16px",textAlign:"left"},onClick});
+    b.appendChild(el("span",{style:{fontSize:"28px"}},icon));
+    b.appendChild(el("span",{},label));
+    return b;
+  };
+
+  box.appendChild(btn("📋","Ver historial","#2980b9", abrirHistorialRepartidor));
+  box.appendChild(btn("🚚","Entregar","#27ae60", ()=>setState({screen:"seleccionEntrega"})));
+
+  box.appendChild(el("button",{style:{background:"none",border:"none",color:"#aaa",fontSize:"13px",cursor:"pointer",marginTop:"4px"},onClick:cerrarSesion},"🚪 Cerrar sesión"));
+  wrap.appendChild(box);
+  return wrap;
+}
+
+// ── Pantalla selección de entrega (repartidor + auxiliar + fecha) ──
+function renderSeleccionEntrega() {
+  const repVinculado = state.repartidorVinculado;
+  const repNombre   = repVinculado?(typeof repVinculado==="string"?repVinculado:(repVinculado.nombre||"")):"";
+  const tieneData   = Object.keys(state.clienteMap||{}).length>0;
+
+  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
+  const box  = el("div",{style:{background:"#fff",borderRadius:"16px",padding:"32px 28px",maxWidth:"380px",width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.12)"}});
+
+  // Header con volver
+  const hdr = el("div",{style:{display:"flex",alignItems:"center",gap:"10px",marginBottom:"20px"}});
+  hdr.appendChild(el("button",{style:{background:"#f0f4f8",border:"none",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"13px",color:"#555"},onClick:()=>setState({screen:"menuRepartidor"})},"← Volver"));
+  hdr.appendChild(el("h2",{style:{margin:"0",fontSize:"17px",color:"#1e3a5f"}},"Datos de entrega"));
+  box.appendChild(hdr);
+
+  const lbl = (txt,obligatorio=false) => {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:4px;margin-bottom:3px;";
+    const t = document.createElement("span");
+    t.textContent = txt;
+    t.style.cssText = "font-size:11px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:0.4px;";
+    row.appendChild(t);
+    if(obligatorio) {
+      const ast = document.createElement("span");
+      ast.className = "ast-campo";
+      ast.textContent = "*";
+      ast.style.cssText = "font-size:13px;font-weight:700;color:#bbb;";
+      row.appendChild(ast);
+    }
+    return row;
+  };
+
+  // ── Repartidor ──
+  box.appendChild(lbl("🚚 Repartidor", false));
+  if(repNombre) {
+    // Fijo: vinculado al usuario
+    const repDiv = document.createElement("div");
+    repDiv.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #e0e0e0;font-size:14px;box-sizing:border-box;background:#f8f8f8;color:#1a6e3c;font-weight:600;margin-bottom:12px;";
+    repDiv.textContent = repNombre;
+    box.appendChild(repDiv);
+  } else {
+    // No vinculado: puede seleccionar
+    const selRep = document.createElement("select");
+    selRep.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:12px;background:#fff;";
+    selRep.appendChild(Object.assign(document.createElement("option"),{value:"",textContent:"-- Seleccionar repartidor --"}));
+    (state.listaRepartidores||[]).forEach(r=>{ const nom=typeof r==="string"?r:(r.nombre||""); const alias=typeof r==="object"&&r.alias?r.alias:nom; const o=document.createElement("option"); o.value=nom; o.textContent=alias; selRep.appendChild(o); });
+    selRep.value = state.loginRepartidor || "";
+    selRep.addEventListener("change", e=>{ state.loginRepartidor=e.target.value; });
+    box.appendChild(selRep);
+  }
+
+  // ── Auxiliar ──
+  box.appendChild(lbl("👷 Auxiliar", true));
+  const selAux = document.createElement("select");
+  selAux.id = "sel-aux-entrega";
+  selAux.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:12px;background:#fff;";
+  selAux.appendChild(Object.assign(document.createElement("option"),{value:"",textContent:"-- Seleccionar auxiliar --"}));
+  (state.listaAuxiliares||[]).forEach(a=>{ const nom=typeof a==="string"?a:(a.nombre||""); const alias=typeof a==="object"&&a.alias?a.alias:nom; const o=document.createElement("option"); o.value=nom; o.textContent=alias; selAux.appendChild(o); });
+  selAux.value = "";
+  selAux.addEventListener("change", e=>{
+    state.loginAuxiliar=e.target.value;
+    selAux.style.borderColor=e.target.value?"#ccc":"#ccc";
+    document.querySelectorAll(".ast-campo").forEach(a=>{ if(a) a.style.color="#bbb"; });
+    const ley=document.getElementById("leyenda-ent"); if(ley) ley.style.color="#bbb";
+  });
+  box.appendChild(selAux);
+
+  // ── Fecha ──
+  box.appendChild(lbl("📅 Fecha de entrega", false));
+  const fechaDiv = document.createElement("div");
+  fechaDiv.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:1px solid #e0e0e0;font-size:14px;box-sizing:border-box;background:#f8f8f8;color:#555;margin-bottom:20px;";
+  const [fy,fm,fd]=(state.loginFechaEntrega||hoy()).split("-");
+  const diasN=["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
+  const mesesN=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+  const dtN=new Date(Number(fy),Number(fm)-1,Number(fd));
+  fechaDiv.textContent=`${diasN[dtN.getDay()]}, ${Number(fd)} de ${mesesN[dtN.getMonth()]} de ${fy}`;
+  box.appendChild(fechaDiv);
+
+  // ── Leyenda obligatorios ──
+  const leyenda = document.createElement("div");
+  leyenda.id = "leyenda-ent";
+  leyenda.style.cssText = "font-size:11px;color:#bbb;margin-bottom:14px;";
+  leyenda.textContent = "* campo obligatorio";
+  box.appendChild(leyenda);
+
+  // ── Error ──
+  const errP = document.createElement("p");
+  errP.id = "err-seleccion-entrega";
+  errP.style.cssText = "color:#c00;font-size:12px;margin:0 0 10px;min-height:16px;";
+  box.appendChild(errP);
+
+  // ── Botón Continuar ──
+  const btnCont = document.createElement("button");
+  btnCont.textContent = "Continuar →";
+  btnCont.style.cssText = "width:100%;background:#27ae60;color:#fff;border:none;border-radius:10px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  btnCont.onclick = () => {
+    const repFinal = repNombre || state.loginRepartidor || "";
+    const auxFinal = state.loginAuxiliar || "";
+    let valido = true;
+    if(!auxFinal) {
+      document.querySelectorAll(".ast-campo").forEach(a=>{ a.style.color="#e53935"; });
+      const ley=document.getElementById("leyenda-ent"); if(ley) ley.style.color="#e53935";
+      errP.textContent = "Selecciona el auxiliar antes de continuar.";
+      valido = false;
+    }
+    if(!valido) return;
+    errP.textContent = "";
+    // Guardar en state y continuar
+    state.loginRepartidor = repFinal;
+    guardarPersonalLocal();
+    setState({screen: tieneData ? "main" : "nodatos"});
+  };
+  box.appendChild(btnCont);
+
+  wrap.appendChild(box);
+  return wrap;
+}
+
+// ── Historial filtrado por repartidor (para rol repartidor) ──
+async function abrirHistorialRepartidor() {
+  const data = await fbGet("historial") || {};
+  const repNombre = state.loginRepartidor || (state.repartidorVinculado
+    ? (typeof state.repartidorVinculado==="string"?state.repartidorVinculado:(state.repartidorVinculado.nombre||""))
+    : "");
+  // Filtrar solo fechas donde este repartidor aparece (por campo repartidor guardado)
+  // Por ahora cargamos todo y filtramos por nombre en el futuro cuando se guarde el repartidor en el historial
+  const fechas = Object.keys(data).sort().reverse();
+  setState({historialData:data, fechaSelec:fechas[0]||"", screen:"historial",
+    historialFiltroRep: repNombre}); // filtro a aplicar en renderHistorial
+}
+
 // ── Menú principal (para todos los roles después de login) ──
 function renderMenu() {
   const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
@@ -3114,15 +3346,38 @@ function abrirModalUsuario(usuarioExistente) {
   notaAdmin.style.cssText="background:#fff8e1;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#795548;";
   notaAdmin.textContent="💡 Para cambiar la contraseña del admin, usa '¿Olvidaste tu contraseña?' en el login.";
 
+  // ── Vínculo con repartidor (solo rol repartidor) ──
+  const wVinculo = document.createElement("div"); wVinculo.style.marginBottom="14px";
+  const lVinculo = document.createElement("label"); lVinculo.textContent="🔗 Repartidor vinculado";
+  lVinculo.style.cssText="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px;";
+  const selVinculo = document.createElement("select");
+  selVinculo.style.cssText="width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;background:#fff;";
+  selVinculo.appendChild(Object.assign(document.createElement("option"),{value:"",textContent:"-- Sin vincular --"}));
+  (state.listaRepartidores||[]).forEach(r=>{
+    const nom=typeof r==="string"?r:(r.nombre||"");
+    const alias=typeof r==="object"&&r.alias?r.alias:nom;
+    const o=document.createElement("option"); o.value=nom;
+    o.textContent=alias+(alias!==nom?" ("+nom+")":"");
+    if((datos.repartidorVinculado||"")=== nom) o.selected=true;
+    selVinculo.appendChild(o);
+  });
+  const descVinculo=document.createElement("p");
+  descVinculo.textContent="Al vincular, el sistema precarga automáticamente el nombre del repartidor al momento de entregar.";
+  descVinculo.style.cssText="font-size:11px;color:#aaa;margin:4px 0 0;";
+  wVinculo.appendChild(lVinculo); wVinculo.appendChild(selVinculo); wVinculo.appendChild(descVinculo);
+
   const actualizarCamposRol = () => {
     const esAdmin = selRol.value === "admin";
     wEmail.style.display = esAdmin ? "block" : "none";
+    wVinculo.style.display = esAdmin ? "none" : "block";
     if(editando && esAdmin) {
       if(wPass.parentNode) wPass.remove();
+      if(wVinculo.parentNode) wVinculo.remove();
       if(!notaAdmin.parentNode) box.insertBefore(notaAdmin, errP.parentNode ? errP : btnRow);
     } else {
       if(notaAdmin.parentNode) notaAdmin.remove();
       if(!wPass.parentNode) box.insertBefore(wPass, errP.parentNode ? errP : btnRow);
+      if(!wVinculo.parentNode) box.insertBefore(wVinculo, wPass.parentNode ? wPass : (errP.parentNode ? errP : btnRow));
     }
   };
   selRol.addEventListener("change", actualizarCamposRol);
@@ -3178,12 +3433,13 @@ function abrirModalUsuario(usuarioExistente) {
           await fbSet("usuarios/"+uid, {id:uid, nombre, email, rol:"admin"});
         } else {
           uid = nombre.toLowerCase().replace(/[^a-z0-9]/g,"_")+"_"+Date.now();
-          await fbSet("usuarios/"+uid, {id:uid, nombre, pass, rol:"repartidor"});
+          await fbSet("usuarios/"+uid, {id:uid, nombre, pass, rol:"repartidor", repartidorVinculado:selVinculo.value||""});
         }
       } else {
         const updates = {...datos, nombre, rol};
         if(esAdmin) updates.email = email;
         if(!esAdmin && pass) updates.pass = pass;
+        if(!esAdmin) updates.repartidorVinculado = selVinculo.value || "";
         await fbSet("usuarios/"+uid, updates);
       }
       const usu = await fbGet("usuarios") || {};
