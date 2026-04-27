@@ -3078,7 +3078,7 @@ function renderSeleccionEntrega() {
   const btnCont = document.createElement("button");
   btnCont.textContent = "Continuar →";
   btnCont.style.cssText = "width:100%;background:#27ae60;color:#fff;border:none;border-radius:10px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;";
-  btnCont.onclick = () => {
+  btnCont.onclick = async () => {
     const repFinal = repNombre || state.loginRepartidor || "";
     const auxFinal = state.loginAuxiliar || "";
     let valido = true;
