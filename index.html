@@ -198,6 +198,7 @@ let state = {
   moverDestinoPedido: "",
   moverError: "",
   ocultarConfirmados: false,
+  _sinConfirmarPendiente: false,
   scrollAfterCliente: null,
   editPrecio: null, // {cliente, pedido, producto, valor}
   editCantidad: null, // {cliente, pedido, producto, valor}
@@ -535,7 +536,8 @@ async function confirmarReauth() {
 }
 
 async function eliminarUsuario(id) {
-  if(!confirm("¿Eliminar este usuario? Solo se elimina el perfil, no la cuenta de acceso.")) return;
+  showModal({titulo:"🗑️ Eliminar usuario", mensaje:"¿Eliminar este usuario? Solo se elimina el perfil, no la cuenta de acceso.", tipo:"confirm", btnAceptar:"Eliminar", colorAceptar:"#c0392b", btnCancelar:"Cancelar",
+    onAceptar: async () => { await fbRemove("usuarios/"+id); const usu = await fbGet("usuarios") || {}; setState({adminUsuarios:usu}); showToast("Usuario eliminado","#c0392b"); } }); return;
   await fbRemove("usuarios/"+id);
   const usu = await fbGet("usuarios") || {};
   setState({adminUsuarios:usu});
@@ -608,7 +610,7 @@ async function confirmarLiquidacion() {
   } catch(e){
     console.error(e);
     setState({guardando:false,showConfirmar:false});
-    alert("❌ Error al guardar la liquidación:\n" + e.message);
+    showModal({titulo:"❌ Error al guardar", mensaje:"Error al guardar la liquidación:\n"+e.message, tipo:"alert", btnAceptar:"Cerrar", colorAceptar:"#c0392b"});
   }
 }
 
@@ -886,6 +888,46 @@ function showToast(msg, color) {
   document.body.appendChild(t);
   setTimeout(()=>{ t.style.opacity="0"; setTimeout(()=>t.remove(),500); },2500);
 }
+
+// ── Modal propio (reemplaza confirm/alert nativos) ──
+function showModal({titulo="", mensaje="", tipo="confirm", btnAceptar="Aceptar", btnCancelar="Cancelar", colorAceptar=null, onAceptar=null, onCancelar=null}={}) {
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;font-family:sans-serif;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:28px 24px;max-width:360px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,0.2);";
+  if(titulo) {
+    const t = document.createElement("h3");
+    t.style.cssText = "margin:0 0 10px;color:#1e3a5f;font-size:16px;font-weight:700;";
+    t.textContent = titulo;
+    box.appendChild(t);
+  }
+  const msg = document.createElement("p");
+  msg.style.cssText = "margin:0 0 22px;font-size:14px;color:#444;line-height:1.5;white-space:pre-line;";
+  msg.textContent = mensaje;
+  box.appendChild(msg);
+  const btns = document.createElement("div");
+  btns.style.cssText = "display:flex;gap:10px;";
+  const close = (cb) => { overlay.remove(); if(cb) cb(); };
+  if(tipo === "confirm") {
+    const bCanc = document.createElement("button");
+    bCanc.textContent = btnCancelar;
+    bCanc.style.cssText = "flex:1;background:#f0f0f0;color:#555;border:none;border-radius:8px;padding:12px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
+    bCanc.onclick = () => close(onCancelar);
+    btns.appendChild(bCanc);
+  }
+  const bAcep = document.createElement("button");
+  bAcep.textContent = btnAceptar;
+  bAcep.style.cssText = `flex:1;background:${colorAceptar||"#1e3a5f"};color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;`;
+  bAcep.onclick = () => close(onAceptar);
+  btns.appendChild(bAcep);
+  box.appendChild(btns);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  // Foco en el botón principal
+  setTimeout(() => bAcep.focus(), 50);
+}
+
+
 
 function confirmarVerde(cliente) {
   // Confirmar entrega 100% efectiva desde checkbox
@@ -1309,7 +1351,7 @@ function renderHistorial() {
           btnAsig.addEventListener("click", async e=>{
             e.stopPropagation();
             const repElegido=selAsig.value;
-            if(!repElegido){alert("Selecciona un repartidor.");return;}
+            if(!repElegido){ showModal({titulo:'⚠️ Campo requerido', mensaje:'Selecciona un repartidor.', tipo:'alert', btnAceptar:'Entendido'}); return; }
             btnAsig.textContent="Guardando..."; btnAsig.disabled=true;
             try {
               const existing=await fbGet("historial")||{};
@@ -1528,20 +1570,28 @@ function renderDetalleCliente() {
     const sinConfirmarPendiente = !!state._sinConfirmarPendiente;
     const hayPendientes = fueDesbloqueado || hayTemporales || sinConfirmarPendiente;
     if(hayPendientes) {
-      const confirmar = confirm("¿Confirmar los cambios realizados?\n\nAceptar = guardar cambios y volver\nCancelar = volver sin guardar");
-      if(!confirmar) {
-        // Salir SIN guardar: si marcó sin confirmar, revertir al estado original re-bloqueado
-        // Si tenía estado anterior guardado, restaurarlo
-        const upd = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
-        if(estadoAct) upd.bloqueados = {...state.bloqueados,[c]:true};
-        setState(upd); return;
-      }
-      // Aceptar con temporales sin confirmar: forzar confirmar primero
-      if(hayTemporales) {
-        alert("Confirma la entrega primero con el botón '✅ Confirmar entrega'.");
-        return;
-      }
-      // Aceptar con sin confirmar pendiente: guardar el estado actual (sin estado) y salir
+      showModal({
+        titulo:"💾 Cambios pendientes",
+        mensaje:"¿Confirmar los cambios realizados?",
+        tipo:"confirm",
+        btnAceptar:"Guardar y volver",
+        btnCancelar:"Salir sin guardar",
+        colorAceptar:"#27ae60",
+        onCancelar: () => {
+          const upd = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
+          if(estadoAct) upd.bloqueados = {...state.bloqueados,[c]:true};
+          setState(upd);
+        },
+        onAceptar: () => {
+          if(hayTemporales) {
+            showModal({titulo:"⚠️ Atención", mensaje:"Confirma la entrega primero con el botón '✅ Confirmar entrega'.", tipo:"alert", btnAceptar:"Entendido"});
+            return;
+          }
+          const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
+          if(!bloqueadoAct && estadoAct) updVolver.bloqueados = {...state.bloqueados,[c]:true};
+          setState(updVolver);
+        }
+      }); return;
     }
     const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
     if(!bloqueadoAct && estadoAct) updVolver.bloqueados = {...state.bloqueados,[c]:true};
@@ -1878,7 +1928,7 @@ function renderDetalleCliente() {
         btnFinal.style.cssText=`width:100%;background:${dvTipo==="rosado"?"#e91e8c":"#f9a825"};color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-bottom:8px;`;
         btnFinal.textContent="✅ Confirmar";
         btnFinal.onclick = () => {
-          if(!motSel.value){ alert("Selecciona un motivo."); return; }
+          if(!motSel.value){ showModal({titulo:'⚠️ Campo requerido', mensaje:'Selecciona un motivo de devolución.', tipo:'alert', btnAceptar:'Entendido'}); return; }
           const motivo = MOTIVOS.find(x=>x.codigo===motSel.value)||{};
           const newDevs = state.devoluciones.map(d=>d.cliente===c?{...d,codigo:motivo.codigo,desc:motivo.desc}:d);
           setState({devoluciones:newDevs, dvCodigo:"D01", showDvForm:false, _dvTipo:undefined});
@@ -1908,7 +1958,8 @@ function renderDetalleCliente() {
       const btnSinConf = el("button",{style:{width:"100%",background:"#fff",border:"2px solid #e0e0e0",borderRadius:"10px",padding:"11px 0",fontSize:"13px",fontWeight:"600",color:"#888",cursor:"pointer",fontFamily:"sans-serif",marginBottom:"16px"}});
       btnSinConf.textContent = "✖ Dejar sin confirmar";
       btnSinConf.onclick = () => {
-        if(!confirm("La entrega quedará sin confirmar. ¿Estás seguro?")) return;
+        showModal({titulo:"✖ Sin confirmar", mensaje:"La entrega quedará sin confirmar.\n¿Estás seguro?", tipo:"confirm", btnAceptar:"Sí, quitar", colorAceptar:"#e53935", btnCancelar:"Cancelar",
+        onAceptar: () => {
         const nuevoEstado={...state.estadoEntrega}; delete nuevoEstado[c];
         const nuevoBloq={...state.bloqueados}; delete nuevoBloq[c];
         const nuevoEnt={...state.entregados}; delete nuevoEnt[c];
@@ -1922,6 +1973,7 @@ function renderDetalleCliente() {
           showDvForm:false, _dvTipo:undefined, _sinConfirmarPendiente:true
         });
         showToast("✖ Entrega marcada sin confirmar","#888");
+        } }); return;
       };
       inner.appendChild(btnSinConf);
 
@@ -1948,7 +2000,7 @@ function renderDetalleCliente() {
         btnFinal.style.cssText=`width:100%;background:${dvTipo==="rosado"?"#e91e8c":"#f9a825"};color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-bottom:8px;`;
         btnFinal.textContent="✅ Confirmar";
         btnFinal.onclick = () => {
-          if(!motSel.value){ alert("Selecciona un motivo."); return; }
+          if(!motSel.value){ showModal({titulo:'⚠️ Campo requerido', mensaje:'Selecciona un motivo de devolución.', tipo:'alert', btnAceptar:'Entendido'}); return; }
           const motivo = MOTIVOS.find(x=>x.codigo===motSel.value)||{};
           const newDevs = state.devoluciones.map(d=>d.cliente===c?{...d,codigo:motivo.codigo,desc:motivo.desc}:d);
           setState({devoluciones:newDevs, dvCodigo:"D01", showDvForm:false, _dvTipo:undefined});
@@ -2085,7 +2137,7 @@ function renderMain() {
     const lBtns=el("div",{style:{display:"flex",gap:"10px"}});
     const lBtnConf=el("button",{style:{flex:"1",background:"#e91e8c",color:"#fff",border:"none",borderRadius:"8px",padding:"13px 0",cursor:"pointer",fontWeight:"700",fontSize:"14px",fontFamily:"sans-serif"}},"✅ Confirmar devolución total");
     lBtnConf.onclick=()=>{
-      if(!lMotSel.value){ alert("Selecciona un motivo."); return; }
+      if(!lMotSel.value){ showModal({titulo:'⚠️ Campo requerido', mensaje:'Selecciona un motivo de devolución.', tipo:'alert', btnAceptar:'Entendido'}); return; }
       const motivo=MOTIVOS.find(x=>x.codigo===lMotSel.value)||{};
       // Fusionar dvTemporal del cliente con devoluciones permanentes
       const devsTemp=state.dvTemporal.filter(d=>d.cliente===lpm.cliente).map(d=>({...d,codigo:motivo.codigo,desc:motivo.desc}));
@@ -2269,10 +2321,9 @@ function renderMain() {
     if(state.esAdmin && !state.modoHistorial) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,165,0,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({showMoverProd:true,moverOrigenCliente:"",moverOrigenPedido:"",moverProductoSel:"",moverDestinoCliente:"",moverDestinoPedido:"",moverError:""})},"🔀 Mover producto"));
     if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()})},"Nuevo archivo"));
     if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(220,53,69,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:async()=>{
-      if(!confirm("¿Seguro que deseas quitar el archivo del día? Se borrarán todos los datos no confirmados.")) return;
-      await fbRemove("datos-dia");
-      setState({screen:"menu",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()});
-    }},"🗑️ Quitar archivo"));
+      showModal({titulo:"⚠️ Quitar archivo", mensaje:"¿Seguro que deseas quitar el archivo del día? Se borrarán todos los datos no confirmados.", tipo:"confirm", btnAceptar:"Quitar archivo", colorAceptar:"#c0392b", btnCancelar:"Cancelar",
+    onAceptar: async () => { await fbRemove("datos-dia"); setState({screen:"menu",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()}); } }); return;
+}},"🗑️ Quitar archivo"));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"menu"})},"☰ Menú"));
   }
   hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"600"},onClick:cerrarSesion},"🚪 Salir"));
@@ -2442,7 +2493,8 @@ function renderListaRutas(container, porRuta) {
         const _startLpEstado=()=>{
           _lpEstado=setTimeout(()=>{
             _lpEstado=null;
-            if(!confirm("La entrega quedará sin confirmar. ¿Estás seguro?")) return;
+            showModal({titulo:"✖ Sin confirmar", mensaje:"La entrega quedará sin confirmar.\n¿Estás seguro?", tipo:"confirm", btnAceptar:"Sí, quitar", colorAceptar:"#e53935", btnCancelar:"Cancelar",
+            onAceptar: () => {
             const nuevoEstado2={...state.estadoEntrega}; delete nuevoEstado2[cliente];
             const nuevoBloq2={...state.bloqueados}; delete nuevoBloq2[cliente];
             const nuevoEnt2={...state.entregados}; delete nuevoEnt2[cliente];
@@ -2454,6 +2506,7 @@ function renderListaRutas(container, porRuta) {
               dvTemporal:state.dvTemporal.filter(d=>d.cliente!==cliente)
             });
             showToast("✖ Entrega sin confirmar","#888");
+            } }); 
           },700);
         };
         const _cancelLpEstado=()=>clearTimeout(_lpEstado);
@@ -2758,7 +2811,7 @@ function renderListaRutas(container, porRuta) {
     confirmDiv.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 48px",fontSize:"16px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(39,174,96,0.3)"},onClick:()=>{
       const sinConfirmar=clientes.filter(c=>!state.estadoEntrega[c] && !esClientePre(c));
       if(sinConfirmar.length>0){
-        alert(`⚠️ Hay ${sinConfirmar.length} entrega(s) sin confirmar:\n\n${sinConfirmar.map(c=>`• ${c}`).join("\n")}\n\nPor favor confirma todas las entregas antes de liquidar.`);
+        showModal({titulo:"⚠️ Entregas pendientes", mensaje:`Hay ${sinConfirmar.length} entrega(s) sin confirmar:\n\n${sinConfirmar.map(c=>"• "+c).join("\n")}\n\nConfirma todas las entregas antes de liquidar.`, tipo:"alert", btnAceptar:"Entendido"});
         return;
       }
       setState({showConfirmar:true});
@@ -2953,8 +3006,8 @@ function abrirModalPersonal() {
     btnDel.addEventListener("mousedown", e => e.stopPropagation());
     btnDel.onclick = e => {
       e.stopPropagation();
-      if(!confirm('¿Eliminar a "' + (persona.nombre||"este registro") + '"?')) return;
-      arr.splice(idx,1); renderContenido();
+      showModal({titulo:"🗑️ Eliminar", mensaje:'¿Eliminar a "' + (persona.nombre||"este registro") + '"?', tipo:"confirm", btnAceptar:"Eliminar", colorAceptar:"#c0392b", btnCancelar:"Cancelar",
+      onAceptar: () => { arr.splice(idx,1); renderContenido(); } }); return;
     };
     fila.appendChild(btnDel);
 
@@ -3378,7 +3431,7 @@ function abrirModalMotivos() {
       iDesc.addEventListener("input",e=>{motivosLocal[idx].desc=e.target.value;});
       const btnD=document.createElement("button"); btnD.textContent="🗑️";
       btnD.style.cssText="background:#fce4ec;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;font-size:14px;flex-shrink:0;";
-      btnD.onclick=()=>{if(!confirm("¿Eliminar \""+m.desc+"\"?"))return;motivosLocal.splice(idx,1);renderContenido();};
+      btnD.onclick=()=>{ showModal({titulo:"🗑️ Eliminar motivo", mensaje:'¿Eliminar "'+m.desc+'"?', tipo:"confirm", btnAceptar:"Eliminar", colorAceptar:"#c0392b", btnCancelar:"Cancelar", onAceptar:()=>{motivosLocal.splice(idx,1);renderContenido();} }); };
       fila.appendChild(iCod);fila.appendChild(iDesc);fila.appendChild(btnD);box.appendChild(fila);
     });
     const btnAgr=document.createElement("button"); btnAgr.textContent="➕ Agregar motivo";
