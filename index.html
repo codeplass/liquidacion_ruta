@@ -197,6 +197,7 @@ let state = {
   moverDestinoCliente: "",
   moverDestinoPedido: "",
   moverError: "",
+  pagoPendiente: {},       // cliente -> true si tiene pago pendiente
   ocultarConfirmados: false,
   _sinConfirmarPendiente: false,
   scrollAfterCliente: null,
@@ -222,7 +223,7 @@ function setState(updates) {
   // Guardado automático en Firebase cuando cambian datos del día
   const camposGuardar = ["estadoEntrega","entregados","bloqueados",
     "motivosDevTotal","descuentos","comentarios","billetes","monedas",
-    "deposito","transferencia","gastosDetalle"];
+    "deposito","transferencia","gastosDetalle","pagoPendiente"];
   const afecta = Object.keys(updates).some(k => camposGuardar.includes(k));
   if(afecta && state.autenticado && state.clienteMap && Object.keys(state.clienteMap).length > 0){
     clearTimeout(window._autoSaveTimer);
@@ -243,7 +244,8 @@ function setState(updates) {
             monedas: state.monedas,
             deposito: state.deposito,
             transferencia: state.transferencia,
-            gastosDetalle: state.gastosDetalle
+            gastosDetalle: state.gastosDetalle,
+            pagoPendiente: state.pagoPendiente
           });
         }
       } catch(e) { console.warn("AutoSave error:", e); }
@@ -365,6 +367,7 @@ async function iniciarSesionConUsuario(usuario) {
         billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
         monedas:datos.monedas||"", deposito:datos.deposito||"", transferencia:datos.transferencia||"",
         gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}],
+        pagoPendiente:datos.pagoPendiente||{},
         confirmado:true, screen:"opciones", cargandoDatos:false
       });
     } else {
@@ -377,7 +380,8 @@ async function iniciarSesionConUsuario(usuario) {
         comentarios:datos.comentarios||{},
         billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
         monedas:datos.monedas||"", deposito:datos.deposito||"", transferencia:datos.transferencia||"",
-        gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}]
+        gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}],
+        pagoPendiente:datos.pagoPendiente||{}
       });
     }
   } else {
@@ -599,6 +603,7 @@ async function confirmarLiquidacion() {
       descuentos:state.descuentos,comentarios:state.comentarios,
       deposito:state.deposito,transferencia:state.transferencia,
       gastosDetalle:state.gastosDetalle,billetes:state.billetes,monedas:state.monedas,
+      pagoPendiente:state.pagoPendiente,
       clienteTotales, totalNeto,
       clienteMap: state.clienteMap
     };
@@ -681,7 +686,7 @@ async function exportarExcel(reg) {
   // Fix obs.2: devoluciones siempre se muestran en columna Devoluciones (positivo),
   // Total neto = bruto - devoluciones - descuentos
   let sB=0,sD=0,sDe=0,sN=0;
-  const resRows=[["Ruta","Cliente","Estado","Total bruto Q","Devoluciones Q","Descuento Q","Total neto Q","Comentario"]];
+  const resRows=[["Ruta","Cliente","Estado","Total bruto Q","Devoluciones Q","Descuento Q","Total neto Q","Pago pendiente","Comentario"]];
   const cltsSorted=[...clts].sort((a,b)=>{
     const ra=cMap[a]?.ruta||"ZZZ", rb=cMap[b]?.ruta||"ZZZ";
     return ra.localeCompare(rb);
@@ -697,9 +702,9 @@ async function exportarExcel(reg) {
     const nt = bruto - dv - dc;
     sB+=bruto; sD+=dv; sDe+=dc; sN+=nt;
     // dv como positivo en la columna, neto ya refleja la resta
-    resRows.push([ruta,c,lbl,bruto,dv>0?dv:0,dc>0?dc:0,nt,coments[c]||""]);
+    resRows.push([ruta,c,lbl,bruto,dv>0?dv:0,dc>0?dc:0,nt,(reg.pagoPendiente||{})[c]?"Sí":"",coments[c]||""]);
   });
-  resRows.push(["","TOTAL","",sB,sD,sDe,sN,""]);
+  resRows.push(["","TOTAL","",sB,sD,sDe,sN,"",""]);
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(resRows),"Resumen");
 
   // ── Hoja 2: Productos ──
@@ -1423,6 +1428,7 @@ function cargarFechaHistorial(fecha) {
     gastosDetalle:reg.gastosDetalle||[{desc:"",monto:"",comentario:""}],
     billetes:reg.billetes||Object.fromEntries(BILLETES.map(b=>[b,""])),
     monedas:reg.monedas||"",
+    pagoPendiente:reg.pagoPendiente||{},
     bloqueados:Object.fromEntries(Object.keys(reg.estadoEntrega||{}).map(k=>[k,true])),
     busqueda:"", clienteDetalle:null, confirmado:true, modoHistorial:true,
     // historialRepSelec se mantiene para poder volver correctamente al nivel de fechas
@@ -1793,6 +1799,29 @@ function renderDetalleCliente() {
     el("span",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"16px"}},fQ(tc.netoM))
   ));
   inner.appendChild(dcBox);
+
+  // ── Pago pendiente ──
+  const pagoPendBox = el("div",{style:{background: state.pagoPendiente[c] ? "#fff8f0" : "#fff", border: state.pagoPendiente[c] ? "2px solid #e67e22" : "2px solid #e0e0e0", borderRadius:"12px",padding:"14px 18px",marginBottom:"16px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor: state.modoHistorial ? "default" : "pointer",boxShadow:"0 2px 6px rgba(0,0,0,0.05)",transition:"all 0.2s"}});
+  const pagoPendLeft = el("div",{style:{display:"flex",alignItems:"center",gap:"10px"}});
+  pagoPendLeft.appendChild(el("span",{style:{fontSize:"20px"}}, state.pagoPendiente[c] ? "🕐" : "✅"));
+  const pagoPendTexto = el("div");
+  pagoPendTexto.appendChild(el("div",{style:{fontWeight:"700",fontSize:"14px",color: state.pagoPendiente[c] ? "#e67e22" : "#555"}}, state.pagoPendiente[c] ? "Pago pendiente" : "Pago al día"));
+  pagoPendTexto.appendChild(el("div",{style:{fontSize:"11px",color:"#888",marginTop:"2px"}}, state.pagoPendiente[c] ? "El cliente no canceló en esta entrega" : "Toca para marcar pago pendiente"));
+  pagoPendLeft.appendChild(pagoPendTexto);
+  pagoPendBox.appendChild(pagoPendLeft);
+  if(!state.modoHistorial){
+    const toggleBtn = el("button",{style:{background: state.pagoPendiente[c] ? "#e67e22" : "#eee", color: state.pagoPendiente[c] ? "#fff" : "#555", border:"none",borderRadius:"8px",padding:"8px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"}}, state.pagoPendiente[c] ? "Quitar" : "Marcar");
+    toggleBtn.onclick = () => {
+      const nuevo = {...state.pagoPendiente};
+      if(nuevo[c]) { delete nuevo[c]; } else { nuevo[c] = true; }
+      setState({pagoPendiente: nuevo});
+      showToast(nuevo[c] ? "🕐 Pago pendiente marcado" : "✅ Pago pendiente quitado", nuevo[c] ? "#e67e22" : "#27ae60");
+    };
+    pagoPendBox.appendChild(toggleBtn);
+  } else {
+    pagoPendBox.appendChild(el("span",{style:{fontSize:"13px",fontWeight:"700",color: state.pagoPendiente[c] ? "#e67e22" : "#27ae60"}}, state.pagoPendiente[c] ? "💳 PENDIENTE" : "✅ AL DÍA"));
+  }
+  inner.appendChild(pagoPendBox);
 
   // Motivo devolución total (rosado) — mostrar aunque no haya líneas de devs
   const esRosado = state.estadoEntrega[c]==="rosado";
@@ -2474,7 +2503,7 @@ function renderListaRutas(container, porRuta) {
       // Notas del vendedor de cualquier pedido del cliente
       const notasVendedor = Object.values(state.clienteMap[cliente].pedidos||{}).map(p=>p.nota).filter(Boolean);
       // Color de fila según estado
-      const rowBg = esPresupuesto?"#f0f0f0":estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":estado==="rosado"?"#fce4ec":ri%2===0?"#fafbfc":"#fff";
+      const rowBg = esPresupuesto?"#f0f0f0":estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":estado==="rosado"?"#fce4ec":state.pagoPendiente[cliente]?"#fff3e0":ri%2===0?"#fafbfc":"#fff";
       const row=el("tr",{style:{borderTop:"1px solid #f0f0f0",background:rowBg,transition:"background 0.3s",opacity:esPresupuesto?"0.75":"1"}});
       row.setAttribute("data-cliente", cliente);
 
@@ -2547,6 +2576,10 @@ function renderListaRutas(container, porRuta) {
         nameBtn.onclick=()=>setState({clienteDetalle:cliente});
       }
       nameTd.appendChild(nameBtn);
+      // Badge pago pendiente
+      if(state.pagoPendiente[cliente]){
+        nameTd.appendChild(el("span",{title:"Pago pendiente",style:{marginLeft:"6px",background:"#e67e22",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"💳 PENDIENTE"));
+      }
       // Badge presupuesto
       if(esPresupuesto){
         nameTd.appendChild(el("span",{style:{marginLeft:"6px",background:"#9e9e9e",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"PRESUPUESTO"));
