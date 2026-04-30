@@ -2344,6 +2344,7 @@ function renderMain() {
   const hdrBtns=el("div",{style:{display:"flex",gap:"8px",alignItems:"center"}});
   if(state.modoHistorial){
     hdrBtns.appendChild(el("span",{style:{background:"#f39c12",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Solo lectura"));
+    hdrBtns.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>exportarExcel(state.historialData[state.fechaSelec]||{clienteMap:state.clienteMap,devoluciones:state.devoluciones,estadoEntrega:state.estadoEntrega,descuentos:state.descuentos,deposito:state.deposito,transferencia:state.transferencia,gastosDetalle:state.gastosDetalle,billetes:state.billetes,monedas:state.monedas,fecha:state.fecha,repartidor:state.loginRepartidor})},"📊 Excel"));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"historial",modoHistorial:false,fechaSelec:""})},"← Historial"));
   } else {
     if(state.confirmado) hdrBtns.appendChild(el("span",{style:{background:"#27ae60",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Confirmada"));
