@@ -681,7 +681,9 @@ async function exportarExcel(reg) {
   const cMap=reg.clienteMap||{};
   const gastos=reg.gastosDetalle||[];
   const billetes=reg.billetes||{};
-  const clts=[...new Set([...Object.keys(estadoEnt),...Object.keys(cMap),...devs.map(d=>d.cliente)])].filter(Boolean).filter(c=>{ const ps=Object.values(cMap[c]?.pedidos||{}); return !(ps.length>0&&ps.every(p=>/^pre$/i.test(p.estPed||""))); }).sort();
+  // Usar SOLO clientes del clienteMap — no incluir estadoEnt ni devs porque pueden
+  // contener clientes de otras rutas/días que no pertenecen a este archivo del día
+  const clts=Object.keys(cMap).filter(Boolean).filter(c=>{ const ps=Object.values(cMap[c]?.pedidos||{}); return !(ps.length>0&&ps.every(p=>/^pre$/i.test(p.estPed||""))); }).sort();
 
   // ── Hoja 1: Resumen ──
   // Fix obs.2: devoluciones siempre se muestran en columna Devoluciones (positivo),
@@ -739,24 +741,22 @@ async function exportarExcel(reg) {
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(pRows),"Productos");
 
   // ── Hoja 3: Devoluciones ──
-  // Fix obs.3b: incluir devoluciones totales (rosados) aunque no tengan registro línea a línea
   const dRows=[["Cliente","Estado","Pedido","Producto","Unidades","Monto Q","Codigo","Motivo"]];
-  // Primero devs parciales registradas
   const MOTIVOS_MAP_EXP={"D01":"Cliente rechazó el pedido","D02":"Producto incorrecto","D03":"Sin dinero","D04":"Cerrado"};
-  devs.forEach(d=>{
+  // Solo devs de clientes que existen en el clienteMap del día (filtrar contaminación de otros días)
+  devs.filter(d=>clts.includes(d.cliente)).forEach(d=>{
     const est=estadoEnt[d.cliente];
     const lbl=est==="amarillo"?"Parcial":est==="rosado"?"Dev. total":"Dev. parcial";
-    // Para rosados, el motivo real está en motivosDevTotal; para parciales en d.desc
     const motivoRosado = est==="rosado" ? (reg.motivosDevTotal?.[d.cliente]||{}) : null;
     const codigo = motivoRosado?.codigo || d.codigo || "D01";
     const descFinal = motivoRosado?.desc || d.desc || MOTIVOS_MAP_EXP[codigo] || codigo || "";
     dRows.push([d.cliente,lbl,d.pedido,d.producto,d.unidades,d.monto,codigo,descFinal]);
   });
-  // Luego rosados sin devs registradas línea a línea (devolución total implícita)
+  // Rosados sin devs registradas línea a línea (devolución total implícita)
   clts.forEach(c=>{
     if(estadoEnt[c]!=="rosado") return;
     const yaRegistrado = devs.some(d=>d.cliente===c);
-    if(yaRegistrado) return; // ya aparece arriba
+    if(yaRegistrado) return;
     const motivo=reg.motivosDevTotal?.[c]||{};
     const codigoMot = motivo.codigo||"D01";
     const descMot = motivo.desc || MOTIVOS_MAP_EXP[codigoMot] || "Devolución total";
