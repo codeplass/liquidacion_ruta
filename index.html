@@ -215,6 +215,7 @@ let state = {
   historialRepSelec: "", // repartidor seleccionado en historial admin
   listaRepartidores: [], // cargada de Firebase config/personal
   listaAuxiliares: [],
+  historialSeleccionados: {}, // fecha -> true, para descarga multi-día
 };
 
 function setState(updates) {
@@ -774,7 +775,17 @@ async function exportarExcel(reg) {
   const tGas=gastos.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
   const tGasDeCuenta=gastos.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
   const tGasBodega=tGas-tGasDeCuenta;
-  const tPag=tEf+tDep+tTra,nRec=tPag-tGasDeCuenta,dif=nRec-sN;
+  const tPag=tEf+tDep+tTra;
+  // Clientes no confirmados: su bruto NO se cobra, se descuenta del neto igual que la app
+  const tNoCobrado=clts.filter(c=>!estadoEnt[c]).reduce((acc,c)=>{
+    let m=0; Object.values(cMap[c]?.pedidos||{}).filter(p=>!/^pre$/i.test(p.estPed||"")).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
+    return acc+m;
+  },0);
+  // Total Neto cobrable = bruto - devs - descuentos - no confirmados (igual que la app)
+  const sNeto=sB-sD-sDe-tNoCobrado;
+  // Diferencia = (pagos + gastosDeCuenta) - netoACobrar (mismo signo que la app)
+  const nRec=tPag-tGasDeCuenta;
+  const dif=(tPag+tGasDeCuenta)-sNeto;
   const cuadreRows=[
     ["CUADRE FINAL - "+(reg.fecha||"")],[],["BILLETES","Cantidad","Total Q"],
     ...[1,5,10,20,50,100,200].map(b=>{const c=parseFloat(billetes[b])||0;return c>0?["Q"+b,c,b*c]:null;}).filter(Boolean),
@@ -784,13 +795,74 @@ async function exportarExcel(reg) {
     ...gastos.filter(g=>parseFloat(g.monto)).map(g=>[g.comentario||"",g.desc||"",parseFloat(g.monto),g.deCuenta?"✓":"—"]),
     ["Gastos de ruta (bodega)","",tGasBodega],["Gastos de ruta (de cuenta)","",tGasDeCuenta],["Total gastos","",tGas],
     [],[" RESUMEN","",""],
-    ["Total a entregar (bruto)","",sB],["(-) Devoluciones","",-sD],["(-) Descuentos","",-sDe],["Total neto a cobrar","",sN],
+    ["Total a entregar (bruto)","",sB],["(-) Devoluciones","",-sD],["(-) Descuentos","",-sDe],["(-) Ent. no confirmadas","",-tNoCobrado],["Total neto a cobrar","",sNeto],
     [],[" PAGOS RECIBIDOS","",""],
-    ["Total pagos recibidos","",tPag],["(-) Gastos de ruta de cuenta","",-tGasDeCuenta],["Neto recibido","",nRec],
+    ["Total pagos recibidos","",tPag],["Gastos de ruta de cuenta (sumados)","",tGasDeCuenta],["Neto recibido (sin gastos de cuenta)","",nRec],
     [],[Math.abs(dif)<0.01?"✓ CUADRADO":dif>0?"SOBRANTE":"FALTANTE","DIFERENCIA",dif],
   ];
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(cuadreRows),"Cuadre Final");
   XLSX.writeFile(wb,"Liquidacion_"+(reg.fecha||"").replace(/[/]/g,"-")+".xlsx");
+}
+
+// ── Exportar múltiples días en un solo Excel ──
+async function exportarExcelMultiple(fechas) {
+  if(!fechas || fechas.length===0) return;
+  // Si solo es un día, usar la función normal
+  if(fechas.length===1){
+    const reg=state.historialData[fechas[0]];
+    if(reg) exportarExcel(reg);
+    return;
+  }
+  const wb=XLSX.utils.book_new();
+  // Hoja resumen global (todos los días)
+  const globalRows=[["Fecha","Repartidor","Total Bruto Q","Devoluciones Q","Descuentos Q","Total Neto Q"]];
+  let gB=0,gD=0,gDe=0,gN=0;
+
+  fechas.sort().forEach(fecha=>{
+    const reg=state.historialData[fecha];
+    if(!reg) return;
+    const devs=reg.devoluciones||[];
+    const descs=reg.descuentos||{};
+    const estadoEnt=reg.estadoEntrega||reg.entregados||{};
+    const cMap=reg.clienteMap||{};
+    const clts=[...new Set([...Object.keys(estadoEnt),...Object.keys(cMap)])].filter(Boolean)
+      .filter(c=>{ const ps=Object.values(cMap[c]?.pedidos||{}); return !(ps.length>0&&ps.every(p=>/^pre$/i.test(p.estPed||""))); });
+    let sB=0,sD=0,sDe=0,sN=0;
+    clts.forEach(c=>{
+      let bruto=0; Object.values(cMap[c]?.pedidos||{}).forEach(p=>p.lineas.forEach(l=>{bruto+=l.monto;}));
+      const est=estadoEnt[c];
+      const dv=est==="rosado"?bruto:devs.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
+      const dc=est==="rosado"?0:(parseFloat(descs[c])||0);
+      sB+=bruto; sD+=dv; sDe+=dc; sN+=bruto-dv-dc;
+    });
+    gB+=sB; gD+=sD; gDe+=sDe; gN+=sN;
+    globalRows.push([fecha,reg.repartidor||"",sB,sD,sDe,sN]);
+
+    // Hoja individual de resumen por cliente para este día
+    const sheetName=fecha.replace(/-/g,"").slice(2); // ej: "250501"
+    const resRows=[["Ruta","Cliente","Estado","Total bruto Q","Devoluciones Q","Descuento Q","Total neto Q"]];
+    clts.sort((a,b)=>{const ra=cMap[a]?.ruta||"ZZZ",rb=cMap[b]?.ruta||"ZZZ";return ra.localeCompare(rb);}).forEach(c=>{
+      const ruta=cMap[c]?.ruta||"";
+      const est=estadoEnt[c];
+      const lbl=est==="verde"?"Entregado":est==="amarillo"?"Parcial":est==="rosado"?"Dev. total":"Pendiente";
+      let bruto=0; Object.values(cMap[c]?.pedidos||{}).forEach(p=>p.lineas.forEach(l=>{bruto+=l.monto;}));
+      const dv=est==="rosado"?bruto:devs.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
+      const dc=est==="rosado"?0:(parseFloat(descs[c])||0);
+      resRows.push([ruta,c,lbl,bruto,dv>0?dv:0,dc>0?dc:0,bruto-dv-dc]);
+    });
+    resRows.push(["","TOTAL","",sB,sD,sDe,sN]);
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(resRows),sheetName);
+  });
+
+  globalRows.push(["","TOTAL",gB,gD,gDe,gN]);
+  // Insertar hoja resumen al inicio
+  const wbResumen=XLSX.utils.aoa_to_sheet(globalRows);
+  wb.SheetNames.unshift("Resumen General");
+  wb.Sheets["Resumen General"]=wbResumen;
+
+  const desde=fechas[0].replace(/-/g,"");
+  const hasta=fechas[fechas.length-1].replace(/-/g,"");
+  XLSX.writeFile(wb,`Liquidaciones_${desde}_${hasta}.xlsx`);
 }
 
 function guardarDev() {
@@ -1240,7 +1312,7 @@ function renderHistorial() {
   // Header
   const hdr = el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 24px",marginBottom:"20px",display:"flex",alignItems:"center",gap:"12px"}});
   const volverScreen = esAdmin ? "menu" : "menuRepartidor";
-  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>setState({screen:volverScreen,modoHistorial:false,historialRepSelec:""})},"← Volver"));
+  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>setState({screen:volverScreen,modoHistorial:false,historialRepSelec:"",historialSeleccionados:{}})},"← Volver"));
   hdr.appendChild(el("h1",{style:{margin:"0",fontSize:"18px",fontWeight:"700"}},"Historial de Liquidaciones"));
   inner.appendChild(hdr);
 
@@ -1300,7 +1372,7 @@ function renderHistorial() {
 
       const hdrRep = el("div",{style:{display:"flex",alignItems:"center",gap:"10px",marginBottom:"16px"}});
       hdrRep.appendChild(el("button",{style:{background:"#f0f4f8",border:"none",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"13px",color:"#555"},
-        onClick:()=>setState({historialRepSelec:"",fechaSelec:""})},"← Repartidores"));
+        onClick:()=>setState({historialRepSelec:"",fechaSelec:"",historialSeleccionados:{}})},"← Repartidores"));
       hdrRep.appendChild(el("h2",{style:{margin:"0",fontSize:"16px",color:esSinAsignar?"#795548":"#1e3a5f"}},
         esSinAsignar?"⚠️ Sin asignar":repSelec));
       inner.appendChild(hdrRep);
@@ -1324,17 +1396,65 @@ function renderHistorial() {
         return `${diasN[dtF.getDay()]} ${Number(fd)} ${mesesN[dtF.getMonth()]} ${fy}`;
       };
 
+      // ── Barra de descarga múltiple (solo admin, vista no-sinAsignar) ──
+      if(!esSinAsignar) {
+        const barraMulti = el("div",{style:{background:"#fff",borderRadius:"10px",padding:"12px 16px",marginBottom:"14px",display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}});
+        const selCount = Object.values(state.historialSeleccionados).filter(Boolean).length;
+        const chkTodos = document.createElement("input"); chkTodos.type="checkbox";
+        chkTodos.style.cssText="width:16px;height:16px;cursor:pointer;accent-color:#1e3a5f;flex-shrink:0;";
+        chkTodos.checked = selCount === fechasRep.length && fechasRep.length > 0;
+        chkTodos.indeterminate = selCount > 0 && selCount < fechasRep.length;
+        chkTodos.title = "Seleccionar todos";
+        chkTodos.addEventListener("change", e=>{
+          const nuevoSel = {};
+          if(e.target.checked) fechasRep.forEach(f=>{ nuevoSel[f]=true; });
+          setState({historialSeleccionados:nuevoSel});
+        });
+        barraMulti.appendChild(chkTodos);
+        const lblSel = el("span",{style:{fontSize:"13px",color:"#555",flex:"1"}},
+          selCount > 0 ? `${selCount} día${selCount>1?"s":""} seleccionado${selCount>1?"s":""}` : "Selecciona días para descargar");
+        barraMulti.appendChild(lblSel);
+        if(selCount > 0){
+          const btnDescMulti = el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"},
+            onClick:()=>{
+              const fechasSel = Object.entries(state.historialSeleccionados).filter(([,v])=>v).map(([f])=>f).sort();
+              if(fechasSel.length===0){ showToast("Selecciona al menos un día","#e67e22"); return; }
+              exportarExcelMultiple(fechasSel);
+            }},`📊 Descargar Excel (${selCount})`);
+          barraMulti.appendChild(btnDescMulti);
+        }
+        inner.appendChild(barraMulti);
+      }
+
       fechasRep.forEach(f => {
         const reg = data[f];
         const totalClientes = Object.keys(reg.estadoEntrega||{}).length;
-        const card = el("div",{style:{background:esSinAsignar?"#fffde7":"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"10px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}});
-        const cardTop = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"},
+        const seleccionado = !!state.historialSeleccionados[f];
+        const card = el("div",{style:{background:esSinAsignar?"#fffde7":seleccionado?"#e8f4fd":"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"10px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",border:seleccionado?"2px solid #2980b9":"2px solid transparent",transition:"all 0.1s"}});
+        const cardTop = el("div",{style:{display:"flex",alignItems:"center",gap:"10px"}});
+
+        // Checkbox por día (solo admin no-sinAsignar)
+        if(!esSinAsignar){
+          const chk = document.createElement("input"); chk.type="checkbox";
+          chk.style.cssText="width:16px;height:16px;cursor:pointer;accent-color:#2980b9;flex-shrink:0;";
+          chk.checked = seleccionado;
+          chk.addEventListener("change", e=>{
+            e.stopPropagation();
+            const nuevo={...state.historialSeleccionados};
+            if(e.target.checked) nuevo[f]=true; else delete nuevo[f];
+            setState({historialSeleccionados:nuevo});
+          });
+          cardTop.appendChild(chk);
+        }
+
+        const clickArea = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",flex:"1",cursor:"pointer"},
           onClick:()=>cargarFechaHistorial(f)});
         const left = el("div");
         left.appendChild(el("div",{style:{fontWeight:"700",fontSize:"14px",color:"#1e3a5f"}},fmtFecha(f)));
         left.appendChild(el("div",{style:{fontSize:"12px",color:"#aaa",marginTop:"2px"}},totalClientes+" cliente"+(totalClientes!==1?"s":"")));
-        cardTop.appendChild(left);
-        cardTop.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
+        clickArea.appendChild(left);
+        clickArea.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
+        cardTop.appendChild(clickArea);
         card.appendChild(cardTop);
 
         // Botón asignar (solo en vista sin asignar)
@@ -1392,22 +1512,63 @@ function renderHistorial() {
       inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"48px",textAlign:"center",color:"#aaa"}},"No tienes liquidaciones registradas aún."));
       return wrap;
     }
-    inner.appendChild(el("p",{style:{fontSize:"13px",fontWeight:"600",color:"#555",margin:"0 0 12px"}},"Tus liquidaciones:"));
-    fechasRep.forEach(f => {
-      const reg = data[f];
-      const [fy,fm,fd] = f.split("-");
+
+    const fmtFechaR = f => {
+      const [fy,fm,fd]=f.split("-");
       const diasN=["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
       const mesesN=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
       const dtF=new Date(Number(fy),Number(fm)-1,Number(fd));
-      const fechaLabel=`${diasN[dtF.getDay()]} ${Number(fd)} ${mesesN[dtF.getMonth()]} ${fy}`;
+      return `${diasN[dtF.getDay()]} ${Number(fd)} ${mesesN[dtF.getMonth()]} ${fy}`;
+    };
+
+    // Barra de descarga múltiple para repartidor
+    const selCountR = Object.values(state.historialSeleccionados).filter(Boolean).length;
+    const barraR = el("div",{style:{background:"#fff",borderRadius:"10px",padding:"12px 16px",marginBottom:"14px",display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}});
+    const chkTodosR = document.createElement("input"); chkTodosR.type="checkbox";
+    chkTodosR.style.cssText="width:16px;height:16px;cursor:pointer;accent-color:#1e3a5f;flex-shrink:0;";
+    chkTodosR.checked = selCountR === fechasRep.length && fechasRep.length > 0;
+    chkTodosR.indeterminate = selCountR > 0 && selCountR < fechasRep.length;
+    chkTodosR.addEventListener("change", e=>{
+      const nuevoSel = {};
+      if(e.target.checked) fechasRep.forEach(f=>{ nuevoSel[f]=true; });
+      setState({historialSeleccionados:nuevoSel});
+    });
+    barraR.appendChild(chkTodosR);
+    const lblSelR = el("span",{style:{fontSize:"13px",color:"#555",flex:"1"}},
+      selCountR > 0 ? `${selCountR} día${selCountR>1?"s":""} seleccionado${selCountR>1?"s":""}` : "Selecciona días para descargar");
+    barraR.appendChild(lblSelR);
+    if(selCountR > 0){
+      const btnDescR = el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"},
+        onClick:()=>{
+          const fechasSel = Object.entries(state.historialSeleccionados).filter(([,v])=>v).map(([f])=>f).sort();
+          if(fechasSel.length===0){ showToast("Selecciona al menos un día","#e67e22"); return; }
+          exportarExcelMultiple(fechasSel);
+        }},`📊 Descargar Excel (${selCountR})`);
+      barraR.appendChild(btnDescR);
+    }
+    inner.appendChild(barraR);
+
+    fechasRep.forEach(f => {
+      const reg = data[f];
       const totalClientes=Object.keys(reg.estadoEntrega||{}).length;
-      const card=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"10px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"},
-        onClick:()=>cargarFechaHistorial(f)});
+      const selR = !!state.historialSeleccionados[f];
+      const card=el("div",{style:{background:selR?"#e8f4fd":"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"10px",display:"flex",alignItems:"center",gap:"10px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",border:selR?"2px solid #2980b9":"2px solid transparent"}});
+      const chkR = document.createElement("input"); chkR.type="checkbox";
+      chkR.style.cssText="width:16px;height:16px;cursor:pointer;accent-color:#2980b9;flex-shrink:0;";
+      chkR.checked=selR;
+      chkR.addEventListener("change",e=>{
+        const nuevo={...state.historialSeleccionados};
+        if(e.target.checked) nuevo[f]=true; else delete nuevo[f];
+        setState({historialSeleccionados:nuevo});
+      });
+      card.appendChild(chkR);
+      const clickArea=el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",flex:"1",cursor:"pointer"},onClick:()=>cargarFechaHistorial(f)});
       const left=el("div");
-      left.appendChild(el("div",{style:{fontWeight:"700",fontSize:"14px",color:"#1e3a5f"}},fechaLabel));
+      left.appendChild(el("div",{style:{fontWeight:"700",fontSize:"14px",color:"#1e3a5f"}},fmtFechaR(f)));
       left.appendChild(el("div",{style:{fontSize:"12px",color:"#aaa",marginTop:"2px"}},totalClientes+" cliente"+(totalClientes!==1?"s":"")));
-      card.appendChild(left);
-      card.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
+      clickArea.appendChild(left);
+      clickArea.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
+      card.appendChild(clickArea);
       inner.appendChild(card);
     });
   }
@@ -2344,7 +2505,12 @@ function renderMain() {
   const hdrBtns=el("div",{style:{display:"flex",gap:"8px",alignItems:"center"}});
   if(state.modoHistorial){
     hdrBtns.appendChild(el("span",{style:{background:"#f39c12",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Solo lectura"));
-    hdrBtns.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>exportarExcel(state.historialData[state.fechaSelec]||{clienteMap:state.clienteMap,devoluciones:state.devoluciones,estadoEntrega:state.estadoEntrega,descuentos:state.descuentos,deposito:state.deposito,transferencia:state.transferencia,gastosDetalle:state.gastosDetalle,billetes:state.billetes,monedas:state.monedas,fecha:state.fecha,repartidor:state.loginRepartidor})},"📊 Excel"));
+    hdrBtns.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>{
+      // Siempre usar el registro original del historial para la fecha seleccionada
+      const regExcel = state.historialData[state.fechaSelec];
+      if(!regExcel){ showToast("⚠️ No se encontró el registro del día","#e67e22"); return; }
+      exportarExcel(regExcel);
+    }},"📊 Excel"));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"historial",modoHistorial:false,fechaSelec:""})},"← Historial"));
   } else {
     if(state.confirmado) hdrBtns.appendChild(el("span",{style:{background:"#27ae60",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Confirmada"));
