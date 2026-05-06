@@ -698,7 +698,8 @@ async function exportarExcel(reg) {
     const ruta=cMap[c]?.ruta||"";
     const est=estadoEnt[c];
     const lbl=est==="verde"?"Entregado":est==="amarillo"?"Parcial":est==="rosado"?"Dev. total":"Pendiente";
-    let bruto=0; Object.values(cMap[c]?.pedidos||{}).forEach(p=>p.lineas.forEach(l=>{bruto+=l.monto;}));
+    // Solo sumar líneas de pedidos que NO son presupuesto
+    let bruto=0; Object.values(cMap[c]?.pedidos||{}).forEach(p=>{ if(/^pre$/i.test(p.estPed||"")) return; p.lineas.forEach(l=>{bruto+=l.monto;}); });
     // Devoluciones: si rosado = bruto completo; si amarillo = devs parciales registradas
     const dv = est==="rosado" ? bruto : devs.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
     const dc = est==="rosado" ? 0 : (parseFloat(descs[c])||0);
@@ -721,12 +722,18 @@ async function exportarExcel(reg) {
   cltsP.forEach(c=>{
     const ruta=cMap[c]?.ruta||"";
     const est=estadoEnt[c];
-    const lbl=est==="verde"?"Entregado":est==="amarillo"?"Parcial":est==="rosado"?"Dev. total":"Pendiente";
+    const lblCliente=est==="verde"?"Entregado":est==="amarillo"?"Parcial":est==="rosado"?"Dev. total":"Pendiente";
     const esRosado = est==="rosado";
     Object.entries(cMap[c]?.pedidos||{}).forEach(([ped,pd])=>{
+      // Estado por pedido: si el pedido es presup, mostrar "Presup." sin importar el estado del cliente
+      const esPedPre = /^pre$/i.test(pd.estPed||"");
+      const lbl = esPedPre ? "Presup." : lblCliente;
       pd.lineas.forEach(l=>{
         let du,dm;
-        if(esRosado){
+        if(esPedPre){
+          // Pedido en presupuesto: no hubo entrega ni devolución
+          du=0; dm=0;
+        } else if(esRosado){
           // Devolución total: todas las unidades y monto del producto
           du=l.unidades; dm=l.monto;
         } else {
@@ -734,7 +741,7 @@ async function exportarExcel(reg) {
           du=dv.reduce((s,d)=>s+d.unidades,0);
           dm=dv.reduce((s,d)=>s+d.monto,0);
         }
-        pRows.push([ruta,c,lbl,ped,l.producto,l.unidades,l.monto,du||0,dm||0,l.unidades-du,l.monto-dm]);
+        pRows.push([ruta,c,lbl,ped,l.producto,l.unidades,l.monto,du||0,dm||0,esPedPre?0:l.unidades-du,esPedPre?0:l.monto-dm]);
       });
     });
   });
@@ -761,6 +768,7 @@ async function exportarExcel(reg) {
     const codigoMot = motivo.codigo||"D01";
     const descMot = motivo.desc || MOTIVOS_MAP_EXP[codigoMot] || "Devolución total";
     Object.entries(cMap[c]?.pedidos||{}).forEach(([ped,pd])=>{
+      if(/^pre$/i.test(pd.estPed||"")) return; // no incluir pedidos en presupuesto
       pd.lineas.forEach(l=>{
         dRows.push([c,"Dev. total",ped,l.producto,l.unidades,l.monto,codigoMot,descMot]);
       });
