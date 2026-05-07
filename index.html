@@ -1396,7 +1396,7 @@ function renderHistorial() {
         const selCount = Object.values(state.historialSeleccionados).filter(Boolean).length;
         const barraMulti = el("div",{style:{background:"#fff",borderRadius:"10px",padding:"12px 16px",marginBottom:"14px",display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}});
         const lblSel = el("span",{style:{fontSize:"13px",color:"#555",flex:"1"}},
-          selCount > 0 ? `${selCount} día${selCount>1?"s":""} seleccionado${selCount>1?"s":""}` : "Toca un día para seleccionarlo");
+          selCount > 0 ? `${selCount} día${selCount>1?"s":""} seleccionado${selCount>1?"s":""}` : "Click para ver · Arrastrar para seleccionar");
         barraMulti.appendChild(lblSel);
         if(selCount > 0){
           const btnDescMulti = el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"},
@@ -1406,6 +1406,9 @@ function renderHistorial() {
               exportarExcelMultiple(fechasSel);
             }},`📊 Descargar Excel (${selCount})`);
           barraMulti.appendChild(btnDescMulti);
+          const btnLimpM = el("button",{style:{background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"},
+            onClick:()=>setState({historialSeleccionados:{}})}, "✕");
+          barraMulti.appendChild(btnLimpM);
         }
         inner.appendChild(barraMulti);
       }
@@ -1425,13 +1428,48 @@ function renderHistorial() {
 
         const calGrid = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"14px",marginBottom:"14px"}});
 
+        // Estado drag para selección por rango (solo admin no-sinAsignar)
+        let dragActivo=false, dragFechaInicio=null;
+
         meses.forEach(({y,m})=>{
           const mesBox = el("div",{style:{background:"#fff",borderRadius:"14px",padding:"14px 10px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)"}});
-          mesBox.appendChild(el("div",{style:{textAlign:"center",fontWeight:"700",fontSize:"12px",color:"#1e3a5f",marginBottom:"8px"}},[`${MESES_N[m-1]}`,el("span",{style:{fontWeight:"400",color:"#aaa",fontSize:"11px"}},` ${y}`)]));
+
+          // Cabecera mes + checkbox "todo el mes"
+          const mesHdr = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"center",gap:"6px",marginBottom:"8px"}});
+          const mesNomEl = el("div",{style:{textAlign:"center",fontWeight:"700",fontSize:"12px",color:"#1e3a5f"}});
+          mesNomEl.appendChild(document.createTextNode(MESES_N[m-1]));
+          mesNomEl.appendChild(el("span",{style:{fontWeight:"400",color:"#aaa",fontSize:"11px"}},` ${y}`));
+          mesHdr.appendChild(mesNomEl);
+
+          if(!esSinAsignar){
+            // Calcular días del mes que tienen datos
+            const diasDelMes=[];
+            const diasMesTot=new Date(y,m,0).getDate();
+            for(let dd=1;dd<=diasMesTot;dd++){
+              const fk=`${y}-${String(m).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
+              if(fechasSet.has(fk)) diasDelMes.push(fk);
+            }
+            if(diasDelMes.length>0){
+              const todosSelec = diasDelMes.every(f=>!!state.historialSeleccionados[f]);
+              const chkTodo = el("input",{type:"checkbox"});
+              chkTodo.checked = todosSelec;
+              chkTodo.title = todosSelec?"Deseleccionar mes":"Seleccionar todo el mes";
+              chkTodo.style.cssText="cursor:pointer;width:13px;height:13px;accent-color:#1e3a5f;flex-shrink:0;";
+              chkTodo.addEventListener("change",()=>{
+                const nuevo={...state.historialSeleccionados};
+                if(chkTodo.checked){ diasDelMes.forEach(f=>nuevo[f]=true); }
+                else { diasDelMes.forEach(f=>delete nuevo[f]); }
+                setState({historialSeleccionados:nuevo});
+              });
+              mesHdr.appendChild(chkTodo);
+            }
+          }
+          mesBox.appendChild(mesHdr);
+
           const diasHdr = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"1px",marginBottom:"3px"}});
           DIAS_N.forEach(d=>{ diasHdr.appendChild(el("div",{style:{textAlign:"center",fontSize:"9px",fontWeight:"700",color:"#bbb",padding:"1px 0"}},d)); });
           mesBox.appendChild(diasHdr);
-          const diasGrid = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"2px"}});
+          const diasGrid = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"2px",userSelect:"none"}});
           const offset = (new Date(y,m-1,1).getDay()+6)%7;
           const diasMes = new Date(y,m,0).getDate();
           for(let i=0;i<offset;i++) diasGrid.appendChild(el("div",{}));
@@ -1446,21 +1484,77 @@ function renderHistorial() {
               background: seleccionado?"#1e3a5f": tieneDatos?"#dbeeff":"transparent",
               color: seleccionado?"#fff": tieneDatos?"#1e3a5f":"#ccc",
               border: tieneDatos&&!seleccionado?"1.5px solid #a8cff0":"1.5px solid transparent",
-              transition:"all 0.12s", userSelect:"none"
+              transition:"all 0.12s"
             }},String(d));
             if(tieneDatos){
               if(esSinAsignar){
                 diaEl.addEventListener("click",()=>cargarFechaHistorial(fKey));
-                diaEl.title="Ver liquidación";
+                diaEl.title="Click para ver liquidación";
               } else {
-                diaEl.addEventListener("click",()=>{
-                  const nuevo={...state.historialSeleccionados};
-                  if(nuevo[fKey]) delete nuevo[fKey]; else nuevo[fKey]=true;
-                  setState({historialSeleccionados:nuevo});
+                // Click simple: abrir liquidación
+                diaEl.addEventListener("click",(e)=>{
+                  if(dragActivo) return; // si fue drag, no abrir
+                  cargarFechaHistorial(fKey);
                 });
-                diaEl.title="Click para seleccionar";
+                // Drag para selección de rango
+                diaEl.addEventListener("mousedown",(e)=>{
+                  e.preventDefault();
+                  dragActivo=false;
+                  dragFechaInicio=fKey;
+                  const onMove=(ev)=>{
+                    const over=document.elementFromPoint(ev.clientX,ev.clientY);
+                    if(over && over._fKey && over._fKey!==fKey) dragActivo=true;
+                    if(dragActivo && over && over._fKey){
+                      const todasFechas=[...fechasSet].sort();
+                      const i1=todasFechas.indexOf(dragFechaInicio);
+                      const i2=todasFechas.indexOf(over._fKey);
+                      if(i1<0||i2<0) return;
+                      const [ini,fin]=[Math.min(i1,i2),Math.max(i1,i2)];
+                      const rango=todasFechas.slice(ini,fin+1);
+                      const nuevo={...state.historialSeleccionados};
+                      rango.forEach(f=>nuevo[f]=true);
+                      setState({historialSeleccionados:nuevo});
+                    }
+                  };
+                  const onUp=()=>{
+                    document.removeEventListener("mousemove",onMove);
+                    document.removeEventListener("mouseup",onUp);
+                    setTimeout(()=>{dragActivo=false;},50);
+                  };
+                  document.addEventListener("mousemove",onMove);
+                  document.addEventListener("mouseup",onUp);
+                });
+                // Touch drag para móvil
+                diaEl.addEventListener("touchstart",(e)=>{
+                  dragActivo=false; dragFechaInicio=fKey;
+                  const onTMove=(ev)=>{
+                    const t=ev.touches[0];
+                    const over=document.elementFromPoint(t.clientX,t.clientY);
+                    if(over&&over._fKey&&over._fKey!==fKey) dragActivo=true;
+                    if(dragActivo&&over&&over._fKey){
+                      const todasFechas=[...fechasSet].sort();
+                      const i1=todasFechas.indexOf(dragFechaInicio);
+                      const i2=todasFechas.indexOf(over._fKey);
+                      if(i1<0||i2<0) return;
+                      const [ini,fin]=[Math.min(i1,i2),Math.max(i1,i2)];
+                      const rango=todasFechas.slice(ini,fin+1);
+                      const nuevo={...state.historialSeleccionados};
+                      rango.forEach(f=>nuevo[f]=true);
+                      setState({historialSeleccionados:nuevo});
+                    }
+                  };
+                  const onTUp=()=>{
+                    document.removeEventListener("touchmove",onTMove);
+                    document.removeEventListener("touchend",onTUp);
+                    setTimeout(()=>{dragActivo=false;},50);
+                  };
+                  document.addEventListener("touchmove",onTMove,{passive:true});
+                  document.addEventListener("touchend",onTUp);
+                },{passive:true});
+                diaEl.title="Click para ver | Arrastrar para seleccionar rango";
               }
             }
+            diaEl._fKey = tieneDatos ? fKey : null;
             diasGrid.appendChild(diaEl);
           }
           mesBox.appendChild(diasGrid);
@@ -1487,7 +1581,7 @@ function renderHistorial() {
     const selCountR = Object.values(state.historialSeleccionados).filter(Boolean).length;
     const barraR = el("div",{style:{background:"#fff",borderRadius:"10px",padding:"12px 16px",marginBottom:"14px",display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}});
     const lblSelR = el("span",{style:{fontSize:"13px",color:"#555",flex:"1"}},
-      selCountR > 0 ? `${selCountR} día${selCountR>1?"s":""} seleccionado${selCountR>1?"s":""}` : "Toca un día para seleccionarlo");
+      selCountR > 0 ? `${selCountR} día${selCountR>1?"s":""} seleccionado${selCountR>1?"s":""}` : "Click para ver · Arrastrar para seleccionar");
     barraR.appendChild(lblSelR);
     if(selCountR > 0){
       const btnDescR = el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"},
@@ -1497,6 +1591,10 @@ function renderHistorial() {
           exportarExcelMultiple(fechasSel);
         }},`📊 Descargar Excel (${selCountR})`);
       barraR.appendChild(btnDescR);
+      // Botón limpiar selección
+      const btnLimpR = el("button",{style:{background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"},
+        onClick:()=>setState({historialSeleccionados:{}})}, "✕");
+      barraR.appendChild(btnLimpR);
     }
     inner.appendChild(barraR);
 
@@ -1514,14 +1612,45 @@ function renderHistorial() {
       const MESES_NR=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
       const DIAS_NR=["L","M","X","J","V","S","D"];
 
+      let dragActivoR=false, dragFechaInicioR=null;
+
       const calGridR = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"14px",marginBottom:"14px"}});
       mesesR.forEach(({y,m})=>{
         const mesBox = el("div",{style:{background:"#fff",borderRadius:"14px",padding:"14px 10px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)"}});
-        mesBox.appendChild(el("div",{style:{textAlign:"center",fontWeight:"700",fontSize:"12px",color:"#1e3a5f",marginBottom:"8px"}},[`${MESES_NR[m-1]}`,el("span",{style:{fontWeight:"400",color:"#aaa",fontSize:"11px"}},` ${y}`)]));
+
+        // Cabecera mes + checkbox "todo el mes"
+        const mesHdrR = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"center",gap:"6px",marginBottom:"8px"}});
+        const mesNomR = el("div",{style:{textAlign:"center",fontWeight:"700",fontSize:"12px",color:"#1e3a5f"}});
+        mesNomR.appendChild(document.createTextNode(MESES_NR[m-1]));
+        mesNomR.appendChild(el("span",{style:{fontWeight:"400",color:"#aaa",fontSize:"11px"}},` ${y}`));
+        mesHdrR.appendChild(mesNomR);
+
+        const diasDelMesR=[];
+        const diasMesTotR=new Date(y,m,0).getDate();
+        for(let dd=1;dd<=diasMesTotR;dd++){
+          const fk=`${y}-${String(m).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
+          if(fechasSetR.has(fk)) diasDelMesR.push(fk);
+        }
+        if(diasDelMesR.length>0){
+          const todosSelecR = diasDelMesR.every(f=>!!state.historialSeleccionados[f]);
+          const chkTodoR = el("input",{type:"checkbox"});
+          chkTodoR.checked = todosSelecR;
+          chkTodoR.title = todosSelecR?"Deseleccionar mes":"Seleccionar todo el mes";
+          chkTodoR.style.cssText="cursor:pointer;width:13px;height:13px;accent-color:#1e3a5f;flex-shrink:0;";
+          chkTodoR.addEventListener("change",()=>{
+            const nuevo={...state.historialSeleccionados};
+            if(chkTodoR.checked){ diasDelMesR.forEach(f=>nuevo[f]=true); }
+            else { diasDelMesR.forEach(f=>delete nuevo[f]); }
+            setState({historialSeleccionados:nuevo});
+          });
+          mesHdrR.appendChild(chkTodoR);
+        }
+        mesBox.appendChild(mesHdrR);
+
         const diasHdrR = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"1px",marginBottom:"3px"}});
         DIAS_NR.forEach(d=>{ diasHdrR.appendChild(el("div",{style:{textAlign:"center",fontSize:"9px",fontWeight:"700",color:"#bbb",padding:"1px 0"}},d)); });
         mesBox.appendChild(diasHdrR);
-        const diasGridR = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"2px"}});
+        const diasGridR = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"2px",userSelect:"none"}});
         const offsetR = (new Date(y,m-1,1).getDay()+6)%7;
         const diasMesR = new Date(y,m,0).getDate();
         for(let i=0;i<offsetR;i++) diasGridR.appendChild(el("div",{}));
@@ -1536,16 +1665,59 @@ function renderHistorial() {
             background: seleccionado?"#1e3a5f": tieneDatos?"#dbeeff":"transparent",
             color: seleccionado?"#fff": tieneDatos?"#1e3a5f":"#ccc",
             border: tieneDatos&&!seleccionado?"1.5px solid #a8cff0":"1.5px solid transparent",
-            transition:"all 0.12s", userSelect:"none"
+            transition:"all 0.12s"
           }},String(d));
           if(tieneDatos){
+            // Click simple: abrir liquidación
             diaEl.addEventListener("click",()=>{
-              const nuevo={...state.historialSeleccionados};
-              if(nuevo[fKey]) delete nuevo[fKey]; else nuevo[fKey]=true;
-              setState({historialSeleccionados:nuevo});
+              if(dragActivoR) return;
+              cargarFechaHistorial(fKey);
             });
-            diaEl.title="Click para seleccionar";
+            // Drag para selección rango (mouse)
+            diaEl.addEventListener("mousedown",(e)=>{
+              e.preventDefault();
+              dragActivoR=false; dragFechaInicioR=fKey;
+              const onMove=(ev)=>{
+                const over=document.elementFromPoint(ev.clientX,ev.clientY);
+                if(over&&over._fKey&&over._fKey!==fKey) dragActivoR=true;
+                if(dragActivoR&&over&&over._fKey){
+                  const todasF=[...fechasSetR].sort();
+                  const i1=todasF.indexOf(dragFechaInicioR), i2=todasF.indexOf(over._fKey);
+                  if(i1<0||i2<0) return;
+                  const [ini,fin]=[Math.min(i1,i2),Math.max(i1,i2)];
+                  const nuevo={...state.historialSeleccionados};
+                  todasF.slice(ini,fin+1).forEach(f=>nuevo[f]=true);
+                  setState({historialSeleccionados:nuevo});
+                }
+              };
+              const onUp=()=>{ document.removeEventListener("mousemove",onMove); document.removeEventListener("mouseup",onUp); setTimeout(()=>{dragActivoR=false;},50); };
+              document.addEventListener("mousemove",onMove);
+              document.addEventListener("mouseup",onUp);
+            });
+            // Touch drag para móvil
+            diaEl.addEventListener("touchstart",(e)=>{
+              dragActivoR=false; dragFechaInicioR=fKey;
+              const onTMove=(ev)=>{
+                const t=ev.touches[0];
+                const over=document.elementFromPoint(t.clientX,t.clientY);
+                if(over&&over._fKey&&over._fKey!==fKey) dragActivoR=true;
+                if(dragActivoR&&over&&over._fKey){
+                  const todasF=[...fechasSetR].sort();
+                  const i1=todasF.indexOf(dragFechaInicioR), i2=todasF.indexOf(over._fKey);
+                  if(i1<0||i2<0) return;
+                  const [ini,fin]=[Math.min(i1,i2),Math.max(i1,i2)];
+                  const nuevo={...state.historialSeleccionados};
+                  todasF.slice(ini,fin+1).forEach(f=>nuevo[f]=true);
+                  setState({historialSeleccionados:nuevo});
+                }
+              };
+              const onTUp=()=>{ document.removeEventListener("touchmove",onTMove); document.removeEventListener("touchend",onTUp); setTimeout(()=>{dragActivoR=false;},50); };
+              document.addEventListener("touchmove",onTMove,{passive:true});
+              document.addEventListener("touchend",onTUp);
+            },{passive:true});
+            diaEl.title="Click para ver · Arrastrar para seleccionar rango";
           }
+          diaEl._fKey = tieneDatos ? fKey : null;
           diasGridR.appendChild(diaEl);
         }
         mesBox.appendChild(diasGridR);
