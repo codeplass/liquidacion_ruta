@@ -1477,6 +1477,8 @@ function renderHistorial() {
             const fKey=`${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
             const tieneDatos = fechasSet.has(fKey);
             const seleccionado = !!state.historialSeleccionados[fKey];
+            // Wrapper relativo para contener el círculo y el botón ✏️
+            const celdaWrap = el("div",{style:{position:"relative",display:"flex",alignItems:"center",justifyContent:"center"}});
             const diaEl = el("div",{style:{
               textAlign:"center", fontSize:"11px", fontWeight: tieneDatos?"700":"400",
               borderRadius:"50%", width:"24px", height:"24px", lineHeight:"24px",
@@ -1494,6 +1496,7 @@ function renderHistorial() {
                 // Click simple: abrir liquidación
                 diaEl.addEventListener("click",(e)=>{
                   if(dragActivo) return; // si fue drag, no abrir
+                  if(e.target._esBtnFecha) return; // click en botón ✏️
                   cargarFechaHistorial(fKey);
                 });
                 // Drag para selección de rango
@@ -1555,7 +1558,22 @@ function renderHistorial() {
               }
             }
             diaEl._fKey = tieneDatos ? fKey : null;
-            diasGrid.appendChild(diaEl);
+            celdaWrap._fKey = tieneDatos ? fKey : null;
+            celdaWrap.appendChild(diaEl);
+            // Botón ✏️ para cambiar fecha (solo admin, solo días con datos, no sinAsignar)
+            if(tieneDatos && !esSinAsignar){
+              const btnFecha = document.createElement("button");
+              btnFecha._esBtnFecha = true;
+              btnFecha.textContent = "✏️";
+              btnFecha.title = "Cambiar fecha de esta liquidación";
+              btnFecha.style.cssText = "position:absolute;top:-8px;right:-8px;background:#fff;border:1px solid #a8cff0;border-radius:50%;width:16px;height:16px;font-size:8px;line-height:16px;text-align:center;cursor:pointer;padding:0;display:none;box-shadow:0 1px 4px rgba(0,0,0,0.18);z-index:2;";
+              btnFecha.addEventListener("click",(e)=>{ e.stopPropagation(); abrirModalCambiarFecha(fKey); });
+              celdaWrap.appendChild(btnFecha);
+              // Mostrar/ocultar botón con hover
+              celdaWrap.addEventListener("mouseenter",()=>{ btnFecha.style.display="block"; });
+              celdaWrap.addEventListener("mouseleave",()=>{ btnFecha.style.display="none"; });
+            }
+            diasGrid.appendChild(celdaWrap);
           }
           mesBox.appendChild(diasGrid);
           calGrid.appendChild(mesBox);
@@ -1748,6 +1766,112 @@ function cargarFechaHistorial(fecha) {
     busqueda:"", clienteDetalle:null, confirmado:true, modoHistorial:true,
     // historialRepSelec se mantiene para poder volver correctamente al nivel de fechas
   });
+}
+
+function abrirModalCambiarFecha(fechaVieja) {
+  const prev = document.getElementById("modal-cambiar-fecha");
+  if(prev) prev.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "modal-cambiar-fecha";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;font-family:sans-serif;";
+
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:28px;width:100%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,0.2);";
+
+  const titulo = document.createElement("h3");
+  titulo.textContent = "📅 Cambiar fecha de liquidación";
+  titulo.style.cssText = "margin:0 0 6px;color:#1e3a5f;font-size:16px;";
+  box.appendChild(titulo);
+
+  const subtitulo = document.createElement("p");
+  subtitulo.style.cssText = "font-size:12px;color:#888;margin:0 0 18px;";
+  subtitulo.textContent = `Fecha actual: ${fechaVieja}`;
+  box.appendChild(subtitulo);
+
+  const lbl = document.createElement("label");
+  lbl.textContent = "Nueva fecha";
+  lbl.style.cssText = "display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px;text-transform:uppercase;";
+  box.appendChild(lbl);
+
+  const fechaInp = document.createElement("input");
+  fechaInp.type = "date";
+  fechaInp.value = fechaVieja;
+  fechaInp.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:2px solid #1e3a5f;font-size:15px;box-sizing:border-box;font-family:sans-serif;margin-bottom:16px;";
+  box.appendChild(fechaInp);
+
+  const errP = document.createElement("p");
+  errP.style.cssText = "color:#c00;font-size:12px;margin:0 0 12px;min-height:16px;display:none;";
+  box.appendChild(errP);
+
+  const btnRow = document.createElement("div");
+  btnRow.style.cssText = "display:flex;gap:10px;";
+
+  const btnGuardar = document.createElement("button");
+  btnGuardar.textContent = "💾 Guardar cambio";
+  btnGuardar.style.cssText = "flex:1;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  btnGuardar.onclick = async () => {
+    const fechaNueva = fechaInp.value.trim();
+    if(!fechaNueva) { errP.textContent="Selecciona una fecha."; errP.style.display="block"; return; }
+    if(fechaNueva === fechaVieja) { errP.textContent="La fecha nueva es igual a la actual."; errP.style.display="block"; return; }
+
+    const historial = await fbGet("historial") || {};
+
+    if(historial[fechaNueva]) {
+      // Ya existe una liquidación en esa fecha → pedir confirmación
+      const confirmar = await new Promise(resolve => {
+        showModal({
+          titulo: "⚠️ Ya existe una liquidación",
+          mensaje: `Ya hay una liquidación registrada el ${fechaNueva}. ¿Deseas reemplazarla con la del ${fechaVieja}?`,
+          tipo: "confirm",
+          btnAceptar: "Sí, reemplazar",
+          colorAceptar: "#c0392b",
+          btnCancelar: "Cancelar",
+          onAceptar: () => resolve(true),
+          onCancelar: () => resolve(false)
+        });
+      });
+      if(!confirmar) return;
+    }
+
+    btnGuardar.disabled = true;
+    btnGuardar.textContent = "Guardando...";
+    try {
+      const registro = historial[fechaVieja];
+      // Mover: copiar con nueva fecha y borrar clave vieja
+      const registroActualizado = { ...registro, fecha: fechaNueva };
+      historial[fechaNueva] = registroActualizado;
+      delete historial[fechaVieja];
+      await fbSet("historial", historial);
+
+      // Actualizar state local
+      const nuevoData = { ...state.historialData };
+      nuevoData[fechaNueva] = registroActualizado;
+      delete nuevoData[fechaVieja];
+      setState({ historialData: nuevoData });
+
+      overlay.remove();
+      showToast("✅ Fecha actualizada a " + fechaNueva, "#27ae60");
+    } catch(e) {
+      errP.textContent = "Error al guardar. Intenta de nuevo.";
+      errP.style.display = "block";
+      btnGuardar.disabled = false;
+      btnGuardar.textContent = "💾 Guardar cambio";
+    }
+  };
+  btnRow.appendChild(btnGuardar);
+
+  const btnCancelar = document.createElement("button");
+  btnCancelar.textContent = "Cancelar";
+  btnCancelar.style.cssText = "flex:1;background:#eee;color:#555;border:none;border-radius:8px;padding:12px 0;font-size:14px;cursor:pointer;font-family:sans-serif;";
+  btnCancelar.onclick = () => overlay.remove();
+  btnRow.appendChild(btnCancelar);
+  box.appendChild(btnRow);
+
+  overlay.appendChild(box);
+  overlay.addEventListener("click", e => { if(e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  setTimeout(() => fechaInp.focus(), 100);
 }
 
 function renderDetalleCliente() {
