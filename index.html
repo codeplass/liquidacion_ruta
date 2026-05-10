@@ -1379,7 +1379,7 @@ function renderHistorial() {
 
       if(esSinAsignar && fechasRep.length>0){
         const nota=el("div",{style:{background:"#fff8e1",border:"1px solid #ffe082",borderRadius:"10px",padding:"10px 14px",fontSize:"12px",color:"#795548",marginBottom:"14px"}});
-        nota.textContent="Estas liquidaciones no tienen repartidor asignado. Puedes asignarlas haciendo click en cada una.";
+        nota.textContent="Estas liquidaciones no tienen repartidor asignado. Haz click en un día para asignar repartidor o ver la liquidación.";
         inner.appendChild(nota);
       }
 
@@ -1490,8 +1490,8 @@ function renderHistorial() {
             }},String(d));
             if(tieneDatos){
               if(esSinAsignar){
-                diaEl.addEventListener("click",()=>cargarFechaHistorial(fKey));
-                diaEl.title="Click para ver liquidación";
+                diaEl.addEventListener("click",()=>abrirModalAsignarRepartidor(fKey));
+                diaEl.title="Click para asignar repartidor";
               } else {
                 // Click simple: abrir liquidación
                 diaEl.addEventListener("click",(e)=>{
@@ -1560,8 +1560,8 @@ function renderHistorial() {
             diaEl._fKey = tieneDatos ? fKey : null;
             celdaWrap._fKey = tieneDatos ? fKey : null;
             celdaWrap.appendChild(diaEl);
-            // Botón ✏️ para cambiar fecha (solo admin, solo días con datos, no sinAsignar)
-            if(tieneDatos && !esSinAsignar){
+            // Botón ✏️ para cambiar fecha (solo admin, solo días con datos)
+            if(tieneDatos){
               const btnFecha = document.createElement("button");
               btnFecha._esBtnFecha = true;
               btnFecha.textContent = "✏️";
@@ -1766,6 +1766,100 @@ function cargarFechaHistorial(fecha) {
     busqueda:"", clienteDetalle:null, confirmado:true, modoHistorial:true,
     // historialRepSelec se mantiene para poder volver correctamente al nivel de fechas
   });
+}
+
+async function abrirModalAsignarRepartidor(fecha) {
+  const prev = document.getElementById("modal-asignar-rep");
+  if(prev) prev.remove();
+
+  const historial = await fbGet("historial") || {};
+  const reg = historial[fecha];
+  if(!reg) return;
+
+  const overlay = document.createElement("div");
+  overlay.id = "modal-asignar-rep";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;font-family:sans-serif;";
+
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:28px;width:100%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,0.2);";
+
+  const titulo = document.createElement("h3");
+  titulo.textContent = "🚚 Asignar repartidor";
+  titulo.style.cssText = "margin:0 0 6px;color:#795548;font-size:16px;";
+  box.appendChild(titulo);
+
+  const subtitulo = document.createElement("p");
+  subtitulo.style.cssText = "font-size:12px;color:#888;margin:0 0 18px;";
+  subtitulo.textContent = `Liquidación del ${fecha} · ${reg.fileName || ""}`;
+  box.appendChild(subtitulo);
+
+  const lbl = document.createElement("label");
+  lbl.textContent = "Repartidor";
+  lbl.style.cssText = "display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px;text-transform:uppercase;";
+  box.appendChild(lbl);
+
+  const sel = document.createElement("select");
+  sel.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:2px solid #795548;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:16px;background:#fff;";
+  sel.appendChild(Object.assign(document.createElement("option"), {value:"", textContent:"-- Selecciona repartidor --"}));
+  (state.listaRepartidores||[]).forEach(r=>{
+    const nom = typeof r==="string"?r:(r.nombre||"");
+    const alias = typeof r==="object"&&r.alias?r.alias:"";
+    const opt = document.createElement("option");
+    opt.value = nom;
+    opt.textContent = alias && alias!==nom ? `${alias} (${nom})` : nom;
+    sel.appendChild(opt);
+  });
+  // Preseleccionar si ya tenía uno
+  if(reg.repartidor) sel.value = reg.repartidor;
+  box.appendChild(sel);
+
+  const errP = document.createElement("p");
+  errP.style.cssText = "color:#c00;font-size:12px;margin:0 0 12px;min-height:16px;display:none;";
+  box.appendChild(errP);
+
+  const btnRow = document.createElement("div");
+  btnRow.style.cssText = "display:flex;gap:10px;";
+
+  const btnGuardar = document.createElement("button");
+  btnGuardar.textContent = "💾 Guardar";
+  btnGuardar.style.cssText = "flex:1;background:#795548;color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  btnGuardar.onclick = async () => {
+    const repSelec = sel.value.trim();
+    if(!repSelec){ errP.textContent="Selecciona un repartidor."; errP.style.display="block"; return; }
+    btnGuardar.disabled=true; btnGuardar.textContent="Guardando...";
+    try {
+      const hActual = await fbGet("historial") || {};
+      hActual[fecha] = {...(hActual[fecha]||{}), repartidor: repSelec};
+      await fbSet("historial", hActual);
+      // Actualizar state local
+      const nuevoData = {...state.historialData};
+      nuevoData[fecha] = {...(nuevoData[fecha]||{}), repartidor: repSelec};
+      setState({historialData: nuevoData});
+      overlay.remove();
+      showToast("✅ Repartidor asignado: " + repSelec, "#27ae60");
+    } catch(e) {
+      errP.textContent="Error al guardar. Intenta de nuevo."; errP.style.display="block";
+      btnGuardar.disabled=false; btnGuardar.textContent="💾 Guardar";
+    }
+  };
+  btnRow.appendChild(btnGuardar);
+
+  const btnVerLiq = document.createElement("button");
+  btnVerLiq.textContent = "👁️ Ver liquidación";
+  btnVerLiq.style.cssText = "flex:1;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  btnVerLiq.onclick = () => { overlay.remove(); cargarFechaHistorial(fecha); };
+  btnRow.appendChild(btnVerLiq);
+
+  const btnCancelar = document.createElement("button");
+  btnCancelar.textContent = "Cancelar";
+  btnCancelar.style.cssText = "flex:1;background:#eee;color:#555;border:none;border-radius:8px;padding:12px 0;font-size:14px;cursor:pointer;font-family:sans-serif;";
+  btnCancelar.onclick = () => overlay.remove();
+  btnRow.appendChild(btnCancelar);
+  box.appendChild(btnRow);
+
+  overlay.appendChild(box);
+  overlay.addEventListener("click", e=>{ if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
 }
 
 function abrirModalCambiarFecha(fechaVieja) {
