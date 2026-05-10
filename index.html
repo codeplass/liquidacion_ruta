@@ -216,6 +216,7 @@ let state = {
   listaRepartidores: [], // cargada de Firebase config/personal
   listaAuxiliares: [],
   historialSeleccionados: {}, // fecha -> true, para descarga multi-día
+  filtroRuta: "",              // "" = todas, o nombre de ruta para filtrar
 };
 
 function setState(updates) {
@@ -2653,6 +2654,7 @@ function renderMain() {
   const porRuta={};
   clientesFiltrados.forEach(c=>{
     const r=state.clienteMap[c].ruta||"Sin ruta";
+    if(state.filtroRuta && r!==state.filtroRuta) return; // filtro activo
     if(!porRuta[r]) porRuta[r]=[];
     porRuta[r].push(c);
   });
@@ -2878,14 +2880,17 @@ function renderMain() {
   if(state.modoHistorial){
     hdrBtns.appendChild(el("span",{style:{background:"#f39c12",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Solo lectura"));
     hdrBtns.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>{
-      // Siempre usar el registro original del historial para la fecha seleccionada
       const regExcel = state.historialData[state.fechaSelec];
       if(!regExcel){ showToast("⚠️ No se encontró el registro del día","#e67e22"); return; }
       exportarExcel(regExcel);
     }},"📊 Excel"));
+    hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenLiq"})},"📋 Resumen"));
+    if(state.devoluciones&&state.devoluciones.length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"historial",modoHistorial:false,fechaSelec:""})},"← Historial"));
   } else {
     if(state.confirmado) hdrBtns.appendChild(el("span",{style:{background:"#27ae60",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Confirmada"));
+    hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700",boxShadow:"0 2px 8px rgba(230,126,34,0.4)"},onClick:()=>setState({screen:"resumenLiq"})},"📋 Resumen"));
+    if(state.devoluciones&&state.devoluciones.length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:abrirHistorial},"Historial"));
     if(state.esAdmin && !state.modoHistorial) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,165,0,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({showMoverProd:true,moverOrigenCliente:"",moverOrigenPedido:"",moverProductoSel:"",moverDestinoCliente:"",moverDestinoPedido:"",moverError:""})},"🔀 Mover producto"));
     if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()})},"Nuevo archivo"));
@@ -2898,53 +2903,70 @@ function renderMain() {
   hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"600"},onClick:cerrarSesion},"🚪 Salir"));
   hdr.appendChild(hdrBtns); inner.appendChild(hdr);
 
-  // Cards
-  // Total devoluciones: parciales + monto bruto de devoluciones totales
-  // Efectividad entrega: (verde+amarillo)/total
-  // % devoluciones totales: rosado/total
-  const pctDevTotal=clientes.length>0?(Math.round(cntRosado/clientes.length*1000)/10).toFixed(1):0;
-  const pctMonto=montoTotal>0?(Math.round(montoEntregado/montoTotal*1000)/10).toFixed(1):0;
-  const cards=el("div",{style:{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:"12px",marginBottom:"20px"}});
+  // ── Barra de etiquetas (Total + por ruta) ──
+  const todasRutas = [...new Set(clientes.map(c=>state.clienteMap[c].ruta||"Sin ruta"))].sort();
+  const tagBar = el("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"16px",overflowX:"auto",paddingBottom:"4px"}});
 
-  // Tarjeta especial: % Efectividad de entregas
-  const cardEfect=el("div",{style:{background:"#fff",borderRadius:"10px",padding:"14px 16px",boxShadow:"0 2px 6px rgba(0,0,0,0.07)"}});
-  cardEfect.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:"#888",letterSpacing:"0.5px",marginBottom:"6px"}},"% EFECT. ENTREGAS"));
-  const efectVal=el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"4px"}});
-  efectVal.appendChild(el("span",{style:{fontSize:"15px"}},"👥"));
-  efectVal.appendChild(el("span",{style:{fontSize:"15px",fontWeight:"700",color:"#1e3a5f"}},`${entregadosCount}/${clientes.length}`));
-  efectVal.appendChild(el("span",{style:{fontSize:"15px",fontWeight:"700",color:"#27ae60"}},`${pctEfectividad}%`));
-  cardEfect.appendChild(efectVal);
-  const efectDet=el("div",{style:{fontSize:"13px",marginBottom:"3px"}});
-  efectDet.appendChild(el("span",{style:{marginRight:"6px"}},`✅${cntVerde}`));
-  efectDet.appendChild(el("span",{style:{marginRight:"6px"}},`🟡${cntAmarillo}`));
-  efectDet.appendChild(el("span",{},`🔴${cntRosado}`));
-  cardEfect.appendChild(efectDet);
-  cardEfect.appendChild(el("div",{style:{fontSize:"11px",color:"#888"}},"Clientes entregados"));
-  cards.appendChild(cardEfect);
+  const mkTag = (label, cls, seleccionada) => {
+    const cEntregables = cls.filter(c=>!esClientePre(c));
+    const cVerde = cEntregables.filter(c=>state.estadoEntrega[c]==="verde").length;
+    const cAmarillo = cEntregables.filter(c=>state.estadoEntrega[c]==="amarillo").length;
+    const cRosado = cEntregables.filter(c=>state.estadoEntrega[c]==="rosado").length;
+    const cEnt = cVerde+cAmarillo;
+    const cPend = cEntregables.filter(c=>!state.estadoEntrega[c]).length;
+    const cPct = cEntregables.length>0?Math.round(cEnt/cEntregables.length*100):0;
+    const cNeto = cEntregables.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
+    const cMonto = cEntregables.reduce((s,c)=>s+totalesCliente(c).monto,0);
 
-  // Tarjeta especial: % Efectividad monto
-  const cardMonto=el("div",{style:{background:"#fff",borderRadius:"10px",padding:"14px 16px",boxShadow:"0 2px 6px rgba(0,0,0,0.07)"}});
-  cardMonto.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:"#888",letterSpacing:"0.5px",marginBottom:"6px"}},"% EFECT. ENTREGAS (monto)"));
-  cardMonto.appendChild(el("div",{style:{fontSize:"13px",color:"#888",marginBottom:"2px"}},"💵"));
-  cardMonto.appendChild(el("div",{style:{fontSize:"14px",color:"#1e3a5f",marginBottom:"2px"}},fQ(montoEntregado)));
-  cardMonto.appendChild(el("div",{style:{fontSize:"16px",fontWeight:"700",color:"#27ae60"}},`${pctMonto}%`));
-  cardMonto.appendChild(el("div",{style:{fontSize:"11px",color:"#888",marginTop:"3px"}},`de ${fQ(montoTotal)}`));
-  cards.appendChild(cardMonto);
+    const tag = el("div",{style:{
+      background: seleccionada?"#1e3a5f":"#fff",
+      color: seleccionada?"#fff":"#1e3a5f",
+      border: seleccionada?"2px solid #1e3a5f":"2px solid #d0dcea",
+      borderRadius:"10px", padding:"8px 12px", cursor:"pointer",
+      minWidth:"140px", flex:"0 0 auto",
+      boxShadow: seleccionada?"0 2px 8px rgba(30,58,95,0.18)":"0 1px 4px rgba(0,0,0,0.06)",
+      transition:"all 0.15s"
+    }});
 
-  const pctDev=montoTotal>0?(Math.round(totalDevGral/montoTotal*1000)/10).toFixed(1):0;
-  // Tarjetas restantes
-  [{icon:"⏳",label:"Monto pendiente",val:fQ(montoPendiente),orange:true},
-   {icon:"↩️",label:"Devoluciones",val:fQ(totalDevGral),sub:`${pctDev}% del total`,red:true},
-   {icon:"💰",label:"Total Neto confirmado",val:fQ(montoEntregado),hl:true},
-  ].forEach(c=>{
-    const card=el("div",{style:{background:c.hl?"#1e3a5f":c.red?"#fff5f5":c.orange?"#fff8f0":"#fff",color:c.hl?"#fff":c.red?"#c0392b":c.orange?"#e67e22":"#333",borderRadius:"10px",padding:"14px 16px",boxShadow:"0 2px 6px rgba(0,0,0,0.07)"}});
-    card.appendChild(el("div",{style:{fontSize:"20px"}},c.icon));
-    card.appendChild(el("div",{style:{fontSize:"16px",fontWeight:"700",marginTop:"4px"}},c.val));
-    if(c.sub) card.appendChild(el("div",{style:{fontSize:"11px",opacity:"0.7"}},c.sub));
-    card.appendChild(el("div",{style:{fontSize:"11px",opacity:"0.75"}},c.label));
-    cards.appendChild(card);
+    // Línea 1: Nombre + % efect
+    const l1 = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"3px"}});
+    l1.appendChild(el("span",{style:{fontWeight:"700",fontSize:"12px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"90px"}},label));
+    l1.appendChild(el("span",{style:{fontWeight:"700",fontSize:"13px",color:seleccionada?"#7effa8":"#27ae60"}},`${cPct}%`));
+    tag.appendChild(l1);
+
+    // Línea 2: clientes y estados
+    const l2 = el("div",{style:{display:"flex",gap:"6px",fontSize:"11px",alignItems:"center",marginBottom:"2px",opacity:"0.85"}});
+    l2.appendChild(el("span",{},`👥${cEnt}/${cEntregables.length}`));
+    l2.appendChild(el("span",{},`✅${cVerde}`));
+    l2.appendChild(el("span",{},`🟡${cAmarillo}`));
+    if(cRosado>0) l2.appendChild(el("span",{},`🔴${cRosado}`));
+    tag.appendChild(l2);
+
+    // Línea 3: monto neto
+    const l3 = el("div",{style:{display:"flex",justifyContent:"space-between",fontSize:"11px",alignItems:"center"}});
+    l3.appendChild(el("span",{style:{fontWeight:"600",opacity:"0.9"}},fQ(cNeto)));
+    if(cPend>0) l3.appendChild(el("span",{style:{color:seleccionada?"#ffd080":"#e67e22",fontWeight:"700"}},`⏳${cPend}`));
+    tag.appendChild(l3);
+
+    return tag;
+  };
+
+  // Tag "Todas"
+  const tagTodas = mkTag("Todas", clientes, state.filtroRuta==="");
+  tagTodas.onclick = ()=>setState({filtroRuta:""});
+  tagBar.appendChild(tagTodas);
+
+  // Tags por ruta
+  todasRutas.forEach(ruta=>{
+    const rutaClientes = clientes.filter(c=>(state.clienteMap[c].ruta||"Sin ruta")===ruta);
+    const rutaNombreCorto = ruta.replace(/^ruta\s*/i,"Ruta ").replace(/[\s—–-]+\d+\s*clientes?/i,"").trim();
+    const selec = state.filtroRuta===ruta;
+    const tag = mkTag(rutaNombreCorto, rutaClientes, selec);
+    tag.onclick = ()=>setState({filtroRuta: selec?"":ruta});
+    tagBar.appendChild(tag);
   });
-  inner.appendChild(cards);
+
+  inner.appendChild(tagBar);
 
   // Barra de búsqueda + botón ocultar confirmados
   const busqWrap=el("div",{style:{display:"flex",gap:"8px",marginBottom:"16px",alignItems:"center"}});
@@ -3014,12 +3036,10 @@ function renderListaRutas(container, porRuta) {
     const rutaHdr=el("div",{style:{background:"#2d5f8a",color:"#fff",borderRadius:"10px 10px 0 0",padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}});
     const tituloCnt = cntPresupuestoR>0 ? `${rutaEntregables.length} clientes + ${cntPresupuestoR} presupuesto${cntPresupuestoR>1?"s":""}` : `${rutaClientes.length} clientes`;
     rutaHdr.appendChild(el("span",{style:{fontWeight:"700",fontSize:"15px"}},`🚚 ${rutaNombre} — ${tituloCnt}`));
-    const rutaInfo=el("div",{style:{display:"flex",gap:"16px",fontSize:"12px",flexWrap:"wrap",alignItems:"center"}});
-    rutaInfo.appendChild(el("span",{},`👥 ${entregadosRuta}/${rutaClientes.length} · ✅${cntVerdeR} 🟡${cntAmarilloR} 🔴${cntRosadoR}`));
-    rutaInfo.appendChild(el("span",{style:{color:"#a8e6a3"}},`📊 Efect: ${pctEfectividadR}%`));
-    rutaInfo.appendChild(el("span",{},[`✅ ${fQ(montoEntregadoRuta)} `,el("span",{style:{color:"#a8e6a3",fontSize:"11px"}},`${pctMontoRuta}%`),el("span",{style:{color:"#ffd580",marginLeft:"8px"}},`⏳ ${fQ(montoPendienteRuta)}`)]));
-    if(devTotalRuta>0) rutaInfo.appendChild(el("span",{style:{color:"#ffaaaa"}},[`↩️ -${fQ(devTotalRuta)} `,el("span",{style:{fontSize:"11px",color:"#ffcccc"}},`${pctDevMontoRuta}%`)]));
-    rutaInfo.appendChild(el("span",{style:{fontWeight:"700"}},`💰 ${fQ(netoRutaConfirmado)}`));
+    const rutaInfo=el("div",{style:{display:"flex",gap:"14px",fontSize:"12px",flexWrap:"wrap",alignItems:"center"}});
+    rutaInfo.appendChild(el("span",{},`👥 ${entregadosRuta}/${rutaEntregables.length} · ✅${cntVerdeR} 🟡${cntAmarilloR} 🔴${cntRosadoR}`));
+    rutaInfo.appendChild(el("span",{style:{color:"#a8e6a3"}},`${pctEfectividadR}%`));
+    if(rutaEntregables.filter(c=>!state.estadoEntrega[c]).length>0) rutaInfo.appendChild(el("span",{style:{color:"#ffd080"}},`⏳${rutaEntregables.filter(c=>!state.estadoEntrega[c]).length} pend.`));
     rutaHdr.appendChild(rutaInfo); rutaDiv.appendChild(rutaHdr);
 
     const tblWrap=el("div",{style:{background:"#fff",borderRadius:"0 0 12px 12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",overflow:"hidden"}});
@@ -3394,6 +3414,266 @@ function renderListaRutas(container, porRuta) {
   return wrap;
 }
 
+// ── Resumen de Liquidación ──
+function renderResumenLiquidacion() {
+  const clientes = Object.keys(state.clienteMap);
+  const clientesEntregables = clientes.filter(c=>!esClientePre(c));
+  const cntVerde = clientesEntregables.filter(c=>state.estadoEntrega[c]==="verde").length;
+  const cntAmarillo = clientesEntregables.filter(c=>state.estadoEntrega[c]==="amarillo").length;
+  const cntRosado = clientesEntregables.filter(c=>state.estadoEntrega[c]==="rosado").length;
+  const entregadosCount = cntVerde+cntAmarillo;
+  const pctEfectividad = clientesEntregables.length>0?Math.round(entregadosCount/clientesEntregables.length*100):0;
+  const montoTotal = clientesEntregables.reduce((s,c)=>s+totalesCliente(c).monto,0);
+  const montoEntregado = clientesEntregables.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
+  const montoPendiente = clientesEntregables.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).netoM,0);
+  const totalDevGral = clientesEntregables.reduce((s,c)=>{
+    if(state.estadoEntrega[c]==="rosado") return s+totalesCliente(c).monto;
+    return s+totalesCliente(c).devM;
+  },0);
+  const totalDescGral = clientesEntregables.reduce((s,c)=>s+(parseFloat(state.descuentos[c])||0),0);
+  const totalBilletes = BILLETES.reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
+  const totalMonedas = parseFloat(state.monedas)||0;
+  const totalEfectivo = totalBilletes+totalMonedas;
+  const totalDeposito = parseFloat(state.deposito)||0;
+  const totalTransferencia = parseFloat(state.transferencia)||0;
+  const totalGastos = state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
+  const totalGastosDeCuenta = state.gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
+  const totalPagos = totalEfectivo+totalDeposito+totalTransferencia;
+  const totalACobrar = clientesEntregables.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
+  const diferencia = (totalPagos+totalGastosDeCuenta)-totalACobrar;
+  const difColor = Math.abs(diferencia)<0.01?"#27ae60":diferencia>0?"#2563eb":"#c0392b";
+  const difTexto = Math.abs(diferencia)<0.01?"✓ CUADRADO":diferencia>0?`+${fQ(diferencia)} SOBRANTE`:`-${fQ(Math.abs(diferencia))} FALTANTE`;
+
+  // Por ruta
+  const rutas = [...new Set(clientesEntregables.map(c=>state.clienteMap[c].ruta||"Sin ruta"))].sort();
+
+  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
+  const inner = el("div",{style:{maxWidth:"700px",margin:"0 auto"}});
+  wrap.appendChild(inner);
+
+  // Header
+  const hdr = el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"20px",display:"flex",alignItems:"center",gap:"12px"}});
+  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"7px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>setState({screen:state.modoHistorial?"historialVista":"main"})},"← Volver"));
+  const hdrInfo = el("div",{style:{flex:"1"}});
+  hdrInfo.appendChild(el("h2",{style:{margin:"0",fontSize:"17px",fontWeight:"700"}},"📋 Resumen de Liquidación"));
+  hdrInfo.appendChild(el("p",{style:{margin:"2px 0 0",fontSize:"11px",opacity:"0.7"}},`${state.fecha} · ${state.fileName}`));
+  hdr.appendChild(hdrInfo);
+  inner.appendChild(hdr);
+
+  // ── Entregas ──
+  const secCard = (titulo, children) => {
+    const d = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px 20px",marginBottom:"14px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}});
+    d.appendChild(el("div",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"13px",marginBottom:"12px",textTransform:"uppercase",letterSpacing:"0.5px"}},titulo));
+    children.forEach(c=>d.appendChild(c));
+    return d;
+  };
+  const fila = (label, val, color, bold) => {
+    const r = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:"1px solid #f0f4f8"}});
+    r.appendChild(el("span",{style:{fontSize:"13px",color:"#666"}},label));
+    r.appendChild(el("span",{style:{fontSize:"13px",fontWeight:bold?"700":"600",color:color||"#333"}},val));
+    return r;
+  };
+
+  // Efect. general
+  const secEnt = secCard("👥 Entregas",[ 
+    fila("Total clientes entregables", `${clientesEntregables.length}`, "#1e3a5f"),
+    fila("Entregados (efectivo + parcial)", `${entregadosCount} (${pctEfectividad}%)`, "#27ae60", true),
+    fila("✅ Efectivos", `${cntVerde}`, "#27ae60"),
+    fila("🟡 Parciales", `${cntAmarillo}`, "#f9a825"),
+    fila("🔴 Devolución total", `${cntRosado}`, "#e91e8c"),
+    fila("⏳ Sin confirmar", `${clientesEntregables.length - entregadosCount - cntRosado}`, "#888"),
+  ]);
+  inner.appendChild(secEnt);
+
+  // Montos
+  const pctDev = montoTotal>0?(totalDevGral/montoTotal*100).toFixed(1):0;
+  const secMon = secCard("💰 Montos",[
+    fila("Total a entregar", fQ(montoTotal), "#1e3a5f"),
+    fila("(-) Devoluciones", `-${fQ(totalDevGral)} (${pctDev}%)`, "#c0392b"),
+    fila("(-) Descuentos", `-${fQ(totalDescGral)}`, "#e67e22"),
+    fila("Total neto confirmado", fQ(montoEntregado), "#1e3a5f", true),
+    fila("⏳ Monto pendiente", fQ(montoPendiente), "#e67e22"),
+  ]);
+  inner.appendChild(secMon);
+
+  // Por ruta
+  if(rutas.length > 1){
+    const rutaRows = rutas.map(ruta => {
+      const rCls = clientesEntregables.filter(c=>state.clienteMap[c].ruta===ruta||(!state.clienteMap[c].ruta&&ruta==="Sin ruta"));
+      const rVerde = rCls.filter(c=>state.estadoEntrega[c]==="verde").length;
+      const rAmarillo = rCls.filter(c=>state.estadoEntrega[c]==="amarillo").length;
+      const rRosado = rCls.filter(c=>state.estadoEntrega[c]==="rosado").length;
+      const rEnt = rVerde+rAmarillo;
+      const rPct = rCls.length>0?Math.round(rEnt/rCls.length*100):0;
+      const rNeto = rCls.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
+      const rPend = rCls.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).netoM,0);
+      const r = el("div",{style:{padding:"8px 0",borderBottom:"1px solid #f0f4f8"}});
+      r.appendChild(el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"2px"}},
+        el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#1e3a5f"}},ruta),
+        el("span",{style:{fontSize:"12px",color:"#27ae60",fontWeight:"700"}},`${rPct}% · ${rEnt}/${rCls.length}`)
+      ));
+      const det = el("div",{style:{display:"flex",gap:"12px",fontSize:"11px",color:"#888",flexWrap:"wrap"}});
+      det.appendChild(el("span",{},`✅${rVerde} 🟡${rAmarillo} 🔴${rRosado}`));
+      det.appendChild(el("span",{style:{color:"#1e3a5f",fontWeight:"600"}},`Neto: ${fQ(rNeto)}`));
+      if(rPend>0) det.appendChild(el("span",{style:{color:"#e67e22"}},`Pend: ${fQ(rPend)}`));
+      r.appendChild(det);
+      return r;
+    });
+    inner.appendChild(secCard("🚚 Por Ruta", rutaRows));
+  }
+
+  // Cuadre
+  const secCuadre = secCard("💳 Cuadre Final",[
+    fila("Efectivo", fQ(totalEfectivo), "#333"),
+    fila("Depósito bancario", fQ(totalDeposito), "#333"),
+    fila("Transferencia", fQ(totalTransferencia), "#333"),
+    fila("Total recibido", fQ(totalPagos), "#2563eb", true),
+    fila("Gastos de ruta (de cuenta)", `-${fQ(totalGastosDeCuenta)}`, "#c0392b"),
+    fila("Gastos de ruta (no de cuenta)", `-${fQ(totalGastos-totalGastosDeCuenta)}`, "#e67e22"),
+    fila("Total a cobrar (confirmados)", fQ(totalACobrar), "#1e3a5f"),
+  ]);
+  const difDiv = el("div",{style:{marginTop:"10px",padding:"12px",borderRadius:"8px",background:Math.abs(diferencia)<0.01?"#e8f5e9":diferencia>0?"#e3f2fd":"#fce4ec",textAlign:"center",fontSize:"16px",fontWeight:"700",color:difColor}},difTexto);
+  secCuadre.appendChild(difDiv);
+  inner.appendChild(secCuadre);
+
+  // Gastos detalle
+  if(state.gastosDetalle.some(g=>g.desc||g.monto)){
+    const gasRows = state.gastosDetalle.filter(g=>g.desc||g.monto).map(g=>{
+      const r = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:"1px solid #f0f4f8",fontSize:"13px"}});
+      const izq = el("div");
+      izq.appendChild(el("span",{style:{color:"#333"}},g.desc||"Sin descripción"));
+      if(g.comentario) izq.appendChild(el("span",{style:{color:"#888",fontSize:"11px",marginLeft:"6px"}},`(${g.comentario})`));
+      izq.appendChild(el("span",{style:{marginLeft:"6px",fontSize:"10px",background:g.deCuenta?"#e8f5e9":"#fff3e0",color:g.deCuenta?"#27ae60":"#e67e22",borderRadius:"3px",padding:"1px 5px",fontWeight:"700"}},g.deCuenta?"DE CUENTA":"NO CUENTA"));
+      r.appendChild(izq);
+      r.appendChild(el("span",{style:{fontWeight:"600",color:"#c0392b"}},fQ(parseFloat(g.monto)||0)));
+      return r;
+    });
+    inner.appendChild(secCard("⛽ Gastos de Ruta", gasRows));
+  }
+
+  return wrap;
+}
+
+// ── Resumen de Devoluciones ──
+function renderResumenDevoluciones() {
+  const devs = state.devoluciones || [];
+  const cMap = state.clienteMap || {};
+
+  // Agrupar por cliente
+  const porCliente = {};
+  devs.forEach(d=>{
+    if(!porCliente[d.cliente]) porCliente[d.cliente]={devs:[],total:0};
+    porCliente[d.cliente].devs.push(d);
+    porCliente[d.cliente].total+=d.monto;
+  });
+
+  // Devoluciones totales (rosados)
+  const devsTotales = Object.keys(cMap).filter(c=>state.estadoEntrega[c]==="rosado");
+
+  // Agrupar por producto (todas las devs parciales)
+  const porProducto = {};
+  devs.forEach(d=>{
+    const k = d.producto;
+    if(!porProducto[k]) porProducto[k]={unidades:0,monto:0,clientes:new Set()};
+    porProducto[k].unidades+=d.unidades;
+    porProducto[k].monto+=d.monto;
+    porProducto[k].clientes.add(d.cliente);
+  });
+
+  const totalDevM = devs.reduce((s,d)=>s+d.monto,0);
+  const totalDevU = devs.reduce((s,d)=>s+d.unidades,0);
+  // Sumar también montos brutos de devoluciones totales
+  const totalDevTotalesM = devsTotales.reduce((s,c)=>s+totalesCliente(c).monto,0);
+  const totalGeneral = totalDevM + totalDevTotalesM;
+
+  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
+  const inner = el("div",{style:{maxWidth:"700px",margin:"0 auto"}});
+  wrap.appendChild(inner);
+
+  // Header
+  const hdr = el("div",{style:{background:"#c0392b",color:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"20px",display:"flex",alignItems:"center",gap:"12px"}});
+  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"7px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>setState({screen:state.modoHistorial?"historialVista":"main"})},"← Volver"));
+  const hdrInfo = el("div",{style:{flex:"1"}});
+  hdrInfo.appendChild(el("h2",{style:{margin:"0",fontSize:"17px",fontWeight:"700"}},"↩️ Resumen de Devoluciones"));
+  hdrInfo.appendChild(el("p",{style:{margin:"2px 0 0",fontSize:"11px",opacity:"0.7"}},`${state.fecha} · Total: ${fQ(totalGeneral)}`));
+  hdr.appendChild(hdrInfo);
+  inner.appendChild(hdr);
+
+  if(devs.length===0 && devsTotales.length===0){
+    inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"40px",textAlign:"center",color:"#aaa",fontSize:"14px"}},"No hay devoluciones registradas."));
+    return wrap;
+  }
+
+  const secCard = (titulo, bg, children) => {
+    const d = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px 20px",marginBottom:"14px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}});
+    d.appendChild(el("div",{style:{fontWeight:"700",color:bg||"#c0392b",fontSize:"13px",marginBottom:"12px",textTransform:"uppercase",letterSpacing:"0.5px"}},titulo));
+    children.forEach(c=>d.appendChild(c));
+    return d;
+  };
+
+  // ── Devoluciones totales ──
+  if(devsTotales.length>0){
+    const rows = devsTotales.map(c=>{
+      const tt = totalesCliente(c);
+      const mot = state.motivosDevTotal[c];
+      const r = el("div",{style:{padding:"8px 0",borderBottom:"1px solid #f0f4f8"}});
+      r.appendChild(el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
+        el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#e91e8c"}},c),
+        el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#c0392b"}},fQ(tt.monto))
+      ));
+      if(mot) r.appendChild(el("div",{style:{fontSize:"11px",color:"#888",marginTop:"2px"}},`${mot.codigo} — ${mot.desc}`));
+      return r;
+    });
+    const totRow = el("div",{style:{display:"flex",justifyContent:"space-between",marginTop:"8px",fontWeight:"700",fontSize:"13px",color:"#c0392b"}});
+    totRow.appendChild(el("span",{},"Total devoluciones totales"));
+    totRow.appendChild(el("span",{},fQ(totalDevTotalesM)));
+    rows.push(totRow);
+    inner.appendChild(secCard(`🔴 Devoluciones Totales (${devsTotales.length} cliente${devsTotales.length>1?"s":""})`, "#e91e8c", rows));
+  }
+
+  // ── Por cliente (parciales) ──
+  if(Object.keys(porCliente).length>0){
+    const rows = Object.entries(porCliente).sort((a,b)=>b[1].total-a[1].total).flatMap(([cliente,data])=>{
+      const hRow = el("div",{style:{padding:"8px 0 4px",borderBottom:"1px solid #f0f4f8"}});
+      hRow.appendChild(el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px"}},
+        el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#1e3a5f"}},cliente),
+        el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#c0392b"}},`-${fQ(data.total)}`)
+      ));
+      const detRows = data.devs.map(d=>{
+        const dr = el("div",{style:{display:"flex",justifyContent:"space-between",padding:"2px 0 2px 12px",fontSize:"12px",color:"#666"}});
+        dr.appendChild(el("span",{style:{flex:"1",wordBreak:"break-word"}},d.producto));
+        const vals = el("div",{style:{display:"flex",gap:"12px",flexShrink:"0",marginLeft:"8px"}});
+        vals.appendChild(el("span",{style:{color:"#555"}},`${fN(d.unidades)} u`));
+        vals.appendChild(el("span",{style:{color:"#c0392b",fontWeight:"600"}},`-${fQ(d.monto)}`));
+        dr.appendChild(vals);
+        return dr;
+      });
+      return [hRow,...detRows];
+    });
+    const totRow = el("div",{style:{display:"flex",justifyContent:"space-between",marginTop:"8px",padding:"8px 0 0",fontWeight:"700",fontSize:"13px",color:"#c0392b",borderTop:"2px solid #f0f4f8"}});
+    totRow.appendChild(el("span",{},`Total parciales (${fN(totalDevU)} u)`));
+    totRow.appendChild(el("span",{},`-${fQ(totalDevM)}`));
+    rows.push(totRow);
+    inner.appendChild(secCard(`↩️ Por Cliente (${Object.keys(porCliente).length})`, "#c0392b", rows));
+  }
+
+  // ── Por producto ──
+  if(Object.keys(porProducto).length>0){
+    const rows = Object.entries(porProducto).sort((a,b)=>b[1].monto-a[1].monto).map(([prod,data])=>{
+      const r = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #f0f4f8",gap:"8px"}});
+      const izq = el("div",{style:{flex:"1"}});
+      izq.appendChild(el("div",{style:{fontSize:"13px",color:"#333",wordBreak:"break-word"}},prod));
+      izq.appendChild(el("div",{style:{fontSize:"11px",color:"#888",marginTop:"1px"}},`${data.clientes.size} cliente${data.clientes.size>1?"s":""} · ${fN(data.unidades)} u`));
+      r.appendChild(izq);
+      r.appendChild(el("span",{style:{fontWeight:"700",color:"#c0392b",flexShrink:"0"}},`-${fQ(data.monto)}`));
+      return r;
+    });
+    inner.appendChild(secCard(`📦 Por Producto (${Object.keys(porProducto).length})`, "#c0392b", rows));
+  }
+
+  return wrap;
+}
+
 // ── Render principal ──
 function render() {
   const app=document.getElementById("app");
@@ -3408,6 +3688,8 @@ function render() {
   else if(state.screen==="inicio") content=renderInicio();
   else if(state.screen==="nodatos") content=renderNoDatos();
   else if(state.screen==="upload") content=renderUpload();
+  else if(state.screen==="resumenLiq") content=renderResumenLiquidacion();
+  else if(state.screen==="resumenDevs") content=renderResumenDevoluciones();
   else if(state.screen==="historial") content=renderHistorial();
   else if(state.screen==="historialVista" && state.clienteDetalle) content=renderDetalleCliente();
   else if(state.screen==="confirmado") content=renderConfirmado();
