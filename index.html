@@ -219,7 +219,12 @@ let state = {
   filtroRuta: "",              // "" = todas, o nombre de ruta para filtrar
 };
 
-function setState(updates) {
+// Pantallas que son parte del flujo activo de liquidación (no requieren guard entre sí)
+const PANTALLAS_FLUJO = new Set([
+  "main","resumenEntregas","resumenLiq","resumenDevs","historialVista","confirmado"
+]);
+
+function _setStateInterno(updates) {
   Object.assign(state, updates);
   render();
   // Guardado automático en Firebase cuando cambian datos del día
@@ -253,6 +258,32 @@ function setState(updates) {
       } catch(e) { console.warn("AutoSave error:", e); }
     }, 1500);
   }
+}
+
+function setState(updates) {
+  // Guard: si hay cambio de pantalla que SALE del flujo activo, preguntar
+  if("screen" in updates) {
+    const screenActual = state.screen;
+    const screenNueva  = updates.screen;
+    const enFlujo      = PANTALLAS_FLUJO.has(screenActual);
+    const saleDeFlujo  = !PANTALLAS_FLUJO.has(screenNueva);
+    const hayDatos     = state.autenticado && Object.keys(state.clienteMap||{}).length > 0;
+    const noConfirmado = !state.confirmado && !state.modoHistorial;
+
+    if(enFlujo && saleDeFlujo && hayDatos && noConfirmado) {
+      showModal({
+        titulo: "⚠️ Cambios sin confirmar",
+        mensaje: "La liquidación tiene cambios sin confirmar que se perderán.\n\n¿Deseas salir de todas formas?",
+        tipo: "confirm",
+        btnAceptar: "🚪 Salir sin guardar",
+        colorAceptar: "#c0392b",
+        btnCancelar: "📋 Quedarme",
+        onAceptar: () => _setStateInterno(updates)
+      });
+      return; // no navegar hasta confirmar
+    }
+  }
+  _setStateInterno(updates);
 }
 
 // ── Totales ──
@@ -463,13 +494,89 @@ async function recuperarContrasena() {
 }
 
 async function cerrarSesion() {
-  borrarSesionLocal();
-  await auth.signOut();
-  setState({
-    autenticado:false, esAdmin:false, usuarioActual:null,
-    screen:"upload", clienteMap:{}, confirmado:false,
-    appPass:"", appUser:"", appPassError:"", resetEnviado:false
+  navegarConGuard(async () => {
+    borrarSesionLocal();
+    await auth.signOut();
+    setState({
+      autenticado:false, esAdmin:false, usuarioActual:null,
+      screen:"upload", clienteMap:{}, confirmado:false,
+      appPass:"", appUser:"", appPassError:"", resetEnviado:false
+    });
   });
+}
+
+// ── Guard de cambios pendientes ──
+function hayDatosActivos() {
+  return state.autenticado
+    && Object.keys(state.clienteMap||{}).length > 0
+    && !state.modoHistorial;
+}
+
+// Navegar con confirmación si hay datos no confirmados
+function navegarConGuard(accion, opciones={}) {
+  const { forzar=false } = opciones;
+  if(forzar || !hayDatosActivos() || state.confirmado) {
+    accion();
+    return;
+  }
+  showModal({
+    titulo:"⚠️ Cambios sin confirmar",
+    mensaje:"Tienes una liquidación con cambios sin confirmar.\n\n¿Qué deseas hacer?",
+    tipo:"confirm",
+    btnAceptar:"🚪 Salir sin guardar",
+    colorAceptar:"#c0392b",
+    btnCancelar:"📋 Quedarme",
+    onAceptar: accion
+  });
+}
+
+// Guardar cambios del historial editado y re-confirmar en Firebase
+async function guardarCambiosHistorial() {
+  setState({guardando:true});
+  try {
+    const existing = await fbGet("historial") || {};
+    const clienteTotales = {};
+    Object.keys(state.clienteMap).forEach(c => {
+      if(esClientePre(c)) return;
+      if(!state.estadoEntrega[c]) return;
+      let m=0;
+      Object.values(state.clienteMap[c].pedidos||{}).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));
+      const devM=state.devoluciones.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
+      const desc=parseFloat(state.descuentos[c])||0;
+      clienteTotales[c] = m - devM - desc;
+    });
+    const totalNeto = Object.values(clienteTotales).reduce((s,v)=>s+v,0);
+    existing[state.fecha]={
+      ...(existing[state.fecha]||{}),
+      fecha:state.fecha, fileName:state.fileName,
+      repartidor:state.loginRepartidor||existing[state.fecha]?.repartidor||"",
+      auxiliar:state.loginAuxiliar||existing[state.fecha]?.auxiliar||"",
+      entregados:state.entregados,
+      estadoEntrega:state.estadoEntrega,
+      motivosDevTotal:state.motivosDevTotal,
+      devoluciones:state.devoluciones,
+      descuentos:state.descuentos, comentarios:state.comentarios,
+      deposito:state.deposito, transferencia:state.transferencia,
+      gastosDetalle:state.gastosDetalle, billetes:state.billetes, monedas:state.monedas,
+      pagoPendiente:state.pagoPendiente,
+      clienteTotales, totalNeto,
+      clienteMap:state.clienteMap
+    };
+    await fbSet("historial", existing);
+    // Actualizar copia local
+    const nuevoData = {...state.historialData};
+    nuevoData[state.fecha] = existing[state.fecha];
+    setState({
+      confirmado:true, showConfirmar:false, guardando:false,
+      modoHistorial:true, bloqueados:Object.fromEntries(Object.keys(state.estadoEntrega).map(k=>[k,true])),
+      historialData:nuevoData, screen:"historialVista"
+    });
+    showToast("✅ Cambios guardados en el historial","#27ae60");
+  } catch(e) {
+    console.error(e);
+    setState({guardando:false, showConfirmar:false});
+    showModal({titulo:"❌ Error al guardar", mensaje:"Error al guardar:\n"+e.message, tipo:"alert", btnAceptar:"Cerrar", colorAceptar:"#c0392b"});
+  }
 }
 
 // ── Admin usuarios (Firebase Auth + DB) ──
@@ -2904,14 +3011,14 @@ function renderMain() {
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenEntregas"})},"📦 Entregas"));
     hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700",boxShadow:"0 2px 8px rgba(230,126,34,0.4)"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Liquidación"));
     if(state.devoluciones&&state.devoluciones.length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
-    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:abrirHistorial},"Historial"));
+    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>navegarConGuard(abrirHistorial)},"Historial"));
     if(state.esAdmin && !state.modoHistorial) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,165,0,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({showMoverProd:true,moverOrigenCliente:"",moverOrigenPedido:"",moverProductoSel:"",moverDestinoCliente:"",moverDestinoPedido:"",moverError:""})},"🔀 Mover producto"));
-    if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()})},"Nuevo archivo"));
+    if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>navegarConGuard(()=>setState({screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()}))},"Nuevo archivo"));
     if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(220,53,69,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:async()=>{
       showModal({titulo:"⚠️ Quitar archivo", mensaje:"¿Seguro que deseas quitar el archivo del día? Se borrarán todos los datos no confirmados.", tipo:"confirm", btnAceptar:"Quitar archivo", colorAceptar:"#c0392b", btnCancelar:"Cancelar",
     onAceptar: async () => { await fbRemove("datos-dia"); setState({screen:"menu",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()}); } }); return;
 }},"🗑️ Quitar archivo"));
-    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"menu"})},"☰ Menú"));
+    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>navegarConGuard(()=>setState({screen:"menu"}))},"☰ Menú"));
   }
   hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"600"},onClick:cerrarSesion},"🚪 Salir"));
   hdr.appendChild(hdrBtns); inner.appendChild(hdr);
