@@ -2879,6 +2879,17 @@ function renderMain() {
   const hdrBtns=el("div",{style:{display:"flex",gap:"8px",alignItems:"center"}});
   if(state.modoHistorial){
     hdrBtns.appendChild(el("span",{style:{background:"#f39c12",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Solo lectura"));
+    if(state.esAdmin){
+      hdrBtns.appendChild(el("button",{style:{background:"#8e44ad",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>{
+        showModal({titulo:"✏️ Editar liquidación", mensaje:`¿Deseas habilitar la edición de la liquidación del ${state.fechaSelec}?\n\nPodrás modificar datos y volver a confirmar para guardar los cambios en el historial.`, tipo:"confirm", btnAceptar:"Sí, editar", colorAceptar:"#8e44ad", btnCancelar:"Cancelar",
+          onAceptar: ()=>{
+            // Desbloquear todos los clientes para edición
+            setState({modoHistorial:false, confirmado:false, bloqueados:{}});
+            showToast("✏️ Modo edición habilitado","#8e44ad");
+          }
+        });
+      }},"✏️ Editar"));
+    }
     hdrBtns.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>{
       const regExcel = state.historialData[state.fechaSelec];
       if(!regExcel){ showToast("⚠️ No se encontró el registro del día","#e67e22"); return; }
@@ -3221,6 +3232,14 @@ function renderListaRutas(container, porRuta) {
       const sinConfirmar=clientes.filter(c=>!state.estadoEntrega[c] && !esClientePre(c));
       if(sinConfirmar.length>0){
         showModal({titulo:"⚠️ Entregas pendientes", mensaje:`Hay ${sinConfirmar.length} entrega(s) sin confirmar:\n\n${sinConfirmar.map(c=>"• "+c).join("\n")}\n\nConfirma todas las entregas antes de liquidar.`, tipo:"alert", btnAceptar:"Entendido"});
+        return;
+      }
+      const _tBill=BILLETES.reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
+      const _tMon=parseFloat(state.monedas)||0;
+      const _tDep=parseFloat(state.deposito)||0;
+      const _tTra=parseFloat(state.transferencia)||0;
+      if(_tBill+_tMon+_tDep+_tTra<=0){
+        showModal({titulo:"⚠️ Sin pagos registrados", mensaje:"El total recibido es Q 0.00.\n\nDebes ingresar al menos un monto en efectivo, depósito o transferencia antes de confirmar.", tipo:"alert", btnAceptar:"Entendido"});
         return;
       }
       setState({showConfirmar:true});
@@ -3614,6 +3633,14 @@ function renderResumenLiquidacion() {
     const sinConfirmar=clientes.filter(c=>!state.estadoEntrega[c] && !esClientePre(c));
     if(sinConfirmar.length>0){
       showModal({titulo:"⚠️ Entregas pendientes", mensaje:`Hay ${sinConfirmar.length} entrega(s) sin confirmar:\n\n${sinConfirmar.map(c=>"• "+c).join("\n")}\n\nConfirma todas las entregas antes de liquidar.`, tipo:"alert", btnAceptar:"Entendido"});
+      return;
+    }
+    const _tBill2=BILLETES.reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
+    const _tMon2=parseFloat(state.monedas)||0;
+    const _tDep2=parseFloat(state.deposito)||0;
+    const _tTra2=parseFloat(state.transferencia)||0;
+    if(_tBill2+_tMon2+_tDep2+_tTra2<=0){
+      showModal({titulo:"⚠️ Sin pagos registrados", mensaje:"El total recibido es Q 0.00.\n\nDebes ingresar al menos un monto en efectivo, depósito o transferencia antes de confirmar.", tipo:"alert", btnAceptar:"Entendido"});
       return;
     }
     setState({showConfirmar:true});
