@@ -2884,12 +2884,14 @@ function renderMain() {
       if(!regExcel){ showToast("⚠️ No se encontró el registro del día","#e67e22"); return; }
       exportarExcel(regExcel);
     }},"📊 Excel"));
-    hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenLiq"})},"📋 Resumen"));
+    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenEntregas"})},"📦 Entregas"));
+    hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Liquidación"));
     if(state.devoluciones&&state.devoluciones.length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"historial",modoHistorial:false,fechaSelec:""})},"← Historial"));
   } else {
     if(state.confirmado) hdrBtns.appendChild(el("span",{style:{background:"#27ae60",color:"#fff",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",fontWeight:"700"}},"Confirmada"));
-    hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700",boxShadow:"0 2px 8px rgba(230,126,34,0.4)"},onClick:()=>setState({screen:"resumenLiq"})},"📋 Resumen"));
+    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenEntregas"})},"📦 Entregas"));
+    hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700",boxShadow:"0 2px 8px rgba(230,126,34,0.4)"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Liquidación"));
     if(state.devoluciones&&state.devoluciones.length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:abrirHistorial},"Historial"));
     if(state.esAdmin && !state.modoHistorial) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,165,0,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({showMoverProd:true,moverOrigenCliente:"",moverOrigenPedido:"",moverProductoSel:"",moverDestinoCliente:"",moverDestinoPedido:"",moverError:""})},"🔀 Mover producto"));
@@ -3202,9 +3204,37 @@ function renderListaRutas(container, porRuta) {
   });
 }
 
-  // Panel cuadre final
-  const cuadre=el("div",{style:{background:"#fff",borderRadius:"12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",padding:"20px",marginTop:"8px"}});
-  cuadre.appendChild(el("h3",{style:{margin:"0 0 18px",color:"#1e3a5f",fontSize:"15px"}},"💳 Cuadre Final"));
+  // ── Botón confirmar (sin cuadre — se accede desde "💳 Liquidación") ──
+  {
+  const confirmDiv=el("div",{style:{marginTop:"20px",textAlign:"center",paddingBottom:"32px"}});
+  if(state.confirmado){
+    const reconfDiv=el("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",gap:"12px"}});
+    reconfDiv.appendChild(el("div",{style:{background:"#e8f5e9",borderRadius:"12px",padding:"16px 24px",display:"inline-flex",alignItems:"center",gap:"10px",fontSize:"15px",fontWeight:"700",color:"#27ae60"}},"✅ Liquidación confirmada y guardada correctamente"));
+    if(state.esAdmin){
+      reconfDiv.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"12px",padding:"12px 36px",fontSize:"14px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(230,126,34,0.3)"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Ir a Liquidación"));
+    }
+    confirmDiv.appendChild(reconfDiv);
+  } else {
+    const btnRow=el("div",{style:{display:"flex",gap:"12px",justifyContent:"center",flexWrap:"wrap"}});
+    btnRow.appendChild(el("button",{style:{background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 32px",fontSize:"15px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(30,58,95,0.2)"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Ir a Liquidación"));
+    btnRow.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 32px",fontSize:"15px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(39,174,96,0.3)"},onClick:()=>{
+      const sinConfirmar=clientes.filter(c=>!state.estadoEntrega[c] && !esClientePre(c));
+      if(sinConfirmar.length>0){
+        showModal({titulo:"⚠️ Entregas pendientes", mensaje:`Hay ${sinConfirmar.length} entrega(s) sin confirmar:\n\n${sinConfirmar.map(c=>"• "+c).join("\n")}\n\nConfirma todas las entregas antes de liquidar.`, tipo:"alert", btnAceptar:"Entendido"});
+        return;
+      }
+      setState({showConfirmar:true});
+    }},"✅ Confirmar Liquidación"));
+    confirmDiv.appendChild(btnRow);
+  }
+  inner.appendChild(confirmDiv);
+  }
+  return wrap;
+}
+
+// ── CUADRE (usado en renderResumenLiquidacion) ──
+function _buildCuadrePanel(modoHistorial, onConfirmar) {
+  const cuadre=el("div",{style:{background:"#fff",borderRadius:"12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",padding:"20px",marginTop:"0"}});
   const cuadreGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"20px"}});
 
   // ── Billetes (sin re-render) ──
@@ -3389,166 +3419,243 @@ function renderListaRutas(container, porRuta) {
   setTimeout(actualizarResumen, 0);
   cuadreGrid.appendChild(otrosDiv);
   cuadre.appendChild(cuadreGrid);
-  inner.appendChild(cuadre);
 
-  // Botón confirmar
-  const confirmDiv=el("div",{style:{marginTop:"20px",textAlign:"center",paddingBottom:"32px"}});
-  if(state.confirmado){
-    const reconfDiv=el("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",gap:"12px"}});
-    reconfDiv.appendChild(el("div",{style:{background:"#e8f5e9",borderRadius:"12px",padding:"16px 24px",display:"inline-flex",alignItems:"center",gap:"10px",fontSize:"15px",fontWeight:"700",color:"#27ae60"}},"✅ Liquidación confirmada y guardada correctamente"));
-    if(state.esAdmin){
-      reconfDiv.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"12px",padding:"12px 36px",fontSize:"14px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(230,126,34,0.3)"},onClick:confirmarLiquidacion},"🔄 Volver a confirmar / guardar cambios"));
-    }
-    confirmDiv.appendChild(reconfDiv);
-  } else {
-    confirmDiv.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 48px",fontSize:"16px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(39,174,96,0.3)"},onClick:()=>{
-      const sinConfirmar=clientes.filter(c=>!state.estadoEntrega[c] && !esClientePre(c));
-      if(sinConfirmar.length>0){
-        showModal({titulo:"⚠️ Entregas pendientes", mensaje:`Hay ${sinConfirmar.length} entrega(s) sin confirmar:\n\n${sinConfirmar.map(c=>"• "+c).join("\n")}\n\nConfirma todas las entregas antes de liquidar.`, tipo:"alert", btnAceptar:"Entendido"});
-        return;
+  // Botón confirmar dentro del panel
+  if(typeof onConfirmar==="function"){
+    const confirmDiv=el("div",{style:{marginTop:"20px",textAlign:"center"}});
+    if(state.confirmado){
+      const reconfDiv=el("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",gap:"12px"}});
+      reconfDiv.appendChild(el("div",{style:{background:"#e8f5e9",borderRadius:"12px",padding:"16px 24px",display:"inline-flex",alignItems:"center",gap:"10px",fontSize:"15px",fontWeight:"700",color:"#27ae60"}},"✅ Liquidación confirmada y guardada correctamente"));
+      if(state.esAdmin){
+        reconfDiv.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"12px",padding:"12px 36px",fontSize:"14px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(230,126,34,0.3)"},onClick:confirmarLiquidacion},"🔄 Volver a confirmar / guardar cambios"));
       }
-      setState({showConfirmar:true});
-    }},"✅ Confirmar Liquidación"));
+      confirmDiv.appendChild(reconfDiv);
+    } else {
+      confirmDiv.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 48px",fontSize:"16px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(39,174,96,0.3)"},onClick:onConfirmar},"✅ Confirmar Liquidación"));
+    }
+    cuadre.appendChild(confirmDiv);
   }
-  inner.appendChild(confirmDiv);
-  return wrap;
+
+  return cuadre;
 }
 
-// ── Resumen de Liquidación ──
-function renderResumenLiquidacion() {
+// ── Resumen de Entregas ──
+function renderResumenEntregas() {
   const clientes = Object.keys(state.clienteMap);
   const clientesEntregables = clientes.filter(c=>!esClientePre(c));
   const cntVerde = clientesEntregables.filter(c=>state.estadoEntrega[c]==="verde").length;
   const cntAmarillo = clientesEntregables.filter(c=>state.estadoEntrega[c]==="amarillo").length;
   const cntRosado = clientesEntregables.filter(c=>state.estadoEntrega[c]==="rosado").length;
+  const cntPend = clientesEntregables.filter(c=>!state.estadoEntrega[c]).length;
   const entregadosCount = cntVerde+cntAmarillo;
-  const pctEfectividad = clientesEntregables.length>0?Math.round(entregadosCount/clientesEntregables.length*100):0;
+  const pctEfect = clientesEntregables.length>0?Math.round(entregadosCount/clientesEntregables.length*100):0;
   const montoTotal = clientesEntregables.reduce((s,c)=>s+totalesCliente(c).monto,0);
-  const montoEntregado = clientesEntregables.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
-  const montoPendiente = clientesEntregables.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).netoM,0);
-  const totalDevGral = clientesEntregables.reduce((s,c)=>{
+  const montoNeto = clientesEntregables.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
+  const montoPend = clientesEntregables.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).netoM,0);
+  const totalDev = clientesEntregables.reduce((s,c)=>{
     if(state.estadoEntrega[c]==="rosado") return s+totalesCliente(c).monto;
     return s+totalesCliente(c).devM;
   },0);
-  const totalDescGral = clientesEntregables.reduce((s,c)=>s+(parseFloat(state.descuentos[c])||0),0);
-  const totalBilletes = BILLETES.reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
-  const totalMonedas = parseFloat(state.monedas)||0;
-  const totalEfectivo = totalBilletes+totalMonedas;
-  const totalDeposito = parseFloat(state.deposito)||0;
-  const totalTransferencia = parseFloat(state.transferencia)||0;
-  const totalGastos = state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
-  const totalGastosDeCuenta = state.gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
-  const totalPagos = totalEfectivo+totalDeposito+totalTransferencia;
-  const totalACobrar = clientesEntregables.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
-  const diferencia = (totalPagos+totalGastosDeCuenta)-totalACobrar;
-  const difColor = Math.abs(diferencia)<0.01?"#27ae60":diferencia>0?"#2563eb":"#c0392b";
-  const difTexto = Math.abs(diferencia)<0.01?"✓ CUADRADO":diferencia>0?`+${fQ(diferencia)} SOBRANTE`:`-${fQ(Math.abs(diferencia))} FALTANTE`;
+  const pctMonto = montoTotal>0?(montoNeto/montoTotal*100).toFixed(1):0;
 
-  // Por ruta
-  const rutas = [...new Set(clientesEntregables.map(c=>state.clienteMap[c].ruta||"Sin ruta"))].sort();
+  const todasRutas = [...new Set(clientesEntregables.map(c=>state.clienteMap[c].ruta||"Sin ruta"))].sort();
 
-  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
+  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"20px"}});
   const inner = el("div",{style:{maxWidth:"700px",margin:"0 auto"}});
   wrap.appendChild(inner);
 
   // Header
-  const hdr = el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"20px",display:"flex",alignItems:"center",gap:"12px"}});
+  const hdr = el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"16px",display:"flex",alignItems:"center",gap:"12px"}});
   hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"7px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>setState({screen:state.modoHistorial?"historialVista":"main"})},"← Volver"));
-  const hdrInfo = el("div",{style:{flex:"1"}});
-  hdrInfo.appendChild(el("h2",{style:{margin:"0",fontSize:"17px",fontWeight:"700"}},"📋 Resumen de Liquidación"));
+  const hdrInfo=el("div",{style:{flex:"1"}});
+  hdrInfo.appendChild(el("h2",{style:{margin:"0",fontSize:"17px",fontWeight:"700"}},"📦 Resumen de Entregas"));
   hdrInfo.appendChild(el("p",{style:{margin:"2px 0 0",fontSize:"11px",opacity:"0.7"}},`${state.fecha} · ${state.fileName}`));
   hdr.appendChild(hdrInfo);
   inner.appendChild(hdr);
 
-  // ── Entregas ──
-  const secCard = (titulo, children) => {
-    const d = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px 20px",marginBottom:"14px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}});
-    d.appendChild(el("div",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"13px",marginBottom:"12px",textTransform:"uppercase",letterSpacing:"0.5px"}},titulo));
-    children.forEach(c=>d.appendChild(c));
-    return d;
-  };
-  const fila = (label, val, color, bold) => {
-    const r = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:"1px solid #f0f4f8"}});
-    r.appendChild(el("span",{style:{fontSize:"13px",color:"#666"}},label));
-    r.appendChild(el("span",{style:{fontSize:"13px",fontWeight:bold?"700":"600",color:color||"#333"}},val));
-    return r;
-  };
-
-  // Efect. general
-  const secEnt = secCard("👥 Entregas",[ 
-    fila("Total clientes entregables", `${clientesEntregables.length}`, "#1e3a5f"),
-    fila("Entregados (efectivo + parcial)", `${entregadosCount} (${pctEfectividad}%)`, "#27ae60", true),
-    fila("✅ Efectivos", `${cntVerde}`, "#27ae60"),
-    fila("🟡 Parciales", `${cntAmarillo}`, "#f9a825"),
-    fila("🔴 Devolución total", `${cntRosado}`, "#e91e8c"),
-    fila("⏳ Sin confirmar", `${clientesEntregables.length - entregadosCount - cntRosado}`, "#888"),
-  ]);
-  inner.appendChild(secEnt);
-
+  // ── Card general ──
+  const cardGen = el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"18px 20px",marginBottom:"14px",boxShadow:"0 4px 16px rgba(30,58,95,0.18)"}});
+  // Fila título + %
+  const genTop = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"14px"}});
+  const genTitulo = el("div");
+  genTitulo.appendChild(el("div",{style:{fontSize:"11px",fontWeight:"700",opacity:"0.6",letterSpacing:"0.8px",marginBottom:"4px"}},"TOTAL GENERAL"));
+  genTitulo.appendChild(el("div",{style:{fontSize:"28px",fontWeight:"700",color:"#7effa8"}},`${pctEfect}%`));
+  genTitulo.appendChild(el("div",{style:{fontSize:"12px",opacity:"0.75",marginTop:"2px"}},`Efectividad · ${entregadosCount}/${clientesEntregables.length} clientes`));
+  genTop.appendChild(genTitulo);
+  // Mini gauge visual
+  const gaugeWrap = el("div",{style:{textAlign:"right"}});
+  const gauge = el("div",{style:{width:"80px",height:"80px",position:"relative",display:"inline-block"}});
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox","0 0 36 36"); svg.style.cssText="width:80px;height:80px;transform:rotate(-90deg);";
+  const circleBg = document.createElementNS("http://www.w3.org/2000/svg","circle");
+  circleBg.setAttribute("cx","18"); circleBg.setAttribute("cy","18"); circleBg.setAttribute("r","15.9");
+  circleBg.setAttribute("fill","none"); circleBg.setAttribute("stroke","rgba(255,255,255,0.15)"); circleBg.setAttribute("stroke-width","3");
+  const circleFg = document.createElementNS("http://www.w3.org/2000/svg","circle");
+  circleFg.setAttribute("cx","18"); circleFg.setAttribute("cy","18"); circleFg.setAttribute("r","15.9");
+  circleFg.setAttribute("fill","none"); circleFg.setAttribute("stroke","#7effa8"); circleFg.setAttribute("stroke-width","3");
+  const dashTotal = 100; const dashVal = (pctEfect/100)*dashTotal;
+  circleFg.setAttribute("stroke-dasharray",`${dashVal} ${dashTotal-dashVal}`);
+  svg.appendChild(circleBg); svg.appendChild(circleFg); gauge.appendChild(svg);
+  gaugeWrap.appendChild(gauge);
+  genTop.appendChild(gaugeWrap);
+  cardGen.appendChild(genTop);
+  // Estados
+  const estados = el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:"8px"}});
+  [
+    {icon:"✅",label:"Efectivos",val:cntVerde,color:"#7effa8"},
+    {icon:"🟡",label:"Parciales",val:cntAmarillo,color:"#ffd080"},
+    {icon:"🔴",label:"Dev. total",val:cntRosado,color:"#ff8a8a"},
+    {icon:"⏳",label:"Pendientes",val:cntPend,color:"rgba(255,255,255,0.5)"},
+  ].forEach(({icon,label,val,color})=>{
+    const e=el("div",{style:{background:"rgba(255,255,255,0.08)",borderRadius:"8px",padding:"10px 8px",textAlign:"center"}});
+    e.appendChild(el("div",{style:{fontSize:"16px",marginBottom:"2px"}},icon));
+    e.appendChild(el("div",{style:{fontSize:"20px",fontWeight:"700",color}}),String(val));
+    e.lastChild.textContent=String(val);
+    e.appendChild(el("div",{style:{fontSize:"10px",opacity:"0.6",marginTop:"2px"}},label));
+    estados.appendChild(e);
+  });
+  cardGen.appendChild(estados);
   // Montos
-  const pctDev = montoTotal>0?(totalDevGral/montoTotal*100).toFixed(1):0;
-  const secMon = secCard("💰 Montos",[
-    fila("Total a entregar", fQ(montoTotal), "#1e3a5f"),
-    fila("(-) Devoluciones", `-${fQ(totalDevGral)} (${pctDev}%)`, "#c0392b"),
-    fila("(-) Descuentos", `-${fQ(totalDescGral)}`, "#e67e22"),
-    fila("Total neto confirmado", fQ(montoEntregado), "#1e3a5f", true),
-    fila("⏳ Monto pendiente", fQ(montoPendiente), "#e67e22"),
-  ]);
-  inner.appendChild(secMon);
+  const montos = el("div",{style:{marginTop:"14px",paddingTop:"12px",borderTop:"1px solid rgba(255,255,255,0.12)",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px"}});
+  [
+    {label:"Total bruto",val:fQ(montoTotal),color:"rgba(255,255,255,0.85)"},
+    {label:"Neto confirmado",val:fQ(montoNeto),color:"#7effa8"},
+    {label:"Pendiente",val:fQ(montoPend),color:"#ffd080"},
+  ].forEach(({label,val,color})=>{
+    const m=el("div",{style:{textAlign:"center"}});
+    m.appendChild(el("div",{style:{fontSize:"13px",fontWeight:"700",color}},val));
+    m.appendChild(el("div",{style:{fontSize:"10px",opacity:"0.55",marginTop:"2px"}},label));
+    montos.appendChild(m);
+  });
+  cardGen.appendChild(montos);
+  inner.appendChild(cardGen);
 
-  // Por ruta
-  if(rutas.length > 1){
-    const rutaRows = rutas.map(ruta => {
-      const rCls = clientesEntregables.filter(c=>state.clienteMap[c].ruta===ruta||(!state.clienteMap[c].ruta&&ruta==="Sin ruta"));
-      const rVerde = rCls.filter(c=>state.estadoEntrega[c]==="verde").length;
-      const rAmarillo = rCls.filter(c=>state.estadoEntrega[c]==="amarillo").length;
-      const rRosado = rCls.filter(c=>state.estadoEntrega[c]==="rosado").length;
-      const rEnt = rVerde+rAmarillo;
-      const rPct = rCls.length>0?Math.round(rEnt/rCls.length*100):0;
-      const rNeto = rCls.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
-      const rPend = rCls.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).netoM,0);
-      const r = el("div",{style:{padding:"8px 0",borderBottom:"1px solid #f0f4f8"}});
-      r.appendChild(el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"2px"}},
-        el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#1e3a5f"}},ruta),
-        el("span",{style:{fontSize:"12px",color:"#27ae60",fontWeight:"700"}},`${rPct}% · ${rEnt}/${rCls.length}`)
-      ));
-      const det = el("div",{style:{display:"flex",gap:"12px",fontSize:"11px",color:"#888",flexWrap:"wrap"}});
-      det.appendChild(el("span",{},`✅${rVerde} 🟡${rAmarillo} 🔴${rRosado}`));
-      det.appendChild(el("span",{style:{color:"#1e3a5f",fontWeight:"600"}},`Neto: ${fQ(rNeto)}`));
-      if(rPend>0) det.appendChild(el("span",{style:{color:"#e67e22"}},`Pend: ${fQ(rPend)}`));
-      r.appendChild(det);
-      return r;
+  // ── Cards por ruta ──
+  todasRutas.forEach(ruta=>{
+    const rCls = clientesEntregables.filter(c=>(state.clienteMap[c].ruta||"Sin ruta")===ruta);
+    const rVerde = rCls.filter(c=>state.estadoEntrega[c]==="verde").length;
+    const rAmarillo = rCls.filter(c=>state.estadoEntrega[c]==="amarillo").length;
+    const rRosado = rCls.filter(c=>state.estadoEntrega[c]==="rosado").length;
+    const rPend = rCls.filter(c=>!state.estadoEntrega[c]).length;
+    const rEnt = rVerde+rAmarillo;
+    const rPct = rCls.length>0?Math.round(rEnt/rCls.length*100):0;
+    const rNeto = rCls.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
+    const rTotal = rCls.reduce((s,c)=>s+totalesCliente(c).monto,0);
+    const rPendM = rCls.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).netoM,0);
+    const rDev = rCls.reduce((s,c)=>{
+      if(state.estadoEntrega[c]==="rosado") return s+totalesCliente(c).monto;
+      return s+totalesCliente(c).devM;
+    },0);
+    const efectColor = rPct>=80?"#27ae60":rPct>=50?"#f9a825":"#e53935";
+
+    const card = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"14px 18px",marginBottom:"10px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}});
+    // Header ruta
+    const rHdr = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}});
+    rHdr.appendChild(el("span",{style:{fontWeight:"700",fontSize:"14px",color:"#1e3a5f"}},`🚚 ${ruta}`));
+    const rPctBadge = el("span",{style:{background:efectColor,color:"#fff",borderRadius:"20px",padding:"3px 12px",fontSize:"13px",fontWeight:"700"}},`${rPct}%`);
+    rHdr.appendChild(rPctBadge);
+    card.appendChild(rHdr);
+    // Estados fila
+    const rEstados = el("div",{style:{display:"flex",gap:"6px",marginBottom:"10px",flexWrap:"wrap"}});
+    [
+      {icon:"👥",val:`${rEnt}/${rCls.length}`,bg:"#eef2f7",color:"#1e3a5f"},
+      {icon:"✅",val:rVerde,bg:"#e8f5e9",color:"#27ae60"},
+      {icon:"🟡",val:rAmarillo,bg:"#fffde7",color:"#f9a825"},
+      {icon:"🔴",val:rRosado,bg:"#fce4ec",color:"#e91e8c"},
+      {icon:"⏳",val:rPend,bg:"#fff8f0",color:"#e67e22"},
+    ].forEach(({icon,val,bg,color})=>{
+      if(val===0 && icon!=="👥") return;
+      const b=el("div",{style:{background:bg,borderRadius:"6px",padding:"4px 10px",fontSize:"12px",fontWeight:"700",color,display:"flex",gap:"4px",alignItems:"center"}});
+      b.appendChild(el("span",{},icon));
+      b.appendChild(el("span",{},String(val)));
+      rEstados.appendChild(b);
     });
-    inner.appendChild(secCard("🚚 Por Ruta", rutaRows));
-  }
-
-  // Cuadre
-  const secCuadre = secCard("💳 Cuadre Final",[
-    fila("Efectivo", fQ(totalEfectivo), "#333"),
-    fila("Depósito bancario", fQ(totalDeposito), "#333"),
-    fila("Transferencia", fQ(totalTransferencia), "#333"),
-    fila("Total recibido", fQ(totalPagos), "#2563eb", true),
-    fila("Gastos de ruta (de cuenta)", `-${fQ(totalGastosDeCuenta)}`, "#c0392b"),
-    fila("Gastos de ruta (no de cuenta)", `-${fQ(totalGastos-totalGastosDeCuenta)}`, "#e67e22"),
-    fila("Total a cobrar (confirmados)", fQ(totalACobrar), "#1e3a5f"),
-  ]);
-  const difDiv = el("div",{style:{marginTop:"10px",padding:"12px",borderRadius:"8px",background:Math.abs(diferencia)<0.01?"#e8f5e9":diferencia>0?"#e3f2fd":"#fce4ec",textAlign:"center",fontSize:"16px",fontWeight:"700",color:difColor}},difTexto);
-  secCuadre.appendChild(difDiv);
-  inner.appendChild(secCuadre);
-
-  // Gastos detalle
-  if(state.gastosDetalle.some(g=>g.desc||g.monto)){
-    const gasRows = state.gastosDetalle.filter(g=>g.desc||g.monto).map(g=>{
-      const r = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:"1px solid #f0f4f8",fontSize:"13px"}});
-      const izq = el("div");
-      izq.appendChild(el("span",{style:{color:"#333"}},g.desc||"Sin descripción"));
-      if(g.comentario) izq.appendChild(el("span",{style:{color:"#888",fontSize:"11px",marginLeft:"6px"}},`(${g.comentario})`));
-      izq.appendChild(el("span",{style:{marginLeft:"6px",fontSize:"10px",background:g.deCuenta?"#e8f5e9":"#fff3e0",color:g.deCuenta?"#27ae60":"#e67e22",borderRadius:"3px",padding:"1px 5px",fontWeight:"700"}},g.deCuenta?"DE CUENTA":"NO CUENTA"));
-      r.appendChild(izq);
-      r.appendChild(el("span",{style:{fontWeight:"600",color:"#c0392b"}},fQ(parseFloat(g.monto)||0)));
-      return r;
+    card.appendChild(rEstados);
+    // Montos fila
+    const rMontos = el("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap",paddingTop:"8px",borderTop:"1px solid #f0f4f8"}});
+    [
+      {label:"Neto",val:fQ(rNeto),color:"#1e3a5f",bold:true},
+      {label:"Pendiente",val:fQ(rPendM),color:"#e67e22"},
+      ...(rDev>0?[{label:"Devol.",val:`-${fQ(rDev)}`,color:"#c0392b"}]:[]),
+    ].forEach(({label,val,color,bold})=>{
+      const m=el("div",{style:{fontSize:"12px"}});
+      m.appendChild(el("span",{style:{color:"#888",marginRight:"4px"}},label+":"));
+      m.appendChild(el("span",{style:{color,fontWeight:bold?"700":"600"}},val));
+      rMontos.appendChild(m);
     });
-    inner.appendChild(secCard("⛽ Gastos de Ruta", gasRows));
+    card.appendChild(rMontos);
+    inner.appendChild(card);
+  });
+
+  return wrap;
+}
+
+// ── Resumen de Liquidación (cuadre editable) ──
+function renderResumenLiquidacion() {
+  const clientes = Object.keys(state.clienteMap);
+  const clientesEntregables = clientes.filter(c=>!esClientePre(c));
+
+  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"20px"}});
+  const inner = el("div",{style:{maxWidth:"900px",margin:"0 auto"}});
+  wrap.appendChild(inner);
+
+  // Header
+  const hdr = el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"16px",display:"flex",alignItems:"center",gap:"12px"}});
+  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"7px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>setState({screen:state.modoHistorial?"historialVista":"main"})},"← Volver"));
+  const hdrInfo=el("div",{style:{flex:"1"}});
+  hdrInfo.appendChild(el("h2",{style:{margin:"0",fontSize:"17px",fontWeight:"700"}},"💳 Liquidación"));
+  hdrInfo.appendChild(el("p",{style:{margin:"2px 0 0",fontSize:"11px",opacity:"0.7"}},`${state.fecha} · ${state.fileName}${state.modoHistorial?" · Solo lectura":""}`));
+  hdr.appendChild(hdrInfo);
+  if(state.confirmado) hdr.appendChild(el("span",{style:{background:"#27ae60",borderRadius:"8px",padding:"5px 12px",fontSize:"12px",fontWeight:"700",flexShrink:"0"}},"✅ Confirmada"));
+  inner.appendChild(hdr);
+
+  // Panel cuadre editable
+  const cuadrePanel = _buildCuadrePanel(state.modoHistorial, ()=>{
+    const sinConfirmar=clientes.filter(c=>!state.estadoEntrega[c] && !esClientePre(c));
+    if(sinConfirmar.length>0){
+      showModal({titulo:"⚠️ Entregas pendientes", mensaje:`Hay ${sinConfirmar.length} entrega(s) sin confirmar:\n\n${sinConfirmar.map(c=>"• "+c).join("\n")}\n\nConfirma todas las entregas antes de liquidar.`, tipo:"alert", btnAceptar:"Entendido"});
+      return;
+    }
+    setState({showConfirmar:true});
+  });
+  inner.appendChild(cuadrePanel);
+
+  // Modal confirmar (igual que en renderMain)
+  if(state.showConfirmar){
+    const totalBilletesM = BILLETES.reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
+    const totalMonedasM = parseFloat(state.monedas)||0;
+    const totalEfectivoM = totalBilletesM+totalMonedasM;
+    const totalDepositoM = parseFloat(state.deposito)||0;
+    const totalTransferenciaM = parseFloat(state.transferencia)||0;
+    const totalGastosM = state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
+    const totalGastosDeCuentaM = state.gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
+    const totalPagosM = totalEfectivoM+totalDepositoM+totalTransferenciaM;
+    const totalAEntregarM = clientesEntregables.reduce((s,c)=>{let m=0;Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));return s+m;},0);
+    const totalDescM = clientesEntregables.reduce((acc,c)=>{
+      if(!state.estadoEntrega[c]||state.estadoEntrega[c]==="rosado") return acc;
+      return acc+(parseFloat(state.descuentos[c])||0);
+    },0);
+    const totalDevM = clientesEntregables.reduce((s,c)=>{
+      if(state.estadoEntrega[c]==="rosado") return s+totalesCliente(c).monto;
+      return s+totalesCliente(c).devM;
+    },0);
+    const totalNetoM = totalAEntregarM - totalDevM - totalDescM;
+    const diferenciaM = (totalPagosM+totalGastosDeCuentaM)-totalNetoM;
+    const difColor = Math.abs(diferenciaM)<0.01?"#27ae60":diferenciaM>0?"#2563eb":"#c0392b";
+    const difTexto = Math.abs(diferenciaM)<0.01?"✓ CUADRADO":diferenciaM>0?`+${fQ(diferenciaM)} SOBRANTE`:`-${fQ(Math.abs(diferenciaM))} FALTANTE`;
+    const modal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999",overflowY:"auto",padding:"20px 0"}});
+    const box=el("div",{style:{background:"#fff",borderRadius:"16px",padding:"28px",width:"340px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
+    box.appendChild(el("h3",{style:{margin:"0 0 18px",color:"#1e3a5f",fontSize:"17px"}},"✅ Confirmar Liquidación"));
+    [[`💵 Efectivo`,fQ(totalEfectivoM)],[`🏦 Depósito`,fQ(totalDepositoM)],[`📲 Transferencia`,fQ(totalTransferenciaM)],[`Total recibido`,fQ(totalPagosM),true],[`⛽ Gastos (de cuenta)`,`-${fQ(totalGastosDeCuentaM)}`],[`📦 Total a cobrar`,fQ(totalNetoM)],[`↩️ Diferencia`,difTexto,false,difColor]].forEach(([l,v,bold,col])=>{
+      const r=el("div",{style:{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #f0f4f8"}});
+      r.appendChild(el("span",{style:{fontSize:"13px",color:"#666"}},l));
+      r.appendChild(el("span",{style:{fontSize:"13px",fontWeight:bold?"700":"600",color:col||"#333"}},v));
+      box.appendChild(r);
+    });
+    const btns=el("div",{style:{display:"flex",gap:"10px",marginTop:"18px"}});
+    btns.appendChild(el("button",{style:{flex:"1",background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"11px 0",fontSize:"14px",fontWeight:"700",cursor:"pointer"},onClick:confirmarLiquidacion},state.guardando?"Guardando...":"✅ Confirmar"));
+    btns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"11px 0",fontSize:"14px",cursor:"pointer"},onClick:()=>setState({showConfirmar:false})},"Cancelar"));
+    box.appendChild(btns); modal.appendChild(box); wrap.appendChild(modal);
   }
 
   return wrap;
@@ -3688,6 +3795,7 @@ function render() {
   else if(state.screen==="inicio") content=renderInicio();
   else if(state.screen==="nodatos") content=renderNoDatos();
   else if(state.screen==="upload") content=renderUpload();
+  else if(state.screen==="resumenEntregas") content=renderResumenEntregas();
   else if(state.screen==="resumenLiq") content=renderResumenLiquidacion();
   else if(state.screen==="resumenDevs") content=renderResumenDevoluciones();
   else if(state.screen==="historial") content=renderHistorial();
