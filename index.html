@@ -200,6 +200,7 @@ let state = {
   pagoPendiente: {},       // cliente -> true si tiene pago pendiente
   ocultarConfirmados: false,
   _sinConfirmarPendiente: false,
+  _cuadreModificado: false,
   scrollAfterCliente: null,
   editPrecio: null, // {cliente, pedido, producto, valor}
   editCantidad: null, // {cliente, pedido, producto, valor}
@@ -228,9 +229,9 @@ function _setStateInterno(updates) {
   Object.assign(state, updates);
   render();
   // Guardado automático en Firebase cuando cambian datos del día
+  // Autosave: solo datos de entregas (no cuadre — ese solo se guarda al confirmar)
   const camposGuardar = ["estadoEntrega","entregados","bloqueados",
-    "motivosDevTotal","descuentos","comentarios","billetes","monedas",
-    "deposito","transferencia","gastosDetalle","pagoPendiente"];
+    "motivosDevTotal","descuentos","comentarios","pagoPendiente"];
   const afecta = Object.keys(updates).some(k => camposGuardar.includes(k));
   if(afecta && state.autenticado && state.clienteMap && Object.keys(state.clienteMap).length > 0){
     clearTimeout(window._autoSaveTimer);
@@ -247,11 +248,6 @@ function _setStateInterno(updates) {
             motivosDevTotal: state.motivosDevTotal,
             descuentos: state.descuentos,
             comentarios: state.comentarios,
-            billetes: state.billetes,
-            monedas: state.monedas,
-            deposito: state.deposito,
-            transferencia: state.transferencia,
-            gastosDetalle: state.gastosDetalle,
             pagoPendiente: state.pagoPendiente
           });
         }
@@ -721,6 +717,7 @@ async function confirmarLiquidacion() {
     const datosActuales = await fbGet("datos-dia");
     if(datosActuales) await fbSet("datos-dia", {...datosActuales, confirmado:true});
     setState({confirmado:true,showConfirmar:false,guardando:false,screen:"confirmado"});
+    state._cuadreModificado = false;
   } catch(e){
     console.error(e);
     setState({guardando:false,showConfirmar:false});
@@ -1075,7 +1072,7 @@ function showToast(msg, color) {
 }
 
 // ── Modal propio (reemplaza confirm/alert nativos) ──
-function showModal({titulo="", mensaje="", tipo="confirm", btnAceptar="Aceptar", btnCancelar="Cancelar", colorAceptar=null, onAceptar=null, onCancelar=null}={}) {
+function showModal({titulo="", mensaje="", tipo="confirm", btnAceptar="Aceptar", btnCancelar="Cancelar", colorAceptar=null, colorCancelar=null, onAceptar=null, onCancelar=null}={}) {
   const overlay = document.createElement("div");
   overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;font-family:sans-serif;";
   const box = document.createElement("div");
@@ -1096,7 +1093,7 @@ function showModal({titulo="", mensaje="", tipo="confirm", btnAceptar="Aceptar",
   if(tipo === "confirm") {
     const bCanc = document.createElement("button");
     bCanc.textContent = btnCancelar;
-    bCanc.style.cssText = "flex:1;background:#f0f0f0;color:#555;border:none;border-radius:8px;padding:12px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
+    bCanc.style.cssText = `flex:1;background:${colorCancelar||"#f0f0f0"};color:${colorCancelar?"#fff":"#555"};border:none;border-radius:8px;padding:12px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;`;
     bCanc.onclick = () => close(onCancelar);
     btns.appendChild(bCanc);
   }
@@ -1290,23 +1287,8 @@ function actualizarResumen() {
   difVal.textContent=Math.abs(diferencia2)<0.01?"✓ CUADRADO":diferencia2>0?`+${fQ(diferencia2)} SOBRANTE`:`-${fQ(Math.abs(diferencia2))} FALTANTE`;
   difDiv.appendChild(difLabel); difDiv.appendChild(difVal);
   resDiv.appendChild(difDiv);
-  // Autosave cuadre en Firebase
-  clearTimeout(window._autoSaveCuadre);
-  window._autoSaveCuadre = setTimeout(async () => {
-    try {
-      const actual = await fbGet("datos-dia");
-      if(actual) {
-        await fbSet("datos-dia", {
-          ...actual,
-          billetes: state.billetes,
-          monedas: state.monedas,
-          deposito: state.deposito,
-          transferencia: state.transferencia,
-          gastosDetalle: state.gastosDetalle
-        });
-      }
-    } catch(e) { console.warn("AutoSave cuadre error:", e); }
-  }, 1500);
+  // Marcar cuadre como modificado para el guard de navegación
+  state._cuadreModificado = true;
 }
 
 // ── Render helpers ──
@@ -3762,7 +3744,42 @@ function renderResumenLiquidacion() {
 
   // Header
   const hdr = el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"16px",display:"flex",alignItems:"center",gap:"12px"}});
-  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"7px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>setState({screen:state.modoHistorial?"historialVista":"main"})},"← Volver"));
+  const _btnVolver = el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"7px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"}});
+  _btnVolver.textContent = "← Volver";
+  _btnVolver.onclick = () => {
+    const destino = state.modoHistorial ? "historialVista" : "main";
+    if(state._cuadreModificado && !state.modoHistorial) {
+      showModal({
+        titulo:"💾 Cambios sin guardar",
+        mensaje:"Tienes cambios en el cuadre (billetes, depósito, gastos...) que no se han confirmado.\n\n¿Qué deseas hacer?",
+        tipo:"confirm",
+        btnAceptar:"💾 Guardar y salir",
+        colorAceptar:"#27ae60",
+        btnCancelar:"🗑️ Descartar y salir",
+        colorCancelar:"#c0392b",
+        onAceptar: async () => {
+          try {
+            const actual = await fbGet("datos-dia");
+            if(actual) await fbSet("datos-dia", {
+              ...actual,
+              billetes: state.billetes, monedas: state.monedas,
+              deposito: state.deposito, transferencia: state.transferencia,
+              gastosDetalle: state.gastosDetalle
+            });
+          } catch(e) { console.warn("Save cuadre error:", e); }
+          state._cuadreModificado = false;
+          setState({screen: destino});
+        },
+        onCancelar: () => {
+          state._cuadreModificado = false;
+          setState({screen: destino});
+        }
+      });
+    } else {
+      setState({screen: destino});
+    }
+  };
+  hdr.appendChild(_btnVolver);
   const hdrInfo=el("div",{style:{flex:"1"}});
   hdrInfo.appendChild(el("h2",{style:{margin:"0",fontSize:"17px",fontWeight:"700"}},"💳 Liquidación"));
   hdrInfo.appendChild(el("p",{style:{margin:"2px 0 0",fontSize:"11px",opacity:"0.7"}},`${state.fecha} · ${state.fileName}${state.modoHistorial?" · Solo lectura":""}`));
