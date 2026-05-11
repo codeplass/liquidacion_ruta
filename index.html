@@ -3024,10 +3024,13 @@ function renderMain() {
   hdr.appendChild(hdrBtns); inner.appendChild(hdr);
 
   // ── Barra de etiquetas (Total + por ruta) ──
-  const todasRutas = [...new Set(clientes.map(c=>state.clienteMap[c].ruta||"Sin ruta"))].sort();
+  const todasRutas = [...new Set(clientes.map(c=>state.clienteMap[c].ruta||"Sin ruta"))].sort((a,b)=>{
+    const na=parseInt((a.match(/\d+/)||["9999"])[0]),nb=parseInt((b.match(/\d+/)||["9999"])[0]);
+    return na-nb;
+  });
   const tagBar = el("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"16px",overflowX:"auto",paddingBottom:"4px"}});
 
-  const mkTag = (label, cls, seleccionada) => {
+  const mkTag = (label, cls, seleccionada, isTotal=false) => {
     const cEntregables = cls.filter(c=>!esClientePre(c));
     const cVerde = cEntregables.filter(c=>state.estadoEntrega[c]==="verde").length;
     const cAmarillo = cEntregables.filter(c=>state.estadoEntrega[c]==="amarillo").length;
@@ -3035,44 +3038,69 @@ function renderMain() {
     const cEnt = cVerde+cAmarillo;
     const cPend = cEntregables.filter(c=>!state.estadoEntrega[c]).length;
     const cPct = cEntregables.length>0?Math.round(cEnt/cEntregables.length*100):0;
-    const cNeto = cEntregables.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
-    const cMonto = cEntregables.reduce((s,c)=>s+totalesCliente(c).monto,0);
+    // Monto entregado = neto de confirmados (verde+amarillo)
+    const cMontoEnt = cEntregables.filter(c=>state.estadoEntrega[c]&&state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
+    // Dev totales = clientes rosados (monto bruto completo devuelto)
+    const cDevTotal = cEntregables.filter(c=>state.estadoEntrega[c]==="rosado").reduce((s,c)=>s+totalesCliente(c).monto,0);
+    // Dev parciales = devM de clientes verde/amarillo
+    const cDevParcial = cEntregables.filter(c=>state.estadoEntrega[c]==="verde"||state.estadoEntrega[c]==="amarillo").reduce((s,c)=>s+totalesCliente(c).devM,0);
+    // Pendiente de entregar = monto de clientes sin estado
+    const cMontoPend = cEntregables.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).monto,0);
+
+    // Tamaños: "Todas" más grande, rutas medianas
+    const fsLabel = isTotal?"14px":"12px";
+    const fsPct   = isTotal?"15px":"13px";
+    const fsData  = isTotal?"12px":"11px";
+    const fsMoney = isTotal?"12px":"11px";
+    const pad     = isTotal?"9px 13px":"8px 11px";
+    const minW    = isTotal?"160px":"140px";
 
     const tag = el("div",{style:{
       background: seleccionada?"#1e3a5f":"#fff",
       color: seleccionada?"#fff":"#1e3a5f",
       border: seleccionada?"2px solid #1e3a5f":"2px solid #d0dcea",
-      borderRadius:"10px", padding:"8px 12px", cursor:"pointer",
-      minWidth:"140px", flex:"0 0 auto",
+      borderRadius:"10px", padding:pad, cursor:"pointer",
+      minWidth:minW, flex:"0 0 auto",
       boxShadow: seleccionada?"0 2px 8px rgba(30,58,95,0.18)":"0 1px 4px rgba(0,0,0,0.06)",
       transition:"all 0.15s"
     }});
 
     // Línea 1: Nombre + % efect
     const l1 = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"3px"}});
-    l1.appendChild(el("span",{style:{fontWeight:"700",fontSize:"12px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"90px"}},label));
-    l1.appendChild(el("span",{style:{fontWeight:"700",fontSize:"13px",color:seleccionada?"#7effa8":"#27ae60"}},`${cPct}%`));
+    l1.appendChild(el("span",{style:{fontWeight:"700",fontSize:fsLabel,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"100px"}},label));
+    l1.appendChild(el("span",{style:{fontWeight:"700",fontSize:fsPct,color:seleccionada?"#7effa8":"#27ae60"}},`${cPct}%`));
     tag.appendChild(l1);
 
-    // Línea 2: clientes y estados
-    const l2 = el("div",{style:{display:"flex",gap:"6px",fontSize:"11px",alignItems:"center",marginBottom:"2px",opacity:"0.85"}});
+    // Línea 2: clientes, estados y ⏳ en la misma línea
+    const l2 = el("div",{style:{display:"flex",gap:"5px",fontSize:fsData,alignItems:"center",marginBottom:"3px",opacity:"0.9",flexWrap:"wrap"}});
     l2.appendChild(el("span",{},`👥${cEnt}/${cEntregables.length}`));
     l2.appendChild(el("span",{},`✅${cVerde}`));
     l2.appendChild(el("span",{},`🟡${cAmarillo}`));
     if(cRosado>0) l2.appendChild(el("span",{},`🔴${cRosado}`));
+    if(cPend>0) l2.appendChild(el("span",{style:{color:seleccionada?"#ffd080":"#e67e22",fontWeight:"700"}},`⏳${cPend}`));
     tag.appendChild(l2);
 
-    // Línea 3: monto neto
-    const l3 = el("div",{style:{display:"flex",justifyContent:"space-between",fontSize:"11px",alignItems:"center"}});
-    l3.appendChild(el("span",{style:{fontWeight:"600",opacity:"0.9"}},fQ(cNeto)));
-    if(cPend>0) l3.appendChild(el("span",{style:{color:seleccionada?"#ffd080":"#e67e22",fontWeight:"700"}},`⏳${cPend}`));
-    tag.appendChild(l3);
+    // Separador
+    const sep = el("div",{style:{borderTop:`1px solid ${seleccionada?"rgba(255,255,255,0.18)":"#e8eef5"}`,margin:"3px 0"}});
+    tag.appendChild(sep);
+
+    // Filas de montos
+    const mkRow = (icon, label2, val, color) => {
+      const row = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:fsMoney,marginTop:"2px"}});
+      row.appendChild(el("span",{style:{opacity:"0.8"}},`${icon} ${label2}`));
+      row.appendChild(el("span",{style:{fontWeight:"700",color:color||(seleccionada?"#fff":"#1e3a5f")}},val));
+      return row;
+    };
+    tag.appendChild(mkRow("💰","Entregado",fQ(cMontoEnt), seleccionada?"#7effa8":"#27ae60"));
+    if(cDevTotal>0)   tag.appendChild(mkRow("🔴","Dev. total",  `-${fQ(cDevTotal)}`,  seleccionada?"#ffb3b3":"#c0392b"));
+    if(cDevParcial>0) tag.appendChild(mkRow("🟡","Dev. parcial",`-${fQ(cDevParcial)}`,seleccionada?"#ffe08a":"#e67e22"));
+    if(cMontoPend>0)  tag.appendChild(mkRow("⏳","Pend. entregar",fQ(cMontoPend),    seleccionada?"#ffd080":"#888"));
 
     return tag;
   };
 
   // Tag "Todas"
-  const tagTodas = mkTag("Todas", clientes, state.filtroRuta==="");
+  const tagTodas = mkTag("Todas", clientes, state.filtroRuta==="", true);
   tagTodas.onclick = ()=>setState({filtroRuta:""});
   tagBar.appendChild(tagTodas);
 
@@ -3124,7 +3152,11 @@ function renderMain() {
   renderListaRutas(listaRutasDiv, porRuta);
 
 function renderListaRutas(container, porRuta) {
-  Object.entries(porRuta).forEach(([ruta,rutaClientes])=>{
+  const rutasOrdenadas = Object.entries(porRuta).sort(([a],[b])=>{
+    const na=parseInt((a.match(/\d+/)||["9999"])[0]),nb=parseInt((b.match(/\d+/)||["9999"])[0]);
+    return na-nb;
+  });
+  rutasOrdenadas.forEach(([ruta,rutaClientes])=>{
     const cntVerdeR=rutaClientes.filter(c=>state.estadoEntrega[c]==="verde").length;
     const cntAmarilloR=rutaClientes.filter(c=>state.estadoEntrega[c]==="amarillo").length;
     const cntRosadoR=rutaClientes.filter(c=>state.estadoEntrega[c]==="rosado").length;
@@ -3584,7 +3616,10 @@ function renderResumenEntregas() {
   },0);
   const pctMonto = montoTotal>0?(montoNeto/montoTotal*100).toFixed(1):0;
 
-  const todasRutas = [...new Set(clientesEntregables.map(c=>state.clienteMap[c].ruta||"Sin ruta"))].sort();
+  const todasRutas = [...new Set(clientesEntregables.map(c=>state.clienteMap[c].ruta||"Sin ruta"))].sort((a,b)=>{
+    const na=parseInt((a.match(/\d+/)||["9999"])[0]),nb=parseInt((b.match(/\d+/)||["9999"])[0]);
+    return na-nb;
+  });
 
   const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"20px"}});
   const inner = el("div",{style:{maxWidth:"700px",margin:"0 auto"}});
