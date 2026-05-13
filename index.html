@@ -3096,10 +3096,14 @@ function renderMain() {
       row.appendChild(el("span",{style:{fontWeight:"700",color:color||(seleccionada?"#fff":"#1e3a5f")}},val));
       return row;
     };
-    tag.appendChild(mkRow("💰","Entregado",fQ(cMontoEnt), seleccionada?"#7effa8":"#27ae60"));
-    if(cDevTotal>0)   tag.appendChild(mkRow("🔴","Dev. total",  `-${fQ(cDevTotal)}`,  seleccionada?"#ffb3b3":"#c0392b"));
-    if(cDevParcial>0) tag.appendChild(mkRow("🟡","Dev. parcial",`-${fQ(cDevParcial)}`,seleccionada?"#ffe08a":"#e67e22"));
-    if(cMontoPend>0)  tag.appendChild(mkRow("⏳","Pend. entregar",fQ(cMontoPend),    seleccionada?"#ffd080":"#888"));
+    // Monto total bruto para calcular %
+    const cBrutoTotal = cEntregables.reduce((s,c)=>s+totalesCliente(c).monto,0);
+    const pct = (val) => cBrutoTotal > 0 ? ` (${(val/cBrutoTotal*100).toFixed(1)}%)` : "";
+
+    tag.appendChild(mkRow("💰","Entregado",fQ(cMontoEnt)+pct(cMontoEnt), seleccionada?"#7effa8":"#27ae60"));
+    if(cDevTotal>0)   tag.appendChild(mkRow("🔴","Dev. total",  `-${fQ(cDevTotal)}${pct(cDevTotal)}`,  seleccionada?"#ffb3b3":"#c0392b"));
+    if(cDevParcial>0) tag.appendChild(mkRow("🟡","Dev. parcial",`-${fQ(cDevParcial)}${pct(cDevParcial)}`,seleccionada?"#ffe08a":"#e67e22"));
+    if(cMontoPend>0)  tag.appendChild(mkRow("⏳","Pend. entregar",fQ(cMontoPend)+pct(cMontoPend),    seleccionada?"#ffd080":"#888"));
 
     return tag;
   };
@@ -3123,13 +3127,14 @@ function renderMain() {
 
   // Barra de búsqueda + botón ocultar confirmados
   const busqWrap=el("div",{style:{display:"flex",gap:"8px",marginBottom:"16px",alignItems:"center"}});
-  const busq=el("input",{type:"text",placeholder:"🔍 Buscar cliente o producto...",style:{flex:"1",padding:"10px 14px",borderRadius:"8px",border:"1px solid #ddd",fontSize:"14px",boxSizing:"border-box",background:"#fff"}});
+  const busqInnerWrap=el("div",{style:{flex:"1",position:"relative",display:"flex",alignItems:"center"}});
+  const busq=el("input",{type:"text",placeholder:"🔍 Buscar cliente o producto...",style:{width:"100%",padding:"10px 38px 10px 14px",borderRadius:"8px",border:"1px solid #ddd",fontSize:"14px",boxSizing:"border-box",background:"#fff"}});
   busq.value=state.busqueda;
   busq.addEventListener('focus', ()=>{ state._busqFocused = true; });
   busq.addEventListener('blur', ()=>{ state._busqFocused = false; });
-  busq.addEventListener('input', e=>{
-    state.busqueda = e.target.value;
-    // Solo actualizar la lista de rutas sin re-render completo
+
+  const applyBusqueda = (val) => {
+    state.busqueda = val;
     const contenedor = document.getElementById("lista-rutas");
     if(contenedor) {
       contenedor.innerHTML = "";
@@ -3144,8 +3149,30 @@ function renderMain() {
       cltsFilt.forEach(c=>{ const r=state.clienteMap[c].ruta||"Sin ruta"; if(!pr[r]) pr[r]=[]; pr[r].push(c); });
       renderListaRutas(contenedor, pr);
     }
+    // Mostrar/ocultar botón basurero
+    btnLimpiarBusq.style.display = state.busqueda ? "flex" : "none";
+  };
+
+  busq.addEventListener('input', e=>{ applyBusqueda(e.target.value); });
+
+  const btnLimpiarBusq = el("button",{style:{
+    display: state.busqueda ? "flex" : "none",
+    position:"absolute", right:"8px", top:"50%", transform:"translateY(-50%)",
+    background:"none", border:"none", cursor:"pointer", padding:"4px",
+    color:"#aaa", fontSize:"16px", alignItems:"center", justifyContent:"center",
+    lineHeight:"1", borderRadius:"4px"
+  }}, "🗑️");
+  btnLimpiarBusq.title = "Limpiar búsqueda";
+  btnLimpiarBusq.addEventListener('mousedown', e=>{ e.preventDefault(); });
+  btnLimpiarBusq.addEventListener('click', ()=>{
+    busq.value = "";
+    applyBusqueda("");
+    busq.focus();
   });
-  busqWrap.appendChild(busq);
+
+  busqInnerWrap.appendChild(busq);
+  busqInnerWrap.appendChild(btnLimpiarBusq);
+  busqWrap.appendChild(busqInnerWrap);
   const btnOcultar=el("button",{style:{whiteSpace:"nowrap",background:state.ocultarConfirmados?"#27ae60":"#eef2f7",color:state.ocultarConfirmados?"#fff":"#1e3a5f",border:"none",borderRadius:"8px",padding:"10px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"}},state.ocultarConfirmados?"👁️ Ver todas":"✅ Ocultar confirmadas");
   btnOcultar.onclick=()=>setState({ocultarConfirmados:!state.ocultarConfirmados});
   busqWrap.appendChild(btnOcultar);
@@ -3934,7 +3961,11 @@ function renderResumenDevoluciones() {
   hdr.appendChild(el("button", { style: { background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: "8px", padding: "7px 14px", cursor: "pointer", fontSize: "13px", flexShrink: "0" }, onClick: () => setState({ screen: state.modoHistorial ? "historialVista" : "main" }) }, "← Volver"));
   const hdrInfo = el("div", { style: { flex: "1" } });
   hdrInfo.appendChild(el("h2", { style: { margin: "0", fontSize: "17px", fontWeight: "700" } }, "↩️ Resumen de Devoluciones"));
-  hdrInfo.appendChild(el("p", { style: { margin: "2px 0 0", fontSize: "11px", opacity: "0.7" } }, `${state.fecha} · Total: ${fQ(totalGeneral)}`));
+  const totalClientesConDev = new Set([
+    ...devsFiltr.map(d => d.cliente),
+    ...devsTotales
+  ]).size;
+  hdrInfo.appendChild(el("p", { style: { margin: "2px 0 0", fontSize: "11px", opacity: "0.7" } }, `${state.fecha} · ${totalClientesConDev} cliente${totalClientesConDev !== 1 ? "s" : ""} con devolución · Total: ${fQ(totalGeneral)}`));
   hdr.appendChild(hdrInfo);
   inner.appendChild(hdr);
 
