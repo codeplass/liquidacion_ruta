@@ -3852,113 +3852,221 @@ function renderResumenDevoluciones() {
   const devs = state.devoluciones || [];
   const cMap = state.clienteMap || {};
 
-  // Agrupar por cliente
-  const porCliente = {};
-  devs.forEach(d=>{
-    if(!porCliente[d.cliente]) porCliente[d.cliente]={devs:[],total:0};
-    porCliente[d.cliente].devs.push(d);
-    porCliente[d.cliente].total+=d.monto;
+  // Helper: obtener ruta de un cliente
+  const getRutaCliente = c => cMap[c]?.ruta || "Sin ruta";
+
+  // Recopilar todas las rutas que tienen devoluciones
+  const rutasConDevs = new Set();
+  devs.forEach(d => rutasConDevs.add(getRutaCliente(d.cliente)));
+  const devsTotalesAll = Object.keys(cMap).filter(c => state.estadoEntrega[c] === "rosado");
+  devsTotalesAll.forEach(c => rutasConDevs.add(getRutaCliente(c)));
+  const todasRutas = Array.from(rutasConDevs).sort();
+
+  // Filtro activo de ruta
+  const filtroRuta = state.dvResumenFiltroRuta || "";
+
+  // Aplicar filtro
+  const devsFiltr = filtroRuta ? devs.filter(d => getRutaCliente(d.cliente) === filtroRuta) : devs;
+  const devsTotales = devsTotalesAll.filter(c => !filtroRuta || getRutaCliente(c) === filtroRuta);
+
+  // Agrupar devs parciales por ruta → cliente
+  const porRuta = {};
+  devsFiltr.forEach(d => {
+    const ruta = getRutaCliente(d.cliente);
+    if (!porRuta[ruta]) porRuta[ruta] = {};
+    if (!porRuta[ruta][d.cliente]) porRuta[ruta][d.cliente] = { devs: [], total: 0 };
+    porRuta[ruta][d.cliente].devs.push(d);
+    porRuta[ruta][d.cliente].total += d.monto;
   });
 
-  // Devoluciones totales (rosados)
-  const devsTotales = Object.keys(cMap).filter(c=>state.estadoEntrega[c]==="rosado");
+  // Agrupar devs totales (rosados) por ruta
+  const totalPorRuta = {};
+  devsTotales.forEach(c => {
+    const ruta = getRutaCliente(c);
+    if (!totalPorRuta[ruta]) totalPorRuta[ruta] = [];
+    totalPorRuta[ruta].push(c);
+  });
 
-  // Agrupar por producto (todas las devs parciales)
+  // Agrupar por producto (todas las devs filtradas)
   const porProducto = {};
-  devs.forEach(d=>{
+  devsFiltr.forEach(d => {
     const k = d.producto;
-    if(!porProducto[k]) porProducto[k]={unidades:0,monto:0,clientes:new Set()};
-    porProducto[k].unidades+=d.unidades;
-    porProducto[k].monto+=d.monto;
+    if (!porProducto[k]) porProducto[k] = { unidades: 0, monto: 0, clientes: new Set() };
+    porProducto[k].unidades += d.unidades;
+    porProducto[k].monto += d.monto;
     porProducto[k].clientes.add(d.cliente);
   });
 
-  const totalDevM = devs.reduce((s,d)=>s+d.monto,0);
-  const totalDevU = devs.reduce((s,d)=>s+d.unidades,0);
-  // Sumar también montos brutos de devoluciones totales
-  const totalDevTotalesM = devsTotales.reduce((s,c)=>s+totalesCliente(c).monto,0);
+  const totalDevM = devsFiltr.reduce((s, d) => s + d.monto, 0);
+  const totalDevU = devsFiltr.reduce((s, d) => s + d.unidades, 0);
+  const totalDevTotalesM = devsTotales.reduce((s, c) => s + totalesCliente(c).monto, 0);
   const totalGeneral = totalDevM + totalDevTotalesM;
 
-  const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
-  const inner = el("div",{style:{maxWidth:"700px",margin:"0 auto"}});
+  const wrap = el("div", { style: { fontFamily: "sans-serif", background: "#f4f6f9", minHeight: "100vh", padding: "24px" } });
+  const inner = el("div", { style: { maxWidth: "700px", margin: "0 auto" } });
   wrap.appendChild(inner);
 
   // Header
-  const hdr = el("div",{style:{background:"#c0392b",color:"#fff",borderRadius:"12px",padding:"14px 20px",marginBottom:"20px",display:"flex",alignItems:"center",gap:"12px"}});
-  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"7px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>setState({screen:state.modoHistorial?"historialVista":"main"})},"← Volver"));
-  const hdrInfo = el("div",{style:{flex:"1"}});
-  hdrInfo.appendChild(el("h2",{style:{margin:"0",fontSize:"17px",fontWeight:"700"}},"↩️ Resumen de Devoluciones"));
-  hdrInfo.appendChild(el("p",{style:{margin:"2px 0 0",fontSize:"11px",opacity:"0.7"}},`${state.fecha} · Total: ${fQ(totalGeneral)}`));
+  const hdr = el("div", { style: { background: "#c0392b", color: "#fff", borderRadius: "12px", padding: "14px 20px", marginBottom: "16px", display: "flex", alignItems: "center", gap: "12px" } });
+  hdr.appendChild(el("button", { style: { background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: "8px", padding: "7px 14px", cursor: "pointer", fontSize: "13px", flexShrink: "0" }, onClick: () => setState({ screen: state.modoHistorial ? "historialVista" : "main" }) }, "← Volver"));
+  const hdrInfo = el("div", { style: { flex: "1" } });
+  hdrInfo.appendChild(el("h2", { style: { margin: "0", fontSize: "17px", fontWeight: "700" } }, "↩️ Resumen de Devoluciones"));
+  hdrInfo.appendChild(el("p", { style: { margin: "2px 0 0", fontSize: "11px", opacity: "0.7" } }, `${state.fecha} · Total: ${fQ(totalGeneral)}`));
   hdr.appendChild(hdrInfo);
   inner.appendChild(hdr);
 
-  if(devs.length===0 && devsTotales.length===0){
-    inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"40px",textAlign:"center",color:"#aaa",fontSize:"14px"}},"No hay devoluciones registradas."));
+  // ── Chips de filtro por ruta ──
+  if (todasRutas.length > 1) {
+    const chipsWrap = el("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "16px" } });
+    const chipTodas = el("button", {
+      style: { padding: "6px 14px", borderRadius: "20px", border: "none", cursor: "pointer", fontSize: "12px", fontWeight: "700",
+        background: !filtroRuta ? "#c0392b" : "#e0e0e0", color: !filtroRuta ? "#fff" : "#555" },
+      onClick: () => { state.dvResumenFiltroRuta = ""; render(); }
+    }, "Todas");
+    chipsWrap.appendChild(chipTodas);
+    todasRutas.forEach(ruta => {
+      const activo = filtroRuta === ruta;
+      const chip = el("button", {
+        style: { padding: "6px 14px", borderRadius: "20px", border: "none", cursor: "pointer", fontSize: "12px", fontWeight: "700",
+          background: activo ? "#c0392b" : "#fff", color: activo ? "#fff" : "#c0392b",
+          boxShadow: "0 1px 4px rgba(0,0,0,0.12)" },
+        onClick: () => { state.dvResumenFiltroRuta = activo ? "" : ruta; render(); }
+      }, ruta);
+      chipsWrap.appendChild(chip);
+    });
+    inner.appendChild(chipsWrap);
+  }
+
+  if (devsFiltr.length === 0 && devsTotales.length === 0) {
+    inner.appendChild(el("div", { style: { background: "#fff", borderRadius: "12px", padding: "40px", textAlign: "center", color: "#aaa", fontSize: "14px" } }, "No hay devoluciones registradas."));
     return wrap;
   }
 
   const secCard = (titulo, bg, children) => {
-    const d = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"18px 20px",marginBottom:"14px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}});
-    d.appendChild(el("div",{style:{fontWeight:"700",color:bg||"#c0392b",fontSize:"13px",marginBottom:"12px",textTransform:"uppercase",letterSpacing:"0.5px"}},titulo));
-    children.forEach(c=>d.appendChild(c));
+    const d = el("div", { style: { background: "#fff", borderRadius: "12px", padding: "18px 20px", marginBottom: "14px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" } });
+    d.appendChild(el("div", { style: { fontWeight: "700", color: bg || "#c0392b", fontSize: "13px", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.5px" } }, titulo));
+    children.forEach(c => d.appendChild(c));
     return d;
   };
 
-  // ── Devoluciones totales ──
-  if(devsTotales.length>0){
-    const rows = devsTotales.map(c=>{
-      const tt = totalesCliente(c);
-      const mot = state.motivosDevTotal[c];
-      const r = el("div",{style:{padding:"8px 0",borderBottom:"1px solid #f0f4f8"}});
-      r.appendChild(el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
-        el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#e91e8c"}},c),
-        el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#c0392b"}},fQ(tt.monto))
-      ));
-      if(mot) r.appendChild(el("div",{style:{fontSize:"11px",color:"#888",marginTop:"2px"}},`${mot.codigo} — ${mot.desc}`));
-      return r;
+  // ── Devoluciones totales (rosados) agrupadas por ruta ──
+  const rutasTotales = Array.from(new Set(devsTotales.map(c => getRutaCliente(c)))).sort();
+  if (devsTotales.length > 0) {
+    const rows = [];
+    rutasTotales.forEach(ruta => {
+      const clientesDeRuta = (totalPorRuta[ruta] || []);
+      // Título de ruta
+      rows.push(el("div", { style: { fontWeight: "700", fontSize: "12px", color: "#9b59b6", background: "#f5eef8", borderRadius: "6px", padding: "4px 10px", margin: "6px 0 4px" } }, `📍 ${ruta}`));
+      clientesDeRuta.forEach(c => {
+        const tt = totalesCliente(c);
+        const mot = state.motivosDevTotal[c];
+        const r = el("div", { style: { padding: "6px 0 6px 8px", borderBottom: "1px solid #f0f4f8" } });
+        r.appendChild(el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#e91e8c" } }, c),
+          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#c0392b" } }, fQ(tt.monto))
+        ));
+        if (mot) r.appendChild(el("div", { style: { fontSize: "11px", color: "#888", marginTop: "2px" } }, `${mot.codigo} — ${mot.desc}`));
+        rows.push(r);
+      });
     });
-    const totRow = el("div",{style:{display:"flex",justifyContent:"space-between",marginTop:"8px",fontWeight:"700",fontSize:"13px",color:"#c0392b"}});
-    totRow.appendChild(el("span",{},"Total devoluciones totales"));
-    totRow.appendChild(el("span",{},fQ(totalDevTotalesM)));
+    const totRow = el("div", { style: { display: "flex", justifyContent: "space-between", marginTop: "8px", fontWeight: "700", fontSize: "13px", color: "#c0392b" } });
+    totRow.appendChild(el("span", {}, "Total devoluciones totales"));
+    totRow.appendChild(el("span", {}, fQ(totalDevTotalesM)));
     rows.push(totRow);
-    inner.appendChild(secCard(`🔴 Devoluciones Totales (${devsTotales.length} cliente${devsTotales.length>1?"s":""})`, "#e91e8c", rows));
+    inner.appendChild(secCard(`🔴 Devoluciones Totales (${devsTotales.length} cliente${devsTotales.length > 1 ? "s" : ""})`, "#e91e8c", rows));
   }
 
-  // ── Por cliente (parciales) ──
-  if(Object.keys(porCliente).length>0){
-    const rows = Object.entries(porCliente).sort((a,b)=>b[1].total-a[1].total).flatMap(([cliente,data])=>{
-      const hRow = el("div",{style:{padding:"8px 0 4px",borderBottom:"1px solid #f0f4f8"}});
-      hRow.appendChild(el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px"}},
-        el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#1e3a5f"}},cliente),
-        el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#c0392b"}},`-${fQ(data.total)}`)
-      ));
-      const detRows = data.devs.map(d=>{
-        const dr = el("div",{style:{display:"flex",justifyContent:"space-between",padding:"2px 0 2px 12px",fontSize:"12px",color:"#666"}});
-        dr.appendChild(el("span",{style:{flex:"1",wordBreak:"break-word"}},d.producto));
-        const vals = el("div",{style:{display:"flex",gap:"12px",flexShrink:"0",marginLeft:"8px"}});
-        vals.appendChild(el("span",{style:{color:"#555"}},`${fN(d.unidades)} u`));
-        vals.appendChild(el("span",{style:{color:"#c0392b",fontWeight:"600"}},`-${fQ(d.monto)}`));
-        dr.appendChild(vals);
-        return dr;
+  // ── Por ruta → cliente (parciales) ──
+  const rutasParciales = Object.keys(porRuta).sort();
+  if (rutasParciales.length > 0) {
+    const rows = [];
+    rutasParciales.forEach(ruta => {
+      // Título de ruta
+      rows.push(el("div", { style: { fontWeight: "700", fontSize: "12px", color: "#9b59b6", background: "#f5eef8", borderRadius: "6px", padding: "4px 10px", margin: "6px 0 4px" } }, `📍 ${ruta}`));
+      Object.entries(porRuta[ruta]).sort((a, b) => b[1].total - a[1].total).forEach(([cliente, data]) => {
+        const hRow = el("div", { style: { padding: "6px 0 4px 8px", borderBottom: "1px solid #f0f4f8" } });
+        hRow.appendChild(el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" } },
+          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#1e3a5f" } }, cliente),
+          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#c0392b" } }, `-${fQ(data.total)}`)
+        ));
+        data.devs.forEach(d => {
+          const dr = el("div", { style: { padding: "2px 0 2px 12px", fontSize: "12px", color: "#666" } });
+          // Fila producto
+          const prodRow = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" } });
+          prodRow.appendChild(el("span", { style: { flex: "1", wordBreak: "break-word" } }, d.producto));
+          const vals = el("div", { style: { display: "flex", gap: "10px", flexShrink: "0" } });
+          vals.appendChild(el("span", { style: { color: "#555" } }, `${fN(d.unidades)} u`));
+          vals.appendChild(el("span", { style: { color: "#c0392b", fontWeight: "600" } }, `-${fQ(d.monto)}`));
+          prodRow.appendChild(vals);
+          dr.appendChild(prodRow);
+          // Fila meta: pedido + motivo
+          const meta = [];
+          if (d.pedido && d.pedido !== "S/N") meta.push(`📋 ${d.pedido}`);
+          if (d.codigo) {
+            const mot = MOTIVOS.find(m => m.codigo === d.codigo);
+            if (mot) meta.push(`${mot.codigo} — ${mot.desc}`);
+            else meta.push(d.codigo);
+          }
+          if (meta.length > 0) {
+            dr.appendChild(el("div", { style: { fontSize: "11px", color: "#999", marginTop: "1px" } }, meta.join(" · ")));
+          }
+          rows.push(dr);
+        });
+        rows.push(hRow);
+        // reorder: hRow first, then detail rows — fix by building array properly
       });
-      return [hRow,...detRows];
     });
-    const totRow = el("div",{style:{display:"flex",justifyContent:"space-between",marginTop:"8px",padding:"8px 0 0",fontWeight:"700",fontSize:"13px",color:"#c0392b",borderTop:"2px solid #f0f4f8"}});
-    totRow.appendChild(el("span",{},`Total parciales (${fN(totalDevU)} u)`));
-    totRow.appendChild(el("span",{},`-${fQ(totalDevM)}`));
-    rows.push(totRow);
-    inner.appendChild(secCard(`↩️ Por Cliente (${Object.keys(porCliente).length})`, "#c0392b", rows));
+
+    // Rebuild rows correctly (hRow before detail rows)
+    const rowsFixed = [];
+    rutasParciales.forEach(ruta => {
+      rowsFixed.push(el("div", { style: { fontWeight: "700", fontSize: "12px", color: "#9b59b6", background: "#f5eef8", borderRadius: "6px", padding: "4px 10px", margin: "6px 0 4px" } }, `📍 ${ruta}`));
+      Object.entries(porRuta[ruta]).sort((a, b) => b[1].total - a[1].total).forEach(([cliente, data]) => {
+        const hRow = el("div", { style: { padding: "6px 0 4px 8px", borderBottom: "1px solid #f0f4f8" } });
+        hRow.appendChild(el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2px" } },
+          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#1e3a5f" } }, cliente),
+          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#c0392b" } }, `-${fQ(data.total)}`)
+        ));
+        rowsFixed.push(hRow);
+        data.devs.forEach(d => {
+          const dr = el("div", { style: { padding: "3px 0 3px 14px", fontSize: "12px", color: "#666" } });
+          const prodRow = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" } });
+          prodRow.appendChild(el("span", { style: { flex: "1", wordBreak: "break-word" } }, d.producto));
+          const vals = el("div", { style: { display: "flex", gap: "10px", flexShrink: "0" } });
+          vals.appendChild(el("span", { style: { color: "#555" } }, `${fN(d.unidades)} u`));
+          vals.appendChild(el("span", { style: { color: "#c0392b", fontWeight: "600" } }, `-${fQ(d.monto)}`));
+          prodRow.appendChild(vals);
+          dr.appendChild(prodRow);
+          const meta = [];
+          if (d.pedido && d.pedido !== "S/N") meta.push(`📋 ${d.pedido}`);
+          if (d.codigo) {
+            const mot = MOTIVOS.find(m => m.codigo === d.codigo);
+            if (mot) meta.push(`${mot.codigo} — ${mot.desc}`);
+            else meta.push(d.codigo);
+          }
+          if (meta.length > 0) {
+            dr.appendChild(el("div", { style: { fontSize: "11px", color: "#999", marginTop: "1px" } }, meta.join(" · ")));
+          }
+          rowsFixed.push(dr);
+        });
+      });
+    });
+    const totRow = el("div", { style: { display: "flex", justifyContent: "space-between", marginTop: "8px", padding: "8px 0 0", fontWeight: "700", fontSize: "13px", color: "#c0392b", borderTop: "2px solid #f0f4f8" } });
+    totRow.appendChild(el("span", {}, `Total parciales (${fN(totalDevU)} u)`));
+    totRow.appendChild(el("span", {}, `-${fQ(totalDevM)}`));
+    rowsFixed.push(totRow);
+    inner.appendChild(secCard(`↩️ Por Ruta / Cliente (${Object.values(porRuta).reduce((s, r) => s + Object.keys(r).length, 0)})`, "#c0392b", rowsFixed));
   }
 
   // ── Por producto ──
-  if(Object.keys(porProducto).length>0){
-    const rows = Object.entries(porProducto).sort((a,b)=>b[1].monto-a[1].monto).map(([prod,data])=>{
-      const r = el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #f0f4f8",gap:"8px"}});
-      const izq = el("div",{style:{flex:"1"}});
-      izq.appendChild(el("div",{style:{fontSize:"13px",color:"#333",wordBreak:"break-word"}},prod));
-      izq.appendChild(el("div",{style:{fontSize:"11px",color:"#888",marginTop:"1px"}},`${data.clientes.size} cliente${data.clientes.size>1?"s":""} · ${fN(data.unidades)} u`));
+  if (Object.keys(porProducto).length > 0) {
+    const rows = Object.entries(porProducto).sort((a, b) => b[1].monto - a[1].monto).map(([prod, data]) => {
+      const r = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #f0f4f8", gap: "8px" } });
+      const izq = el("div", { style: { flex: "1" } });
+      izq.appendChild(el("div", { style: { fontSize: "13px", color: "#333", wordBreak: "break-word" } }, prod));
+      izq.appendChild(el("div", { style: { fontSize: "11px", color: "#888", marginTop: "1px" } }, `${data.clientes.size} cliente${data.clientes.size > 1 ? "s" : ""} · ${fN(data.unidades)} u`));
       r.appendChild(izq);
-      r.appendChild(el("span",{style:{fontWeight:"700",color:"#c0392b",flexShrink:"0"}},`-${fQ(data.monto)}`));
+      r.appendChild(el("span", { style: { fontWeight: "700", color: "#c0392b", flexShrink: "0" } }, `-${fQ(data.monto)}`));
       return r;
     });
     inner.appendChild(secCard(`📦 Por Producto (${Object.keys(porProducto).length})`, "#c0392b", rows));
