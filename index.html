@@ -713,9 +713,21 @@ async function confirmarLiquidacion() {
       clienteMap: state.clienteMap
     };
     await fbSet("historial",existing);
-    // Guardar datos-dia con flag confirmado (no borrar, para poder reabrir)
-    const datosActuales = await fbGet("datos-dia");
-    if(datosActuales) await fbSet("datos-dia", {...datosActuales, confirmado:true});
+    // Guardar datos-dia con todos los datos actuales (para que al volver a entrar cargue correctamente)
+    await fbSet("datos-dia", {
+      clienteMap:state.clienteMap, fileName:state.fileName, fecha:state.fecha,
+      estadoEntrega:state.estadoEntrega, entregados:state.entregados,
+      bloqueados:state.bloqueados, devoluciones:state.devoluciones,
+      motivosDevTotal:state.motivosDevTotal, descuentos:state.descuentos,
+      comentarios:state.comentarios,
+      billetes:state.billetes, monedas:state.monedas,
+      deposito:state.deposito, transferencia:state.transferencia,
+      gastosDetalle:state.gastosDetalle,
+      pagoPendiente:state.pagoPendiente,
+      repartidor:state.loginRepartidor||"",
+      auxiliar:state.loginAuxiliar||"",
+      confirmado:true
+    });
     setState({confirmado:true,showConfirmar:false,guardando:false,screen:"confirmado"});
     state._cuadreModificado = false;
   } catch(e){
