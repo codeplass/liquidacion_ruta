@@ -725,6 +725,29 @@ async function confirmarLiquidacion() {
   }
 }
 
+// Recarga los datos del día actual desde Firebase al state (para cuando admin vuelve del historial)
+async function volverADiaDesdMenu() {
+  const datos = await fbGet("datos-dia");
+  if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length > 0) {
+    state.clienteMap    = datos.clienteMap;
+    state.fileName      = datos.fileName || state.fileName;
+    state.estadoEntrega = datos.estadoEntrega || {};
+    state.entregados    = datos.entregados || {};
+    state.bloqueados    = datos.bloqueados || {};
+    state.devoluciones  = datos.devoluciones || [];
+    state.motivosDevTotal = datos.motivosDevTotal || {};
+    state.descuentos    = datos.descuentos || {};
+    state.comentarios   = datos.comentarios || {};
+    state.billetes      = datos.billetes || Object.fromEntries(BILLETES.map(b=>[b,""]));
+    state.monedas       = datos.monedas || "";
+    state.deposito      = datos.deposito || "";
+    state.transferencia = datos.transferencia || "";
+    state.gastosDetalle = datos.gastosDetalle || [{desc:"",monto:"",comentario:"",deCuenta:true}];
+    state.pagoPendiente = datos.pagoPendiente || {};
+  }
+  setState({screen:"main", modoHistorial:false, confirmado: datos?.confirmado===true});
+}
+
 function renderOpciones() {
   const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
   const box=el("div",{style:{background:"#fff",borderRadius:"16px",padding:"36px 28px",maxWidth:"380px",width:"100%",boxShadow:"0 8px 32px rgba(0,0,0,0.12)",textAlign:"center"}});
@@ -739,7 +762,7 @@ function renderOpciones() {
     return b;
   };
 
-  box.appendChild(btn("📋","Ver / editar liquidación de hoy","#1e3a5f",()=>setState({screen:"main"})));
+  box.appendChild(btn("📋","Ver / editar liquidación de hoy","#1e3a5f",()=>volverADiaDesdMenu()));
   box.appendChild(btn("📅","Ver historial","#2980b9",abrirHistorial));
   box.appendChild(btn("📁","Cargar nuevo archivo","#7f8c8d",()=>setState({
     screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},
@@ -4579,7 +4602,7 @@ function renderMenu() {
   // Ver entregas del día (siempre)
   const tieneData = Object.keys(state.clienteMap||{}).length>0;
   if(tieneData) {
-    box.appendChild(btn("📋","Ver entregas del día","#1e3a5f","#fff",()=>setState({screen:"main"})));
+    box.appendChild(btn("📋","Ver entregas del día","#1e3a5f","#fff",()=>volverADiaDesdMenu()));
   }
 
   if(esAdmin) {
