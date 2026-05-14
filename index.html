@@ -1372,21 +1372,27 @@ function actualizarResumen() {
     {label:"(-) Devoluciones", val:`-${fQ(totalDevCuadre)}`, color:"#c0392b"},
     {label:"(-) Descuentos", val:`-${fQ(totalDescCuadre)}`, color:"#e67e22"},
     {label:"Ent. no confirmadas", val:totalNoConfirmado>0?`-${fQ(totalNoConfirmado)}`:"Q 0.00", color:"#e67e22"},
-    ...(totalCreditosCuadre>0?[{label:"(-) Créditos", val:`-${fQ(totalCreditosCuadre)}`, color:"#8e44ad"}]:[]),
-    {label:"Total Neto", val:fQ(totalNetoCuadre), color:"#1e3a5f", bold:true, sep:true},
-    ...(totalCreditosCuadre>0?[{label:"Neto a cobrar hoy", val:fQ(totalNetoACobrarHoy), color:"#8e44ad", bold:true}]:[]),
+    {label:"Total Neto a Cobrar", val:fQ(totalNetoCuadre), color:"#1e3a5f", bold:true, sep:true},
     {label:"Efectivo", val:fQ(totalEfectivo2), color:"#333"},
     {label:"Depósito", val:fQ(totalDeposito2), color:"#333"},
     {label:"Transferencia", val:fQ(totalTransferencia2), color:"#333"},
-    {label:"Total recibido", val:fQ(totalPagos2), color:"#2563eb", bold:true},
     {label:"Gastos de ruta ≠ cuenta", val:totalGastosBodega2>0?`-${fQ(totalGastosBodega2)}`:"Q 0.00", color:"#e67e22"},
     {label:"Gastos de ruta de la cuenta", val:totalGastosDeCuenta2>0?`-${fQ(totalGastosDeCuenta2)}`:"Q 0.00", color:"#c0392b"},
-  ].forEach(x=>{
+    {label:"Total recibido", val:fQ(totalPagos2), color:"#2563eb", bold:true},
+  ].forEach((x,xi,arr)=>{
     const row=document.createElement("div");
     row.style.cssText=`display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid #e2e8f0;${x.sep?"margin-top:6px;border-top:2px solid #1e3a5f;padding-top:6px;":""}`;
     const lbl=document.createElement("span"); lbl.style.color="#666"; lbl.textContent=x.label;
     const val=document.createElement("span"); val.style.cssText=`font-weight:${x.bold?"700":"600"};color:${x.color};`; val.textContent=x.val;
     row.appendChild(lbl); row.appendChild(val); resDiv.appendChild(row);
+    // Insertar fila crédito inmediatamente después de Transferencia
+    if(x.label==="Transferencia" && totalCreditosCuadre>0){
+      const rowCred=document.createElement("div");
+      rowCred.style.cssText="display:flex;justify-content:space-between;font-size:12px;padding:6px 10px;border-radius:6px;background:#fffde7;border:1px solid #f9a825;margin:3px 0;";
+      const lblCred=document.createElement("span"); lblCred.style.cssText="color:#c0392b;font-weight:700;"; lblCred.textContent="💳 Crédito (cobro posterior)";
+      const valCred=document.createElement("span"); valCred.style.cssText="font-weight:700;color:#c0392b;"; valCred.textContent=`-${fQ(totalCreditosCuadre)}`;
+      rowCred.appendChild(lblCred); rowCred.appendChild(valCred); resDiv.appendChild(rowCred);
+    }
   });
   const difDiv=document.createElement("div");
   difDiv.style.cssText="margin-top:10px;text-align:center;padding:10px 0;";
