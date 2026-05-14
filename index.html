@@ -267,16 +267,35 @@ function setState(updates) {
     const noConfirmado = !state.confirmado && !state.modoHistorial;
 
     if(enFlujo && saleDeFlujo && hayDatos && noConfirmado) {
-      showModal({
-        titulo: "⚠️ Cambios sin confirmar",
-        mensaje: "La liquidación tiene cambios sin confirmar que se perderán.\n\n¿Deseas salir de todas formas?",
-        tipo: "confirm",
-        btnAceptar: "🚪 Salir sin guardar",
-        colorAceptar: "#c0392b",
-        btnCancelar: "📋 Quedarme",
-        onAceptar: () => _setStateInterno(updates)
-      });
-      return; // no navegar hasta confirmar
+      const overlay = document.createElement("div");
+      overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;font-family:sans-serif;";
+      const box = document.createElement("div");
+      box.style.cssText = "background:#fff;border-radius:14px;padding:28px 24px;max-width:360px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,0.2);";
+      const t = document.createElement("h3");
+      t.style.cssText = "margin:0 0 10px;color:#1e3a5f;font-size:16px;font-weight:700;";
+      t.textContent = "\u26a0\ufe0f Cambios sin confirmar";
+      box.appendChild(t);
+      const msg = document.createElement("p");
+      msg.style.cssText = "margin:0 0 22px;font-size:14px;color:#444;line-height:1.5;white-space:pre-line;";
+      msg.textContent = "La liquidación tiene cambios sin confirmar.\n\n\xBFQué deseas hacer?";
+      box.appendChild(msg);
+      const btns = document.createElement("div");
+      btns.style.cssText = "display:flex;flex-direction:column;gap:10px;";
+      const bGuardar = document.createElement("button");
+      bGuardar.textContent = "\uD83D\uDCBE Guardar liquidación y salir";
+      bGuardar.style.cssText = "background:#27ae60;color:#fff;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+      bGuardar.onclick = () => { overlay.remove(); confirmarLiquidacion().then(()=>_setStateInterno(updates)); };
+      const bSalir = document.createElement("button");
+      bSalir.textContent = "\uD83D\uDEAA Salir sin guardar";
+      bSalir.style.cssText = "background:#c0392b;color:#fff;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
+      bSalir.onclick = () => { overlay.remove(); _setStateInterno(updates); };
+      const bQuedar = document.createElement("button");
+      bQuedar.textContent = "\uD83D\uDCCB Quedarme";
+      bQuedar.style.cssText = "background:#f0f0f0;color:#555;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
+      bQuedar.onclick = () => overlay.remove();
+      btns.appendChild(bGuardar); btns.appendChild(bSalir); btns.appendChild(bQuedar);
+      box.appendChild(btns); overlay.appendChild(box); document.body.appendChild(overlay);
+      return; // no navegar hasta elegir
     }
   }
   _setStateInterno(updates);
@@ -2452,9 +2471,12 @@ function renderDetalleCliente() {
   }
   dcGrid.appendChild(comDiv);
   dcBox.appendChild(dcGrid);
+  // Total a cobrar: incluir también devoluciones temporales (aún no confirmadas)
+  const devTempM = devsTempCliente.reduce((s,d)=>s+d.monto,0);
+  const totalACobrarDetalle = tc.netoM - devTempM;
   dcBox.appendChild(el("div",{style:{marginTop:"12px",background:"#f0f4f8",borderRadius:"8px",padding:"10px 14px",display:"flex",justifyContent:"space-between",fontSize:"14px"}},
     el("span",{style:{fontWeight:"600"}},"Total a cobrar:"),
-    el("span",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"16px"}},fQ(tc.netoM))
+    el("span",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"16px"}},fQ(totalACobrarDetalle))
   ));
   inner.appendChild(dcBox);
 
