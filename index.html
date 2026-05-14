@@ -197,7 +197,8 @@ let state = {
   moverDestinoCliente: "",
   moverDestinoPedido: "",
   moverError: "",
-  pagoPendiente: {},       // cliente -> true si tiene pago pendiente
+  pagoPendiente: {},       // cliente -> true si tiene pago pendiente (legacy)
+  modoPago: {},             // cliente -> "contado" | "credito" | "pendiente"
   ocultarConfirmados: false,
   _sinConfirmarPendiente: false,
   _cuadreModificado: false,
@@ -248,7 +249,8 @@ function _setStateInterno(updates) {
             motivosDevTotal: state.motivosDevTotal,
             descuentos: state.descuentos,
             comentarios: state.comentarios,
-            pagoPendiente: state.pagoPendiente
+            pagoPendiente: state.pagoPendiente,
+            modoPago: state.modoPago
           });
         }
       } catch(e) { console.warn("AutoSave error:", e); }
@@ -534,15 +536,34 @@ function navegarConGuard(accion, opciones={}) {
     accion();
     return;
   }
-  showModal({
-    titulo:"⚠️ Cambios sin confirmar",
-    mensaje:"Tienes una liquidación con cambios sin confirmar.\n\n¿Qué deseas hacer?",
-    tipo:"confirm",
-    btnAceptar:"🚪 Salir sin guardar",
-    colorAceptar:"#c0392b",
-    btnCancelar:"📋 Quedarme",
-    onAceptar: accion
-  });
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;font-family:sans-serif;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:28px 24px;max-width:360px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,0.2);";
+  const t = document.createElement("h3");
+  t.style.cssText = "margin:0 0 10px;color:#1e3a5f;font-size:16px;font-weight:700;";
+  t.textContent = "⚠️ Cambios sin confirmar";
+  box.appendChild(t);
+  const msg = document.createElement("p");
+  msg.style.cssText = "margin:0 0 22px;font-size:14px;color:#444;line-height:1.5;white-space:pre-line;";
+  msg.textContent = "Tienes una liquidación con cambios sin confirmar.\n\n¿Qué deseas hacer?";
+  box.appendChild(msg);
+  const btns = document.createElement("div");
+  btns.style.cssText = "display:flex;flex-direction:column;gap:10px;";
+  const bGuardar = document.createElement("button");
+  bGuardar.textContent = "💾 Guardar liquidación y salir";
+  bGuardar.style.cssText = "background:#27ae60;color:#fff;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  bGuardar.onclick = () => { overlay.remove(); confirmarLiquidacion().then(()=>accion()); };
+  const bSalir = document.createElement("button");
+  bSalir.textContent = "🚪 Salir sin guardar";
+  bSalir.style.cssText = "background:#c0392b;color:#fff;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
+  bSalir.onclick = () => { overlay.remove(); accion(); };
+  const bQuedar = document.createElement("button");
+  bQuedar.textContent = "📋 Quedarme";
+  bQuedar.style.cssText = "background:#f0f0f0;color:#555;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
+  bQuedar.onclick = () => overlay.remove();
+  btns.appendChild(bGuardar); btns.appendChild(bSalir); btns.appendChild(bQuedar);
+  box.appendChild(btns); overlay.appendChild(box); document.body.appendChild(overlay);
 }
 
 // Guardar cambios del historial editado y re-confirmar en Firebase
@@ -694,6 +715,7 @@ async function procesarArchivo(file) {
       clienteMap:cleanMap,devoluciones:[],entregados:{},estadoEntrega:{},motivosDevTotal:{},descuentos:{},comentarios:{},bloqueados:{},
       deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],
       billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,
+      modoPago:{},pagoPendiente:{},
       fileName:file.name,screen:"main",busqueda:""
     });
   } catch(e){setState({error:"Error: "+e.message});}
@@ -728,6 +750,7 @@ async function confirmarLiquidacion() {
       deposito:state.deposito,transferencia:state.transferencia,
       gastosDetalle:state.gastosDetalle,billetes:state.billetes,monedas:state.monedas,
       pagoPendiente:state.pagoPendiente,
+      modoPago:state.modoPago,
       clienteTotales, totalNeto,
       clienteMap: state.clienteMap
     };
@@ -743,6 +766,7 @@ async function confirmarLiquidacion() {
       deposito:state.deposito, transferencia:state.transferencia,
       gastosDetalle:state.gastosDetalle,
       pagoPendiente:state.pagoPendiente,
+      modoPago:state.modoPago,
       repartidor:state.loginRepartidor||"",
       auxiliar:state.loginAuxiliar||"",
       confirmado:true
@@ -775,6 +799,7 @@ async function volverADiaDesdMenu() {
     state.transferencia = datos.transferencia || "";
     state.gastosDetalle = datos.gastosDetalle || [{desc:"",monto:"",comentario:"",deCuenta:true}];
     state.pagoPendiente = datos.pagoPendiente || {};
+    state.modoPago      = datos.modoPago || {};
   }
   setState({screen:"main", modoHistorial:false, confirmado: datos?.confirmado===true});
 }
@@ -848,7 +873,8 @@ async function exportarExcel(reg) {
   // Fix obs.2: devoluciones siempre se muestran en columna Devoluciones (positivo),
   // Total neto = bruto - devoluciones - descuentos
   let sB=0,sD=0,sDe=0,sN=0;
-  const resRows=[["Ruta","Cliente","Estado","Total bruto Q","Devoluciones Q","Descuento Q","Total neto Q","Pago pendiente","Comentario"]];
+  const modoPagoReg = reg.modoPago || {};
+  const resRows=[["Ruta","Cliente","Estado","Total bruto Q","Devoluciones Q","Descuento Q","Total neto Q","Modo de pago","Comentario"]];
   const cltsSorted=[...clts].sort((a,b)=>{
     const ra=cMap[a]?.ruta||"ZZZ", rb=cMap[b]?.ruta||"ZZZ";
     return ra.localeCompare(rb);
@@ -864,7 +890,9 @@ async function exportarExcel(reg) {
     const nt = bruto - dv - dc;
     sB+=bruto; sD+=dv; sDe+=dc; sN+=nt;
     // dv como positivo en la columna, neto ya refleja la resta
-    resRows.push([ruta,c,lbl,bruto,dv>0?dv:0,dc>0?dc:0,nt,(reg.pagoPendiente||{})[c]?"Sí":"",coments[c]||""]);
+    const mpExcel = modoPagoReg[c] || ((reg.pagoPendiente||{})[c]?"pendiente":"contado");
+    const mpLblExcel = mpExcel==="credito"?"Crédito":mpExcel==="pendiente"?"Pendiente":"Contado";
+    resRows.push([ruta,c,lbl,bruto,dv>0?dv:0,dc>0?dc:0,nt,mpLblExcel,coments[c]||""]);
   });
   resRows.push(["","TOTAL","",sB,sD,sDe,sN,"",""]);
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(resRows),"Resumen");
@@ -942,9 +970,23 @@ async function exportarExcel(reg) {
   },0);
   // Total Neto cobrable = bruto - devs - descuentos - no confirmados (igual que la app)
   const sNeto=sB-sD-sDe-tNoCobrado;
-  // Diferencia = (pagos + gastosDeCuenta) - netoACobrar (mismo signo que la app)
+  // Créditos: clientes confirmados con modoPago="credito" (no se cobran hoy)
+  const modoPagoExcel = reg.modoPago || {};
+  const pagoPendExcel = reg.pagoPendiente || {};
+  const tCreditos=clts.filter(c=>{
+    const est=estadoEnt[c]; if(!est||est==="rosado") return false;
+    const mp=modoPagoExcel[c]||(pagoPendExcel[c]?"pendiente":"contado");
+    return mp==="credito";
+  }).reduce((acc,c)=>{
+    let bruto=0; Object.values(cMap[c]?.pedidos||{}).forEach(p=>p.lineas.forEach(l=>{bruto+=l.monto;}));
+    const dv=devs.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
+    const dc=parseFloat(descs[c])||0;
+    return acc+(bruto-dv-dc);
+  },0);
+  const sNetoHoy=sNeto-tCreditos;
+  // Diferencia = (pagos + gastosDeCuenta) - netoACobrarHoy
   const nRec=tPag-tGasDeCuenta;
-  const dif=(tPag+tGasDeCuenta)-sNeto;
+  const dif=(tPag+tGasDeCuenta)-sNetoHoy;
   const cuadreRows=[
     ["CUADRE FINAL - "+(reg.fecha||"")],[],["BILLETES","Cantidad","Total Q"],
     ...[1,5,10,20,50,100,200].map(b=>{const c=parseFloat(billetes[b])||0;return c>0?["Q"+b,c,b*c]:null;}).filter(Boolean),
@@ -954,7 +996,9 @@ async function exportarExcel(reg) {
     ...gastos.filter(g=>parseFloat(g.monto)).map(g=>[g.comentario||"",g.desc||"",parseFloat(g.monto),g.deCuenta?"✓":"—"]),
     ["Gastos de ruta (bodega)","",tGasBodega],["Gastos de ruta (de cuenta)","",tGasDeCuenta],["Total gastos","",tGas],
     [],[" RESUMEN","",""],
-    ["Total a entregar (bruto)","",sB],["(-) Devoluciones","",-sD],["(-) Descuentos","",-sDe],["(-) Ent. no confirmadas","",-tNoCobrado],["Total neto a cobrar","",sNeto],
+    ["Total a entregar (bruto)","",sB],["(-) Devoluciones","",-sD],["(-) Descuentos","",-sDe],["(-) Ent. no confirmadas","",-tNoCobrado],
+    ...(tCreditos>0?[["(-) Créditos (cobro posterior)","",-tCreditos],["Neto a cobrar hoy","",sNeto-tCreditos]]:
+       [["Total neto a cobrar","",sNeto]]),
     [],[" PAGOS RECIBIDOS","",""],
     ["Total pagos recibidos","",tPag],["Gastos de ruta de cuenta (sumados)","",tGasDeCuenta],["Neto recibido (sin gastos de cuenta)","",nRec],
     [],[Math.abs(dif)<0.01?"✓ CUADRADO":dif>0?"SOBRANTE":"FALTANTE","DIFERENCIA",dif],
@@ -1310,15 +1354,27 @@ function actualizarResumen() {
   },0);
   // Total Neto: Total a Entregar - Devoluciones - Descuentos - No confirmadas
   const totalNetoCuadre = totalAEntregar - totalDevCuadre - totalDescCuadre - totalNoConfirmado;
-
-  const diferencia2 = (totalPagos2 + totalGastosDeCuenta2) - totalNetoCuadre;
+  // Créditos: clientes confirmados con modoPago="credito" (entregado pero no cobrado hoy)
+  const totalCreditosCuadre = Object.keys(state.clienteMap).reduce((acc,c)=>{
+    if(esClientePre(c)) return acc;
+    const est = state.estadoEntrega[c];
+    if(!est || est==="rosado") return acc;
+    const mp = state.modoPago[c] || (state.pagoPendiente[c]?"pendiente":"contado");
+    if(mp !== "credito") return acc;
+    return acc + totalesCliente(c).netoM;
+  },0);
+  // Neto a cobrar hoy = neto - créditos
+  const totalNetoACobrarHoy = totalNetoCuadre - totalCreditosCuadre;
+  const diferencia2 = (totalPagos2 + totalGastosDeCuenta2) - totalNetoACobrarHoy;
   resDiv.innerHTML = "";
   [
     {label:"Total a Entregar", val:fQ(totalAEntregar), color:"#1e3a5f", bold:true},
     {label:"(-) Devoluciones", val:`-${fQ(totalDevCuadre)}`, color:"#c0392b"},
     {label:"(-) Descuentos", val:`-${fQ(totalDescCuadre)}`, color:"#e67e22"},
     {label:"Ent. no confirmadas", val:totalNoConfirmado>0?`-${fQ(totalNoConfirmado)}`:"Q 0.00", color:"#e67e22"},
+    ...(totalCreditosCuadre>0?[{label:"(-) Créditos", val:`-${fQ(totalCreditosCuadre)}`, color:"#8e44ad"}]:[]),
     {label:"Total Neto", val:fQ(totalNetoCuadre), color:"#1e3a5f", bold:true, sep:true},
+    ...(totalCreditosCuadre>0?[{label:"Neto a cobrar hoy", val:fQ(totalNetoACobrarHoy), color:"#8e44ad", bold:true}]:[]),
     {label:"Efectivo", val:fQ(totalEfectivo2), color:"#333"},
     {label:"Depósito", val:fQ(totalDeposito2), color:"#333"},
     {label:"Transferencia", val:fQ(totalTransferencia2), color:"#333"},
@@ -2480,28 +2536,46 @@ function renderDetalleCliente() {
   ));
   inner.appendChild(dcBox);
 
-  // ── Pago pendiente ──
-  const pagoPendBox = el("div",{style:{background: state.pagoPendiente[c] ? "#fff8f0" : "#fff", border: state.pagoPendiente[c] ? "2px solid #e67e22" : "2px solid #e0e0e0", borderRadius:"12px",padding:"14px 18px",marginBottom:"16px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor: state.modoHistorial ? "default" : "pointer",boxShadow:"0 2px 6px rgba(0,0,0,0.05)",transition:"all 0.2s"}});
-  const pagoPendLeft = el("div",{style:{display:"flex",alignItems:"center",gap:"10px"}});
-  pagoPendLeft.appendChild(el("span",{style:{fontSize:"20px"}}, state.pagoPendiente[c] ? "🕐" : "✅"));
-  const pagoPendTexto = el("div");
-  pagoPendTexto.appendChild(el("div",{style:{fontWeight:"700",fontSize:"14px",color: state.pagoPendiente[c] ? "#e67e22" : "#555"}}, state.pagoPendiente[c] ? "Pago pendiente" : "Pago al día"));
-  pagoPendTexto.appendChild(el("div",{style:{fontSize:"11px",color:"#888",marginTop:"2px"}}, state.pagoPendiente[c] ? "El cliente no canceló en esta entrega" : "Toca para marcar pago pendiente"));
-  pagoPendLeft.appendChild(pagoPendTexto);
-  pagoPendBox.appendChild(pagoPendLeft);
-  if(!state.modoHistorial){
-    const toggleBtn = el("button",{style:{background: state.pagoPendiente[c] ? "#e67e22" : "#eee", color: state.pagoPendiente[c] ? "#fff" : "#555", border:"none",borderRadius:"8px",padding:"8px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"}}, state.pagoPendiente[c] ? "Quitar" : "Marcar");
-    toggleBtn.onclick = () => {
-      const nuevo = {...state.pagoPendiente};
-      if(nuevo[c]) { delete nuevo[c]; } else { nuevo[c] = true; }
-      setState({pagoPendiente: nuevo});
-      showToast(nuevo[c] ? "🕐 Pago pendiente marcado" : "✅ Pago pendiente quitado", nuevo[c] ? "#e67e22" : "#27ae60");
-    };
-    pagoPendBox.appendChild(toggleBtn);
+  // ── Modo de pago (Contado / Crédito / Pendiente) ──
+  // Compatibilidad: si existe pagoPendiente legacy y no hay modoPago, usar "pendiente"
+  const modoPagoActual = state.modoPago[c] || (state.pagoPendiente[c] ? "pendiente" : "contado");
+  const mpConfig = {
+    contado:  {label:"✅ Contado",   bg:"#27ae60", desc:"Cobrado en esta entrega"},
+    credito:  {label:"💳 Crédito",   bg:"#8e44ad", desc:"Entrega al crédito · no se cobra hoy"},
+    pendiente:{label:"🕐 Pendiente", bg:"#e67e22", desc:"Pago pendiente · cobro posterior"},
+  };
+  const mpCfg = mpConfig[modoPagoActual] || mpConfig.contado;
+  const mpBox = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"14px 18px",marginBottom:"16px",boxShadow:"0 2px 6px rgba(0,0,0,0.05)"}});
+  mpBox.appendChild(el("div",{style:{fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"10px",textTransform:"uppercase",letterSpacing:"0.5px"}},"💰 Forma de cobro"));
+  if(state.modoHistorial){
+    // Solo lectura en historial
+    const badge = el("div",{style:{display:"inline-flex",alignItems:"center",gap:"8px",background:mpCfg.bg,color:"#fff",borderRadius:"8px",padding:"8px 16px",fontSize:"14px",fontWeight:"700"}});
+    badge.appendChild(document.createTextNode(mpCfg.label));
+    const descSpan = el("span",{style:{fontSize:"11px",fontWeight:"400",opacity:"0.85"}}, " · "+mpCfg.desc);
+    badge.appendChild(descSpan);
+    mpBox.appendChild(badge);
   } else {
-    pagoPendBox.appendChild(el("span",{style:{fontSize:"13px",fontWeight:"700",color: state.pagoPendiente[c] ? "#e67e22" : "#27ae60"}}, state.pagoPendiente[c] ? "💳 PENDIENTE" : "✅ AL DÍA"));
+    const btnsRow = el("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap"}});
+    ["contado","credito","pendiente"].forEach(modo=>{
+      const cfg = mpConfig[modo];
+      const activo = modoPagoActual === modo;
+      const btn = el("button",{style:{flex:"1",minWidth:"90px",background: activo ? cfg.bg : "#f0f4f8",color: activo ? "#fff" : "#555",border: activo ? "2px solid "+cfg.bg : "2px solid #e0e0e0",borderRadius:"8px",padding:"10px 8px",fontSize:"13px",fontWeight:"700",cursor:"pointer",fontFamily:"sans-serif",transition:"all 0.15s"}},cfg.label);
+      btn.onclick = () => {
+        const nuevo = {...state.modoPago, [c]: modo};
+        // Sync legacy pagoPendiente
+        const nuevoPP = {...state.pagoPendiente};
+        if(modo==="pendiente") nuevoPP[c]=true; else delete nuevoPP[c];
+        setState({modoPago: nuevo, pagoPendiente: nuevoPP});
+        const msgs = {contado:"✅ Cobro al contado", credito:"💳 Marcado como crédito", pendiente:"🕐 Pago pendiente marcado"};
+        showToast(msgs[modo], cfg.bg);
+      };
+      btnsRow.appendChild(btn);
+    });
+    mpBox.appendChild(btnsRow);
+    const descDiv = el("div",{style:{marginTop:"8px",fontSize:"11px",color: mpCfg.bg, fontWeight:"600"}}, mpCfg.desc);
+    mpBox.appendChild(descDiv);
   }
-  inner.appendChild(pagoPendBox);
+  inner.appendChild(mpBox);
 
   // Motivo devolución total (rosado) — mostrar aunque no haya líneas de devs
   const esRosado = state.estadoEntrega[c]==="rosado";
@@ -2792,10 +2866,14 @@ function renderMain() {
   const totalGastosDeCuenta=state.gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
   const totalGastos=state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
   const totalPagos=totalEfectivo+totalDeposito+totalTransferencia;
-  // Total a cobrar solo de confirmados
+  // Total a cobrar solo de confirmados (excluyendo créditos — no se cobra hoy)
   const totalACobrarConfirmado = Object.keys(state.clienteMap)
     .filter(c=>state.estadoEntrega[c] && state.estadoEntrega[c]!=="rosado")
-    .reduce((s,c)=>s+totalesCliente(c).netoM,0);
+    .reduce((s,c)=>{
+      const mp = state.modoPago[c] || (state.pagoPendiente[c]?"pendiente":"contado");
+      if(mp==="credito") return s; // crédito: no se cobra hoy
+      return s+totalesCliente(c).netoM;
+    },0);
   const diferencia=(totalPagos+totalGastosDeCuenta)-totalACobrarConfirmado;
   const porRuta={};
   clientesFiltrados.forEach(c=>{
@@ -3353,9 +3431,12 @@ function renderListaRutas(container, porRuta) {
         nameBtn.onclick=()=>setState({clienteDetalle:cliente});
       }
       nameTd.appendChild(nameBtn);
-      // Badge pago pendiente
-      if(state.pagoPendiente[cliente]){
-        nameTd.appendChild(el("span",{title:"Pago pendiente",style:{marginLeft:"6px",background:"#e67e22",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"💳 PENDIENTE"));
+      // Badge modo de pago
+      const mpBadge = state.modoPago[cliente] || (state.pagoPendiente[cliente]?"pendiente":"contado");
+      if(mpBadge === "credito"){
+        nameTd.appendChild(el("span",{title:"Entrega al crédito",style:{marginLeft:"6px",background:"#8e44ad",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"💳 CRÉDITO"));
+      } else if(mpBadge === "pendiente"){
+        nameTd.appendChild(el("span",{title:"Pago pendiente",style:{marginLeft:"6px",background:"#e67e22",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"🕐 PENDIENTE"));
       }
       // Badge presupuesto
       if(esPresupuesto){
