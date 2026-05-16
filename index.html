@@ -409,7 +409,7 @@ async function iniciarSesionConUsuario(usuario) {
     const yaConfirmado = datos.confirmado === true;
     if(yaConfirmado && admin){
       setState({
-        clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:hoy(),
+        clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:datos.fecha||hoy(),
         estadoEntrega:datos.estadoEntrega||{}, entregados:datos.entregados||{},
         bloqueados:datos.bloqueados||{}, devoluciones:datos.devoluciones||[],
         motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
@@ -800,8 +800,10 @@ async function volverADiaDesdMenu() {
     state.gastosDetalle = datos.gastosDetalle || [{desc:"",monto:"",comentario:"",deCuenta:true}];
     state.pagoPendiente = datos.pagoPendiente || {};
     state.modoPago      = datos.modoPago || {};
+    state.fecha         = datos.fecha || hoy();
   }
-  setState({screen:"main", modoHistorial:false, confirmado: datos?.confirmado===true});
+  const yaConfirmado = datos?.confirmado === true;
+  setState({screen:"main", modoHistorial:yaConfirmado, confirmado:yaConfirmado, ocultarConfirmados:false, filtroRuta:""});
 }
 
 function renderOpciones() {
