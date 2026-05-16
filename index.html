@@ -1970,6 +1970,7 @@ function cargarFechaHistorial(fecha) {
     pagoPendiente:reg.pagoPendiente||{},
     bloqueados:Object.fromEntries(Object.keys(reg.estadoEntrega||{}).map(k=>[k,true])),
     busqueda:"", clienteDetalle:null, confirmado:true, modoHistorial:true,
+    ocultarConfirmados:false, filtroRuta:"",
     // historialRepSelec se mantiene para poder volver correctamente al nivel de fechas
   });
 }
