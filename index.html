@@ -570,7 +570,6 @@ function navegarConGuard(accion, opciones={}) {
 async function guardarCambiosHistorial() {
   setState({guardando:true});
   try {
-    const existing = await fbGet("historial") || {};
     const clienteTotales = {};
     Object.keys(state.clienteMap).forEach(c => {
       if(esClientePre(c)) return;
@@ -582,11 +581,12 @@ async function guardarCambiosHistorial() {
       clienteTotales[c] = m - devM - desc;
     });
     const totalNeto = Object.values(clienteTotales).reduce((s,v)=>s+v,0);
-    existing[state.fecha]={
-      ...(existing[state.fecha]||{}),
+    const regActual = state.historialData[state.fecha] || {};
+    const registroDia = {
+      ...regActual,
       fecha:state.fecha, fileName:state.fileName,
-      repartidor:state.loginRepartidor||existing[state.fecha]?.repartidor||"",
-      auxiliar:state.loginAuxiliar||existing[state.fecha]?.auxiliar||"",
+      repartidor:state.loginRepartidor||regActual.repartidor||"",
+      auxiliar:state.loginAuxiliar||regActual.auxiliar||"",
       entregados:state.entregados,
       estadoEntrega:state.estadoEntrega,
       motivosDevTotal:state.motivosDevTotal,
@@ -598,10 +598,11 @@ async function guardarCambiosHistorial() {
       clienteTotales, totalNeto,
       clienteMap:state.clienteMap
     };
-    await fbSet("historial", existing);
+    // Escribir solo el nodo del día — evita reescribir todo el historial (límite ~10MB)
+    await fbSet("historial/"+state.fecha, registroDia);
     // Actualizar copia local
     const nuevoData = {...state.historialData};
-    nuevoData[state.fecha] = existing[state.fecha];
+    nuevoData[state.fecha] = registroDia;
     setState({
       confirmado:true, showConfirmar:false, guardando:false,
       modoHistorial:true, bloqueados:Object.fromEntries(Object.keys(state.estadoEntrega).map(k=>[k,true])),
@@ -724,8 +725,7 @@ async function procesarArchivo(file) {
 async function confirmarLiquidacion() {
   setState({guardando:true});
   try {
-    const existing=await fbGet("historial")||{};
-    // Calcular y guardar totales por cliente para el historial (excluir presupuestos)
+    // Calcular totales por cliente para el historial (excluir presupuestos)
     const clienteTotales = {};
     Object.keys(state.clienteMap).forEach(c => {
       if(esClientePre(c)) return;
@@ -738,23 +738,24 @@ async function confirmarLiquidacion() {
     });
     const totalNeto = Object.values(clienteTotales).reduce((s,v)=>s+v,0);
 
-    existing[state.fecha]={
-      fecha:state.fecha,fileName:state.fileName,
+    const registroDia = {
+      fecha:state.fecha, fileName:state.fileName,
       repartidor:state.loginRepartidor||"",
       auxiliar:state.loginAuxiliar||"",
       entregados:state.entregados,
       estadoEntrega:state.estadoEntrega,
       motivosDevTotal:state.motivosDevTotal,
       devoluciones:state.devoluciones,
-      descuentos:state.descuentos,comentarios:state.comentarios,
-      deposito:state.deposito,transferencia:state.transferencia,
-      gastosDetalle:state.gastosDetalle,billetes:state.billetes,monedas:state.monedas,
+      descuentos:state.descuentos, comentarios:state.comentarios,
+      deposito:state.deposito, transferencia:state.transferencia,
+      gastosDetalle:state.gastosDetalle, billetes:state.billetes, monedas:state.monedas,
       pagoPendiente:state.pagoPendiente,
       modoPago:state.modoPago,
       clienteTotales, totalNeto,
       clienteMap: state.clienteMap
     };
-    await fbSet("historial",existing);
+    // Escribir solo el nodo del día — evita reescribir todo el historial (límite ~10MB)
+    await fbSet("historial/"+state.fecha, registroDia);
     // Guardar datos-dia con todos los datos actuales (para que al volver a entrar cargue correctamente)
     await fbSet("datos-dia", {
       clienteMap:state.clienteMap, fileName:state.fileName, fecha:state.fecha,
