@@ -410,7 +410,7 @@ async function iniciarSesionConUsuario(usuario) {
     if(yaConfirmado && admin){
       setState({
         clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:datos.fecha||hoy(),
-        estadoEntrega:datos.estadoEntrega||{}, entregados:datos.entregados||{},
+        estadoEntrega:datos.estadoEntrega||datos.entregados||{}, entregados:datos.entregados||{},
         bloqueados:datos.bloqueados||{}, devoluciones:datos.devoluciones||[],
         motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
         comentarios:datos.comentarios||{},
@@ -424,7 +424,7 @@ async function iniciarSesionConUsuario(usuario) {
       setState({
         clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:hoy(),
         screen:admin?"menu":"menuRepartidor", cargandoDatos:false, confirmado:yaConfirmado,
-        estadoEntrega:datos.estadoEntrega||{}, entregados:datos.entregados||{},
+        estadoEntrega:datos.estadoEntrega||datos.entregados||{}, entregados:datos.entregados||{},
         bloqueados:datos.bloqueados||{}, devoluciones:datos.devoluciones||[],
         motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
         comentarios:datos.comentarios||{},
@@ -786,7 +786,7 @@ async function volverADiaDesdMenu() {
   if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length > 0) {
     state.clienteMap    = datos.clienteMap;
     state.fileName      = datos.fileName || state.fileName;
-    state.estadoEntrega = datos.estadoEntrega || {};
+    state.estadoEntrega = datos.estadoEntrega || datos.entregados || {};
     state.entregados    = datos.entregados || {};
     state.bloqueados    = datos.bloqueados || {};
     state.devoluciones  = datos.devoluciones || [];
@@ -1970,7 +1970,7 @@ function cargarFechaHistorial(fecha) {
     billetes:reg.billetes||Object.fromEntries(BILLETES.map(b=>[b,""])),
     monedas:reg.monedas||"",
     pagoPendiente:reg.pagoPendiente||{},
-    bloqueados:Object.fromEntries(Object.keys(reg.estadoEntrega||{}).map(k=>[k,true])),
+    bloqueados:Object.fromEntries(Object.keys(reg.estadoEntrega||reg.entregados||{}).map(k=>[k,true])),
     busqueda:"", clienteDetalle:null, confirmado:true, modoHistorial:true,
     ocultarConfirmados:false, filtroRuta:"",
     // historialRepSelec se mantiene para poder volver correctamente al nivel de fechas
