@@ -316,7 +316,10 @@ function totalesCliente(c) {
   let u=0,m=0;
   Object.values(state.clienteMap[c]?.pedidos||{}).forEach(p=>{
     if(esPedPre(p)) return; // excluir pedidos en presupuesto
-    p.lineas.forEach(l=>{u+=l.unidades;m+=l.monto;});
+    p.lineas.forEach(l=>{
+      if(/^pre$/i.test(l.estPed||"")) return; // excluir líneas individuales en presupuesto
+      u+=l.unidades;m+=l.monto;
+    });
   });
   const devs=state.devoluciones.filter(d=>d.cliente===c);
   const dU=devs.reduce((s,d)=>s+d.unidades,0),dM=devs.reduce((s,d)=>s+d.monto,0);
