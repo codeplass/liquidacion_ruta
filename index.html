@@ -726,6 +726,33 @@ async function procesarArchivo(file) {
 }
 
 async function confirmarLiquidacion() {
+  // ── Protección contra sobreescritura ──
+  // La clave es siempre fecha_repartidor, así que verificamos esa clave exacta
+  try {
+    const repKey = (state.loginRepartidor||"").replace(/[.#$\/\[\]\s]/g,"_");
+    const claveVerif = repKey ? state.fecha+"_"+repKey : state.fecha;
+    const existente = await fbGet("historial/"+claveVerif);
+    if(existente && existente.fileName) {
+      setState({guardando:false});
+      const quien = existente.repartidor ? `del repartidor "${existente.repartidor}"` : "sin repartidor asignado";
+      showModal({
+        titulo:"⚠️ Ya existe una liquidación para esta fecha",
+        mensaje:`Ya hay una liquidación confirmada el ${state.fecha} ${quien}.\n\nArchivo: ${existente.fileName}\n\nNo se puede sobreescribir. Si hay un error, ábrela desde el historial para editarla o eliminarla.\n\nPara esta liquidación, cambia la fecha antes de confirmar.`,
+        tipo:"alert",
+        btnAceptar:"✏️ Cambiar fecha",
+        colorAceptar:"#1e3a5f",
+        onAceptar: () => {
+          setState({screen:"main"});
+          showToast("Cambia la fecha antes de confirmar","#e67e22");
+        }
+      });
+      return;
+    }
+  } catch(e) { /* Si falla la verificación, continuar normalmente */ }
+  _ejecutarConfirmarLiquidacion();
+}
+
+async function _ejecutarConfirmarLiquidacion() {
   setState({guardando:true});
   try {
     // Calcular totales por cliente para el historial (excluir presupuestos)
@@ -757,8 +784,11 @@ async function confirmarLiquidacion() {
       clienteTotales, totalNeto,
       clienteMap: state.clienteMap
     };
+    // Clave del historial: siempre fecha_repartidor para estructura consistente
+    const repKeyH = (state.loginRepartidor||"").replace(/[.#$\/\[\]\s]/g,"_");
+    const claveHistorial = repKeyH ? state.fecha+"_"+repKeyH : state.fecha;
     // Escribir solo el nodo del día — evita reescribir todo el historial (límite ~10MB)
-    await fbSet("historial/"+state.fecha, registroDia);
+    await fbSet("historial/"+claveHistorial, registroDia);
     // Guardar datos-dia con todos los datos actuales (para que al volver a entrar cargue correctamente)
     await fbSet("datos-dia", {
       clienteMap:state.clienteMap, fileName:state.fileName, fecha:state.fecha,
