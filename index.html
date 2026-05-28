@@ -2430,14 +2430,7 @@ function renderDetalleCliente() {
       psum.appendChild(el("span",{style:{fontSize:"12px",opacity:"0.85"}},`${fQ(pm)} · Solo consulta`));
     }
     phdr.appendChild(psum); box.appendChild(phdr);
-    const t=el("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:"13px",minWidth:"620px"}});
-    const thead=el("thead"); const tr=el("tr");
-    ["Producto","Unidades","P.Unit.","Monto","Dev. Unid.","Dev. Monto","Neto Unid.","Neto"].forEach((h,i)=>{
-      tr.appendChild(el("th",{style:{padding:"9px 12px",textAlign:i===0?"left":"right",color:pedEsPre?"#888":"#555",fontWeight:"600",background:pedEsPre?"#e8e8e8":"#eef2f7",whiteSpace:"nowrap"}},h));
-    });
-    thead.appendChild(tr); t.appendChild(thead);
-    const tScroll=el("div",{style:{overflowX:"auto"}});
-    const tbody=el("tbody");
+    const prodList=el("div",{style:{padding:"4px 0"}});
     pData.lineas.forEach((l,li)=>{
       const lineaEsPre = pedEsPre || /^pre$/i.test(l.estPed||"");
       const ldU=devsCl.filter(d=>d.pedido===pedido&&d.producto===l.producto).reduce((s,d)=>s+d.unidades,0);
@@ -2445,27 +2438,28 @@ function renderDetalleCliente() {
       const pu2=l.unidades>0?(l.monto/l.unidades):0;
       const esDevTotal = !lineaEsPre && ldU >= l.unidades;
       const esDevParcial = !lineaEsPre && ldU > 0 && ldU < l.unidades;
-      // Color fila: rosado si dev total, amarillo si dev parcial
       let rowBgProd;
-      if(lineaEsPre) rowBgProd = li%2===0?"#ebebeb":"#e4e4e4";
-      else if(esDevTotal) rowBgProd = "#fce4ec";
-      else if(esDevParcial) rowBgProd = "#fffde7";
-      else rowBgProd = li%2===0?"#fafbfc":"#fff";
+      if(lineaEsPre) rowBgProd="#f0f0f0";
+      else if(esDevTotal) rowBgProd="#fce4ec";
+      else if(esDevParcial) rowBgProd="#fffde7";
+      else rowBgProd=li%2===0?"#fafbfc":"#fff";
       const puedeDev = !lineaEsPre && !state.bloqueados[c] && !state.modoHistorial && !esPresupuesto;
-      const row=el("tr",{style:{borderTop:"1px solid #f0f0f0",background:rowBgProd,cursor:puedeDev?"pointer":"default",transition:"background 0.15s"}});
+      const colTexto = lineaEsPre ? "#888" : esDevTotal ? "#c0392b" : undefined;
+
+      const row=el("div",{style:{borderTop:"1px solid #f0f0f0",background:rowBgProd,padding:"10px 14px",cursor:puedeDev?"pointer":"default",transition:"background 0.15s"}});
+
       if(puedeDev){
-        // Long press → devolución total del producto
         let lpTimer = null;
-        row.addEventListener("mousedown", ()=>{ lpTimer=setTimeout(()=>{ lpTimer=null; devolverProductoTotal(c,pedido,l.producto); },600); });
+        let _didLongPress = false;
+        row.addEventListener("mousedown", ()=>{ _didLongPress=false; lpTimer=setTimeout(()=>{ lpTimer=null; _didLongPress=true; devolverProductoTotal(c,pedido,l.producto); },600); });
         row.addEventListener("mouseup", ()=>{ clearTimeout(lpTimer); });
         row.addEventListener("mouseleave", ()=>{ clearTimeout(lpTimer); });
-        // Touch long press
-        row.addEventListener("touchstart", e=>{ lpTimer=setTimeout(()=>{ lpTimer=null; e.preventDefault(); devolverProductoTotal(c,pedido,l.producto); },600); },{passive:false});
+        row.addEventListener("touchstart", e=>{ _didLongPress=false; lpTimer=setTimeout(()=>{ lpTimer=null; _didLongPress=true; e.preventDefault(); devolverProductoTotal(c,pedido,l.producto); },600); },{passive:false});
         row.addEventListener("touchend", ()=>{ clearTimeout(lpTimer); });
         row.addEventListener("touchmove", ()=>{ clearTimeout(lpTimer); });
-        // Click normal → popup parcial (solo si no fue long press y quedan unidades)
-        row.addEventListener("click", ()=>{
-          if(lpTimer===null) return; // fue long press
+        row.addEventListener("click", e=>{
+          if(e.target.closest('button')) return;
+          if(_didLongPress) return;
           const dispU = l.unidades - ldU;
           if(dispU <= 0) return;
           const dispM = l.monto - ldM;
@@ -2476,64 +2470,66 @@ function renderDetalleCliente() {
           row.addEventListener("mouseleave",()=>{ row.style.background=rowBgProd; });
         }
       }
-      const colTexto = lineaEsPre ? "#888" : esDevTotal ? "#c0392b" : undefined;
-      // Nombre producto + badge si es Pre en pedido mixto
-      const prodTd = el("td",{style:{padding:"9px 12px",...(colTexto?{color:colTexto}:{})}});
-      prodTd.appendChild(document.createTextNode(l.producto));
+
+      // Nombre producto (título)
+      const prodNomWrap=el("div",{style:{marginBottom:"6px"}});
+      const prodNom=document.createElement("span");
+      prodNom.style.cssText=`font-weight:700;font-size:13px;color:${colTexto||"#1e3a5f"};line-height:1.3;word-break:break-word;`;
+      prodNom.textContent=l.producto;
+      prodNomWrap.appendChild(prodNom);
       if(lineaEsPre && !pedEsPre){
-        prodTd.appendChild(el("span",{style:{marginLeft:"6px",background:"#9e9e9e",color:"#fff",borderRadius:"3px",padding:"1px 5px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"PRESUP."));
+        prodNomWrap.appendChild(el("span",{style:{marginLeft:"6px",background:"#9e9e9e",color:"#fff",borderRadius:"3px",padding:"1px 5px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"PRESUP."));
       }
-      row.appendChild(prodTd);
-      // Unidades: clickeable para editar solo si la línea NO es Pre
-      const uTd = el("td",{style:{padding:"9px 12px",textAlign:"right",...(colTexto?{color:colTexto}:{})}});
-      if(!lineaEsPre && !state.bloqueados[c] && !state.modoHistorial) {
-        const uBtn = el("button",{style:{background:"none",border:"none",cursor:"pointer",color:"#2563eb",fontWeight:"600",fontSize:"13px",textDecoration:"underline dotted",padding:"0",fontFamily:"sans-serif"}}, fN(l.unidades));
-        uBtn.title = "Click para editar cantidad";
-        uBtn.onclick = () => setState({editCantidad:{cliente:c, pedido, producto:l.producto, valor:l.unidades}});
-        uTd.appendChild(uBtn);
+      row.appendChild(prodNomWrap);
+
+      // Datos en chips
+      const chips=el("div",{style:{display:"flex",flexWrap:"wrap",gap:"5px"}});
+      const mkC=(label,val,color,clickFn)=>{
+        const chip=el("div",{style:{background:"#f0f4f8",borderRadius:"6px",padding:"3px 8px",display:"flex",gap:"4px",alignItems:"center"}});
+        chip.appendChild(el("span",{style:{color:"#888",fontSize:"11px"}},label));
+        if(clickFn){
+          const btn=el("button",{style:{background:"none",border:"none",cursor:"pointer",color:color||"#1e3a5f",fontWeight:"700",fontSize:"12px",textDecoration:"underline dotted",padding:"0",fontFamily:"sans-serif"}},val);
+          btn.onclick=e=>{e.stopPropagation();clickFn();};
+          chip.appendChild(btn);
+        } else {
+          chip.appendChild(el("span",{style:{fontWeight:"700",fontSize:"12px",color:color||"#1e3a5f"}},val));
+        }
+        return chip;
+      };
+
+      if(!lineaEsPre && !state.bloqueados[c] && !state.modoHistorial){
+        chips.appendChild(mkC("Unid:",fN(l.unidades),colTexto||"#2563eb",()=>setState({editCantidad:{cliente:c,pedido,producto:l.producto,valor:l.unidades}})));
+        chips.appendChild(mkC("P.U.:",`Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`,colTexto||"#2563eb",()=>setState({editPrecio:{cliente:c,pedido,producto:l.producto,valor:pu2.toFixed(4)}})));
       } else {
-        uTd.appendChild(document.createTextNode(fN(l.unidades)));
+        chips.appendChild(mkC("Unid:",fN(l.unidades),colTexto));
+        chips.appendChild(mkC("P.U.:",`Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`,colTexto||"#888"));
       }
-      row.appendChild(uTd);
-      // P.Unit: clickeable para editar solo si la línea NO es Pre
-      const puTd = el("td",{style:{padding:"9px 12px",textAlign:"right",color:colTexto||"#888"}});
-      if(!lineaEsPre && !state.bloqueados[c] && !state.modoHistorial) {
-        const puBtn = el("button",{style:{background:"none",border:"none",cursor:"pointer",color:"#2563eb",fontWeight:"600",fontSize:"13px",textDecoration:"underline dotted",padding:"0",fontFamily:"sans-serif"}},
-          `Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`
-        );
-        puBtn.title = "Click para editar precio unitario";
-        puBtn.onclick = () => setState({editPrecio:{cliente:c, pedido, producto:l.producto, valor:pu2.toFixed(4)}});
-        puTd.appendChild(puBtn);
-      } else {
-        puTd.appendChild(document.createTextNode(`Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`));
-      }
-      row.appendChild(puTd);
-      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",...(colTexto?{color:colTexto}:{})}},fQ(l.monto)));
-      // Si la línea es Pre: columnas dev/neto bloqueadas
+      chips.appendChild(mkC("Monto:",fQ(l.monto),colTexto));
       if(lineaEsPre){
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#bbb"}},"-"));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#bbb"}},"-"));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#bbb"}},"-"));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#bbb",fontStyle:"italic",fontSize:"12px"}},"No entregado"));
+        chips.appendChild(mkC("",`No entregado`,"#bbb"));
       } else {
-        const netoU = l.unidades - ldU;
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#c0392b"}},ldU>0?`-${fN(ldU)}`:"-"));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#c0392b"}},ldM>0?`-${fQ(ldM)}`:"-"));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"600",color:netoU<l.unidades?"#c0392b":"#1e3a5f"}},fN(netoU)));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:"#1e3a5f"}},fQ(l.monto-ldM)));
+        if(ldU>0) chips.appendChild(mkC("Dev.U:",`-${fN(ldU)}`,"#c0392b"));
+        if(ldM>0) chips.appendChild(mkC("Dev.M:",`-${fQ(ldM)}`,"#c0392b"));
+        const netoU=l.unidades-ldU;
+        chips.appendChild(mkC("Neto U:",fN(netoU),netoU<l.unidades?"#c0392b":"#1e3a5f"));
+        chips.appendChild(mkC("Neto:",fQ(l.monto-ldM),"#1e3a5f"));
       }
-      tbody.appendChild(row);
+      row.appendChild(chips);
+      prodList.appendChild(row);
     });
-    const totRow=el("tr",{style:{background:"#f0f4f8"}});
-    totRow.appendChild(el("td",{style:{padding:"9px 12px",fontWeight:"700"},colspan:"3"},"Total"));
-    totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700"}},fQ(pm)));
+
+    // Total
+    const totRow=el("div",{style:{background:"#f0f4f8",borderTop:"1px solid #e0e6ed",padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"6px"}});
+    totRow.appendChild(el("span",{style:{fontWeight:"700",fontSize:"13px",color:"#1e3a5f"}},"Total pedido"));
+    const totChips=el("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap",fontSize:"12px"}});
+    totChips.appendChild(el("span",{},`Bruto: ${fQ(pm)}`));
     const totDevU=devsCl.filter(d=>d.pedido===pedido).reduce((s,d)=>s+d.unidades,0);
-    totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:"#c0392b"}},devU>0?`-${fN(devU)}`:"-"));
-    totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:"#c0392b"}},devM>0?`-${fQ(devM)}`:"-"));
+    if(devU>0) totChips.appendChild(el("span",{style:{color:"#c0392b"}},`Dev: -${fN(devU)} u / -${fQ(devM)}`));
     const totNetoU = lineasEntregables.reduce((s,l)=>s+l.unidades,0) - devU;
-    totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:devU>0?"#c0392b":"#1e3a5f"}},fN(totNetoU)));
-    totRow.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:"#1e3a5f"}},fQ(pm-devM)));
-    tbody.appendChild(totRow); t.appendChild(tbody); tScroll.appendChild(t); box.appendChild(tScroll);
+    totChips.appendChild(el("span",{style:{fontWeight:"700",color:devU>0?"#c0392b":"#1e3a5f"}},`Neto: ${fQ(pm-devM)}`));
+    totRow.appendChild(totChips);
+    prodList.appendChild(totRow);
+    box.appendChild(prodList);
     // Nota del vendedor
     if(pData.nota){
       const notaDiv=el("div",{style:{background:"#fffbea",borderTop:"1px solid #f0e68c",padding:"10px 16px",display:"flex",alignItems:"flex-start",gap:"8px"}});
@@ -3328,6 +3324,55 @@ function renderMain() {
   busqInnerWrap.appendChild(busq);
   busqInnerWrap.appendChild(btnLimpiarBusq);
   busqWrap.appendChild(busqInnerWrap);
+
+  // Botón de búsqueda por voz
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(SpeechRecognition) {
+    let _recog = null;
+    let _escuchando = false;
+    const btnVoz = el("button",{style:{
+      flexShrink:"0", background:"#1e3a5f", color:"#fff", border:"none",
+      borderRadius:"8px", padding:"10px 13px", cursor:"pointer", fontSize:"20px",
+      lineHeight:"1", display:"flex", alignItems:"center", justifyContent:"center",
+      transition:"background 0.2s"
+    }}, "🎤");
+    btnVoz.title = "Buscar por voz";
+    btnVoz.addEventListener("click", ()=>{
+      if(_escuchando) {
+        _recog && _recog.stop();
+        return;
+      }
+      _recog = new SpeechRecognition();
+      _recog.lang = "es-GT";
+      _recog.interimResults = true;
+      _recog.maxAlternatives = 1;
+      _escuchando = true;
+      btnVoz.style.background = "#c0392b";
+      btnVoz.style.animation = "none";
+      btnVoz.textContent = "🔴";
+      btnVoz.title = "Escuchando... toca para detener";
+      _recog.onresult = (e) => {
+        const texto = e.results[0][0].transcript;
+        busq.value = texto;
+        applyBusqueda(texto);
+      };
+      _recog.onend = () => {
+        _escuchando = false;
+        btnVoz.style.background = "#1e3a5f";
+        btnVoz.textContent = "🎤";
+        btnVoz.title = "Buscar por voz";
+      };
+      _recog.onerror = (e) => {
+        _escuchando = false;
+        btnVoz.style.background = "#1e3a5f";
+        btnVoz.textContent = "🎤";
+        if(e.error !== "no-speech") showToast("⚠️ Error de micrófono: "+e.error, "#e67e22");
+      };
+      _recog.start();
+    });
+    busqWrap.appendChild(btnVoz);
+  }
+
   const btnOcultar=el("button",{style:{whiteSpace:"nowrap",background:state.ocultarConfirmados?"#27ae60":"#eef2f7",color:state.ocultarConfirmados?"#fff":"#1e3a5f",border:"none",borderRadius:"8px",padding:"10px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"}},state.ocultarConfirmados?"👁️ Ver todas":"✅ Ocultar confirmadas");
   btnOcultar.onclick=()=>setState({ocultarConfirmados:!state.ocultarConfirmados});
   busqWrap.appendChild(btnOcultar);
@@ -3382,39 +3427,32 @@ function renderListaRutas(container, porRuta) {
     rutaHdr.appendChild(rutaInfo); rutaDiv.appendChild(rutaHdr);
 
     const tblWrap=el("div",{style:{background:"#fff",borderRadius:"0 0 12px 12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",overflow:"hidden"}});
-    const tblScroll=el("div",{style:{overflowX:"auto"}});
-    const t=el("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:"13px"}});
-    const thead=el("thead"); const tr=el("tr");
-    ["✓","Cliente","Pedido(s)","Monto","Dev.","Desc.","Neto","💬"].forEach((h,i)=>{
-      tr.appendChild(el("th",{style:{padding:"9px 12px",textAlign:i===0||i===7?"center":i>=3?"right":"left",color:"#555",fontWeight:"600",background:"#eef2f7",whiteSpace:"nowrap"}},h));
-    });
-    thead.appendChild(tr); t.appendChild(thead);
-    const tbody=el("tbody");
+    const cardsWrap=el("div",{style:{padding:"4px 0"}});
+
     rutaClientesFiltrados.forEach((cliente,ri)=>{
       const tt=totalesCliente(cliente);
-      const entregado=state.entregados[cliente]||false;
       const bloqueado=state.bloqueados[cliente]||false;
       const tieneComentario=!!(state.comentarios[cliente]||"").trim();
-      const pedidosList=Object.keys(state.clienteMap[cliente].pedidos).join(", ");
       const estado = state.estadoEntrega[cliente] || null;
       const esPresupuesto = esClientePre(cliente);
-      // Notas del vendedor de cualquier pedido del cliente
       const notasVendedor = Object.values(state.clienteMap[cliente].pedidos||{}).map(p=>p.nota).filter(Boolean);
-      // Color de fila según estado
-      const rowBg = esPresupuesto?"#f0f0f0":estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":estado==="rosado"?"#fce4ec":state.pagoPendiente[cliente]?"#fff3e0":ri%2===0?"#fafbfc":"#fff";
-      const row=el("tr",{style:{borderTop:"1px solid #f0f0f0",background:rowBg,transition:"background 0.3s",opacity:esPresupuesto?"0.75":"1"}});
-      row.setAttribute("data-cliente", cliente);
+      const mpBadge = state.modoPago[cliente] || (state.pagoPendiente[cliente]?"pendiente":"contado");
 
-      // Checkbox / candado / estado / presupuesto
-      const cbTd=el("td",{style:{padding:"9px 12px",textAlign:"center"}});
+      const cardBg = esPresupuesto?"#f0f0f0":estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":estado==="rosado"?"#fce4ec":state.pagoPendiente[cliente]?"#fff3e0":"#fff";
+      const card=el("div",{style:{borderTop:"1px solid #f0f0f0",background:cardBg,padding:"10px 14px",transition:"background 0.3s",opacity:esPresupuesto?"0.8":"1"}});
+      card.setAttribute("data-cliente", cliente);
+
+      // — Fila 1: checkbox/estado + nombre + badges + comentario —
+      const fila1=el("div",{style:{display:"flex",alignItems:"flex-start",gap:"10px",marginBottom:"5px"}});
+
+      // Checkbox / estado
+      const cbWrap=el("div",{style:{flexShrink:"0",marginTop:"2px"}});
       if(esPresupuesto){
-        // Solo ícono de presupuesto, sin acción
-        cbTd.appendChild(el("span",{title:"Presupuesto - Solo consulta",style:{fontSize:"16px",cursor:"default"}},"📋"));
+        cbWrap.appendChild(el("span",{title:"Presupuesto",style:{fontSize:"16px",cursor:"default"}},"📋"));
       } else if(bloqueado){
-        // Long press en ícono → quitar confirmación con mensaje
         const estadoIcon = estado==="verde"?"✅":estado==="amarillo"?"🟡":"🔴";
         const estadoSpan = document.createElement("span");
-        estadoSpan.style.cssText="font-size:18px;cursor:pointer;user-select:none;";
+        estadoSpan.style.cssText="font-size:20px;cursor:pointer;user-select:none;";
         estadoSpan.title="Mantén presionado para quitar confirmación";
         estadoSpan.textContent=estadoIcon;
         let _lpEstado=null;
@@ -3434,7 +3472,7 @@ function renderListaRutas(container, porRuta) {
               dvTemporal:state.dvTemporal.filter(d=>d.cliente!==cliente)
             });
             showToast("✖ Entrega sin confirmar","#888");
-            } }); 
+            } });
           },700);
         };
         const _cancelLpEstado=()=>clearTimeout(_lpEstado);
@@ -3444,22 +3482,21 @@ function renderListaRutas(container, porRuta) {
         estadoSpan.addEventListener("touchstart",e=>{e.preventDefault();_startLpEstado();},{passive:false});
         estadoSpan.addEventListener("touchend",_cancelLpEstado);
         estadoSpan.addEventListener("touchmove",_cancelLpEstado);
-        cbTd.appendChild(estadoSpan);
+        cbWrap.appendChild(estadoSpan);
       } else {
         const cb=document.createElement("input");
-        cb.type="checkbox"; cb.style.cssText="width:16px;height:16px;cursor:pointer;accent-color:#27ae60;";
+        cb.type="checkbox"; cb.style.cssText="width:18px;height:18px;cursor:pointer;accent-color:#27ae60;";
         cb.checked=false;
         cb.onchange=()=>confirmarVerde(cliente);
-        cbTd.appendChild(cb);
+        cbWrap.appendChild(cb);
       }
-      row.appendChild(cbTd);
+      fila1.appendChild(cbWrap);
 
-      // Nombre
-      const nameTd=el("td",{style:{padding:"9px 12px"}});
+      // Nombre + badges
+      const nameWrap=el("div",{style:{flex:"1",minWidth:"0"}});
       const nameBtn=document.createElement("button");
-      nameBtn.style.cssText=`background:none;border:none;cursor:pointer;color:${esPresupuesto?"#666":"#1e3a5f"};font-weight:600;font-size:13px;text-decoration:underline;padding:0;text-align:left;font-family:sans-serif;`;
+      nameBtn.style.cssText=`background:none;border:none;cursor:pointer;color:${esPresupuesto?"#666":"#1e3a5f"};font-weight:700;font-size:16px;text-decoration:none;padding:0;text-align:left;font-family:sans-serif;line-height:1.3;word-break:break-word;`;
       nameBtn.textContent=cliente;
-      // Long press en nombre → devolución total del cliente
       if(!esPresupuesto && !state.bloqueados[cliente] && !state.modoHistorial){
         let lpTimer=null;
         const startLp=()=>{ lpTimer=setTimeout(()=>{ lpTimer=null; devolverClienteTotal(cliente); },700); };
@@ -3473,73 +3510,54 @@ function renderListaRutas(container, porRuta) {
       } else {
         nameBtn.onclick=()=>setState({clienteDetalle:cliente});
       }
-      nameTd.appendChild(nameBtn);
-      // Badge modo de pago
-      const mpBadge = state.modoPago[cliente] || (state.pagoPendiente[cliente]?"pendiente":"contado");
-      if(mpBadge === "credito"){
-        nameTd.appendChild(el("span",{title:"Entrega al crédito",style:{marginLeft:"6px",background:"#8e44ad",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"💳 CRÉDITO"));
-      } else if(mpBadge === "pendiente"){
-        nameTd.appendChild(el("span",{title:"Pago pendiente",style:{marginLeft:"6px",background:"#e67e22",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"🕐 PENDIENTE"));
-      }
-      // Badge presupuesto
-      if(esPresupuesto){
-        nameTd.appendChild(el("span",{style:{marginLeft:"6px",background:"#9e9e9e",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"PRESUPUESTO"));
-      }
+      nameWrap.appendChild(nameBtn);
+
+      // Badges en línea debajo del nombre
+      const badgeRow=el("div",{style:{display:"flex",flexWrap:"wrap",gap:"4px",marginTop:"3px"}});
+      if(mpBadge === "credito") badgeRow.appendChild(el("span",{title:"Entrega al crédito",style:{background:"#8e44ad",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700"}},"💳 CRÉDITO"));
+      else if(mpBadge === "pendiente") badgeRow.appendChild(el("span",{title:"Pago pendiente",style:{background:"#e67e22",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700"}},"🕐 PENDIENTE"));
+      if(esPresupuesto) badgeRow.appendChild(el("span",{style:{background:"#9e9e9e",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700"}},"PRESUPUESTO"));
+      // Pedidos como badges
+      const pedEntries=Object.entries(state.clienteMap[cliente].pedidos);
+      pedEntries.forEach(([ped,pData])=>{
+        const esPre=esPedPre(pData);
+        badgeRow.appendChild(el("span",{style:{background:esPre?"#fdecea":"#eef2f7",color:esPre?"#c0392b":"#555",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"600"}},esPre?`*${ped}`:ped));
+      });
+      if(badgeRow.children.length>0) nameWrap.appendChild(badgeRow);
+
       if(notasVendedor.length>0){
         const notaP=document.createElement("p");
         notaP.style.cssText="margin:3px 0 0;font-size:11px;color:#c07000;font-style:italic;line-height:1.3;";
         notaP.textContent="📝 "+notasVendedor.join(" | ");
-        nameTd.appendChild(notaP);
+        nameWrap.appendChild(notaP);
       }
-      row.appendChild(nameTd);
+      fila1.appendChild(nameWrap);
+      if(tieneComentario) fila1.appendChild(el("span",{title:state.comentarios[cliente],style:{cursor:"help",fontSize:"16px",flexShrink:"0"}},"💬"));
+      card.appendChild(fila1);
 
-      if(esPresupuesto){
-        // Columnas de montos vacías — es fantasma, no cuenta para totales
-        row.appendChild(el("td",{style:{padding:"9px 12px",color:"#bbb",fontSize:"12px"}},"-"));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#bbb"}},fQ(tt.monto)));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#bbb"}},"-"));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#bbb"}},"-"));
-        row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#bbb"}},"-"));
-        row.appendChild(el("td",{},""));
-        tbody.appendChild(row);
-        return;
+      if(!esPresupuesto){
+        const netoVal = !estado ? "—" : estado==="rosado" ? fQ(0) : fQ(tt.netoM);
+        const netoColor = estado==="rosado" ? "#e91e8c" : (estado ? "#27ae60" : "#888");
+        const netoBox=el("div",{style:{paddingLeft:"28px",marginTop:"2px"}});
+        netoBox.appendChild(el("span",{style:{fontSize:"13px",fontWeight:"700",color:netoColor}},netoVal));
+        card.appendChild(netoBox);
       }
 
-      // Pedidos cell: cada pedido en rojo+asterisco si es Pre
-      const pedTd=el("td",{style:{padding:"9px 12px",fontSize:"12px"}});
-      const pedEntries=Object.entries(state.clienteMap[cliente].pedidos);
-      pedEntries.forEach(([ped,pData],pi)=>{
-        const esPre=esPedPre(pData);
-        const span=document.createElement("span");
-        span.textContent=(esPre?`*${ped}`:ped)+(pi<pedEntries.length-1?", ":"");
-        span.style.cssText=esPre?"color:#c0392b;font-weight:700;":"color:#555;";
-        pedTd.appendChild(span);
-      });
-      row.appendChild(pedTd);
-      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right"}},fQ(tt.monto)));
-      // Dev: si es rosado (devolución total) mostrar el monto bruto; si no, mostrar devoluciones parciales
-      const devMostrar = estado==="rosado" ? tt.monto : tt.devM;
-      const devColor = estado==="rosado" ? "#e91e8c" : "#c0392b";
-      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:devColor}},devMostrar>0?`-${fQ(devMostrar)}`:"-"));
-      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",color:"#e67e22"}},tt.desc>0?`-${fQ(tt.desc)}`:"-"));
-      // Neto: blanco si no confirmado, Q0.00 si devolución total, normal si confirmado
-      const netoVal = !estado ? "-" : estado==="rosado" ? fQ(0) : fQ(tt.netoM);
-      const netoColor = estado==="rosado" ? "#e91e8c" : "#1e3a5f";
-      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"right",fontWeight:"700",color:netoColor}},netoVal));
-      row.appendChild(el("td",{style:{padding:"9px 12px",textAlign:"center"}},tieneComentario?el("span",{title:state.comentarios[cliente],style:{cursor:"help",fontSize:"16px"}},"💬"):""));
-      tbody.appendChild(row);
+      cardsWrap.appendChild(card);
     });
 
-    // Fila total ruta
-    const totRow=el("tr",{style:{background:"#2d5f8a",color:"#fff"}});
-    totRow.appendChild(el("td",{style:{padding:"10px 12px",fontWeight:"700"},colspan:"3"},`Total ${ruta}`));
-    totRow.appendChild(el("td",{style:{padding:"10px 12px",textAlign:"right",fontWeight:"700"}},fQ(rutaEntregables.reduce((s,c)=>s+totalesCliente(c).monto,0))));
-    totRow.appendChild(el("td",{style:{padding:"10px 12px",textAlign:"right",fontWeight:"700",color:"#ffaaaa"}},devTotalRuta>0?`-${fQ(devTotalRuta)}`:"-"));
-    totRow.appendChild(el("td",{style:{padding:"10px 12px",textAlign:"right",fontWeight:"700",color:"#ffd580"}},descRuta>0?`-${fQ(descRuta)}`:"-"));
-    totRow.appendChild(el("td",{style:{padding:"10px 12px",textAlign:"right",fontWeight:"700"}},netoRutaConfirmado>0?fQ(netoRutaConfirmado):"-"));
-    totRow.appendChild(el("td",{}));
-    tbody.appendChild(totRow);
-    t.appendChild(tbody); tblScroll.appendChild(t); tblWrap.appendChild(tblScroll); rutaDiv.appendChild(tblWrap);
+    // Total ruta
+    const totDiv=el("div",{style:{background:"#2d5f8a",color:"#fff",padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"6px"}});
+    totDiv.appendChild(el("span",{style:{fontWeight:"700",fontSize:"13px"}},`Total ${ruta}`));
+    const totMontos=el("div",{style:{display:"flex",gap:"12px",fontSize:"12px",flexWrap:"wrap"}});
+    totMontos.appendChild(el("span",{},`Bruto: ${fQ(rutaEntregables.reduce((s,c)=>s+totalesCliente(c).monto,0))}`));
+    if(devTotalRuta>0) totMontos.appendChild(el("span",{style:{color:"#ffaaaa"}},`Dev: -${fQ(devTotalRuta)}`));
+    if(descRuta>0) totMontos.appendChild(el("span",{style:{color:"#ffd580"}},`Desc: -${fQ(descRuta)}`));
+    if(netoRutaConfirmado>0) totMontos.appendChild(el("span",{style:{fontWeight:"700"}},`Neto: ${fQ(netoRutaConfirmado)}`));
+    totDiv.appendChild(totMontos);
+    cardsWrap.appendChild(totDiv);
+
+    tblWrap.appendChild(cardsWrap); rutaDiv.appendChild(tblWrap);
     container.appendChild(rutaDiv);
   });
 }
