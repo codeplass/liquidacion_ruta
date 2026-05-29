@@ -601,11 +601,30 @@ async function guardarCambiosHistorial() {
       clienteTotales, totalNeto,
       clienteMap:state.clienteMap
     };
-    // Escribir solo el nodo del día — evita reescribir todo el historial (límite ~10MB)
-    await fbSet("historial/"+state.fecha, registroDia);
+    // Clave correcta: fecha_repartidor (igual que al confirmar)
+    const repKeyG = (state.loginRepartidor||regActual.repartidor||"").replace(/[.#$\/\[\]\s]/g,"_");
+    const claveG = repKeyG ? state.fecha+"_"+repKeyG : state.fecha;
+    await fbSet("historial/"+claveG, registroDia);
+    // Actualizar datos-dia para que el repartidor vea los cambios
+    await fbSet("datos-dia", {
+      clienteMap:state.clienteMap, fileName:state.fileName, fecha:state.fecha,
+      estadoEntrega:state.estadoEntrega, entregados:state.entregados,
+      bloqueados:Object.fromEntries(Object.keys(state.estadoEntrega).map(k=>[k,true])),
+      devoluciones:state.devoluciones,
+      motivosDevTotal:state.motivosDevTotal, descuentos:state.descuentos,
+      comentarios:state.comentarios,
+      billetes:state.billetes, monedas:state.monedas,
+      deposito:state.deposito, transferencia:state.transferencia,
+      gastosDetalle:state.gastosDetalle,
+      pagoPendiente:state.pagoPendiente,
+      modoPago:state.modoPago||{},
+      repartidor:state.loginRepartidor||regActual.repartidor||"",
+      auxiliar:state.loginAuxiliar||regActual.auxiliar||"",
+      confirmado:true
+    });
     // Actualizar copia local
     const nuevoData = {...state.historialData};
-    nuevoData[state.fecha] = registroDia;
+    nuevoData[claveG] = registroDia;
     setState({
       confirmado:true, showConfirmar:false, guardando:false,
       modoHistorial:true, bloqueados:Object.fromEntries(Object.keys(state.estadoEntrega).map(k=>[k,true])),
