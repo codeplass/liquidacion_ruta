@@ -1631,7 +1631,11 @@ function renderHistorial() {
       }
 
       // ── Calendario visual ──
-      const fechasSet = new Set(fechasRep);
+      // fechasRep contiene claves completas tipo "2025-05-28_Repartidor"
+      // Extraer solo la parte de fecha (primeros 10 chars) para el calendario
+      const fechaKeyMap = {}; // "2025-05-28" -> "2025-05-28_Repartidor"
+      fechasRep.forEach(k => { const f=k.substring(0,10); fechaKeyMap[f]=k; });
+      const fechasSet = new Set(Object.keys(fechaKeyMap));
 
       // Barra de descarga (solo admin no-sinAsignar)
       if(!esSinAsignar){
@@ -1657,8 +1661,8 @@ function renderHistorial() {
 
       // Agrupar en meses (rango continuo entre min y max)
       if(fechasRep.length > 0){
-        const minF = fechasRep[fechasRep.length-1]; // sorted desc, so last = oldest
-        const maxF = fechasRep[0];
+        const minF = fechasRep[fechasRep.length-1].substring(0,10);
+        const maxF = fechasRep[0].substring(0,10);
         const [minY,minM] = minF.split("-").map(Number);
         const [maxY,maxM] = maxF.split("-").map(Number);
         const meses=[];
@@ -1732,14 +1736,14 @@ function renderHistorial() {
             }},String(d));
             if(tieneDatos){
               if(esSinAsignar){
-                diaEl.addEventListener("click",()=>abrirModalAsignarRepartidor(fKey));
+                diaEl.addEventListener("click",()=>abrirModalAsignarRepartidor(fechaKeyMap[fKey]||fKey));
                 diaEl.title="Click para asignar repartidor";
               } else {
                 // Click simple: abrir liquidación
                 diaEl.addEventListener("click",(e)=>{
                   if(dragActivo) return; // si fue drag, no abrir
                   if(e.target._esBtnFecha) return; // click en botón ✏️
-                  cargarFechaHistorial(fKey);
+                  cargarFechaHistorial(fechaKeyMap[fKey]||fKey);
                 });
                 // Drag para selección de rango
                 diaEl.addEventListener("mousedown",(e)=>{
@@ -1809,7 +1813,7 @@ function renderHistorial() {
               btnFecha.textContent = "✏️";
               btnFecha.title = "Cambiar fecha de esta liquidación";
               btnFecha.style.cssText = "position:absolute;top:-8px;right:-8px;background:#fff;border:1px solid #a8cff0;border-radius:50%;width:16px;height:16px;font-size:8px;line-height:16px;text-align:center;cursor:pointer;padding:0;display:none;box-shadow:0 1px 4px rgba(0,0,0,0.18);z-index:2;";
-              btnFecha.addEventListener("click",(e)=>{ e.stopPropagation(); abrirModalCambiarFecha(fKey); });
+              btnFecha.addEventListener("click",(e)=>{ e.stopPropagation(); abrirModalCambiarFecha(fechaKeyMap[fKey]||fKey); });
               celdaWrap.appendChild(btnFecha);
               // Mostrar/ocultar botón con hover
               celdaWrap.addEventListener("mouseenter",()=>{ btnFecha.style.display="block"; });
@@ -1859,10 +1863,13 @@ function renderHistorial() {
     inner.appendChild(barraR);
 
     // Calendario repartidor
-    const fechasSetR = new Set(fechasRep);
+    // fechasRep contiene claves completas tipo "2025-05-28_Repartidor"
+    const fechaKeyMapR = {};
+    fechasRep.forEach(k => { const f=k.substring(0,10); fechaKeyMapR[f]=k; });
+    const fechasSetR = new Set(Object.keys(fechaKeyMapR));
     if(fechasRep.length > 0){
-      const minFR = fechasRep[fechasRep.length-1];
-      const maxFR = fechasRep[0];
+      const minFR = fechasRep[fechasRep.length-1].substring(0,10);
+      const maxFR = fechasRep[0].substring(0,10);
       const [minYR,minMR] = minFR.split("-").map(Number);
       const [maxYR,maxMR] = maxFR.split("-").map(Number);
       const mesesR=[];
@@ -1931,7 +1938,7 @@ function renderHistorial() {
             // Click simple: abrir liquidación
             diaEl.addEventListener("click",()=>{
               if(dragActivoR) return;
-              cargarFechaHistorial(fKey);
+              cargarFechaHistorial(fechaKeyMapR[fKey]||fKey);
             });
             // Drag para selección rango (mouse)
             diaEl.addEventListener("mousedown",(e)=>{
@@ -3561,8 +3568,8 @@ function renderListaRutas(container, porRuta) {
       card.appendChild(fila1);
 
       if(!esPresupuesto){
-        const netoVal = !estado ? "—" : estado==="rosado" ? fQ(0) : fQ(tt.netoM);
-        const netoColor = estado==="rosado" ? "#e91e8c" : (estado ? "#27ae60" : "#888");
+        const netoVal = estado==="rosado" ? fQ(0) : fQ(tt.netoM);
+        const netoColor = estado==="rosado" ? "#e91e8c" : estado==="verde" ? "#27ae60" : "#1e3a5f";
         const netoBox=el("div",{style:{paddingLeft:"28px",marginTop:"2px"}});
         netoBox.appendChild(el("span",{style:{fontSize:"13px",fontWeight:"700",color:netoColor}},netoVal));
         card.appendChild(netoBox);
