@@ -202,6 +202,7 @@ let state = {
   ocultarConfirmados: false,
   _sinConfirmarPendiente: false,
   _cuadreModificado: false,
+  _screenAnteriorDetalle: null, // pantalla desde donde se abrió renderDetalleCliente
   scrollAfterCliente: null,
   editPrecio: null, // {cliente, pedido, producto, valor}
   editCantidad: null, // {cliente, pedido, producto, valor}
@@ -1083,7 +1084,10 @@ async function exportarExcel(reg) {
   const nRec=tPag-tGasDeCuenta;
   const dif=(tPag+tGasDeCuenta)-sNetoHoy;
   const cuadreRows=[
-    ["CUADRE FINAL - "+(reg.fecha||"")],[],["BILLETES","Cantidad","Total Q"],
+    ["CUADRE FINAL - "+(reg.fecha||"")],
+    ...(reg.repartidor?[["Repartidor:", reg.repartidor]]:[]),
+    ...(reg.auxiliar  ?[["Auxiliar:",   reg.auxiliar  ]]:[]),
+    [],["BILLETES","Cantidad","Total Q"],
     ...[1,5,10,20,50,100,200].map(b=>{const c=parseFloat(billetes[b])||0;return c>0?["Q"+b,c,b*c]:null;}).filter(Boolean),
     ["Subtotal billetes","",tB],["Monedas","",mon],["Total efectivo","",tEf],
     [],[" OTROS PAGOS","",""],["Deposito bancario","",tDep],["Transferencia","",tTra],
@@ -2421,6 +2425,8 @@ function renderDetalleCliente() {
     // fueDesbloqueado: tenía estado previo Y fue desbloqueado, O marcó sin confirmar
     const fueDesbloqueado = (!bloqueadoAct && !!estadoAct) || sinConfirmarPendiente;
     const hayPendientes = fueDesbloqueado || hayTemporales;
+    const screenOrigen = state._screenAnteriorDetalle || null;
+    const extraUpd = screenOrigen ? {screen: screenOrigen, _screenAnteriorDetalle: null} : {};
     if(hayPendientes) {
       showModal({
         titulo:"💾 Cambios pendientes",
@@ -2430,7 +2436,7 @@ function renderDetalleCliente() {
         btnCancelar:"Salir sin guardar",
         colorAceptar:"#27ae60",
         onCancelar: () => {
-          const upd = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
+          const upd = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:screenOrigen?null:c,...extraUpd};
           if(estadoAct) upd.bloqueados = {...state.bloqueados,[c]:true};
           setState(upd);
         },
@@ -2439,13 +2445,13 @@ function renderDetalleCliente() {
             showModal({titulo:"⚠️ Atención", mensaje:"Confirma la entrega primero con el botón '✅ Confirmar entrega'.", tipo:"alert", btnAceptar:"Entendido"});
             return;
           }
-          const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
+          const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:screenOrigen?null:c,...extraUpd};
           if(!bloqueadoAct && estadoAct) updVolver.bloqueados = {...state.bloqueados,[c]:true};
           setState(updVolver);
         }
       }); return;
     }
-    const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:c};
+    const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:screenOrigen?null:c,...extraUpd};
     if(!bloqueadoAct && estadoAct) updVolver.bloqueados = {...state.bloqueados,[c]:true};
     setState(updVolver);
   }},"← Volver"));
@@ -4010,15 +4016,20 @@ function renderResumenNotas() {
     const estadoColor = estado==="verde"?"#27ae60":estado==="amarillo"?"#f39c12":estado==="rosado"?"#c0392b":"#888";
     const estadoLbl = estado==="verde"?"Entregado":estado==="amarillo"?"Parcial":estado==="rosado"?"Dev. total":"Pendiente";
 
-    const card = el("div",{style:{background:"#fff",borderRadius:"12px",marginBottom:"10px",overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}});
+    const card = el("div",{style:{background:"#fff",borderRadius:"12px",marginBottom:"10px",overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",cursor:"pointer",transition:"box-shadow 0.15s"}});
+    card.addEventListener("mouseenter",()=>{ card.style.boxShadow="0 4px 14px rgba(30,58,95,0.13)"; });
+    card.addEventListener("mouseleave",()=>{ card.style.boxShadow="0 1px 4px rgba(0,0,0,0.07)"; });
 
-    // Cabecera de la card: cliente + estado
+    // Cabecera de la card: cliente + estado + flecha
     const cardHdr = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px",borderBottom:"1px solid #f5f5f5",gap:"10px"}});
     const clienteInfo = el("div",{style:{flex:"1",minWidth:"0"}});
     clienteInfo.appendChild(el("div",{style:{fontWeight:"700",fontSize:"15px",color:"#1e3a5f",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},cliente));
     if(ruta) clienteInfo.appendChild(el("div",{style:{fontSize:"11px",color:"#888",marginTop:"1px"}},ruta));
     cardHdr.appendChild(clienteInfo);
-    cardHdr.appendChild(el("span",{style:{background:estadoColor,color:"#fff",borderRadius:"6px",padding:"3px 9px",fontSize:"11px",fontWeight:"700",whiteSpace:"nowrap",flexShrink:"0"}},`${estadoIcon} ${estadoLbl}`));
+    const badgeRow = el("div",{style:{display:"flex",alignItems:"center",gap:"8px",flexShrink:"0"}});
+    badgeRow.appendChild(el("span",{style:{background:estadoColor,color:"#fff",borderRadius:"6px",padding:"3px 9px",fontSize:"11px",fontWeight:"700",whiteSpace:"nowrap"}},`${estadoIcon} ${estadoLbl}`));
+    badgeRow.appendChild(el("span",{style:{color:"#1e3a5f",fontWeight:"700",fontSize:"18px",lineHeight:"1"}},"›"));
+    cardHdr.appendChild(badgeRow);
     card.appendChild(cardHdr);
 
     // Notas por pedido
@@ -4044,6 +4055,9 @@ function renderResumenNotas() {
       comRow.appendChild(comTexto);
       card.appendChild(comRow);
     }
+
+    // Click en la card → abrir detalle del cliente (vuelve a resumenNotas)
+    card.onclick = () => setState({clienteDetalle: cliente, _screenAnteriorDetalle: "resumenNotas"});
 
     inner.appendChild(card);
   });
@@ -4087,6 +4101,17 @@ function renderResumenEntregas() {
   hdrInfo.appendChild(el("p",{style:{margin:"2px 0 0",fontSize:"11px",opacity:"0.7"}},`${state.fecha} · ${state.fileName}`));
   hdr.appendChild(hdrInfo);
   inner.appendChild(hdr);
+  // Info de tripulación
+  {
+    const repRE = state.loginRepartidor || "";
+    const auxRE = state.loginAuxiliar || "";
+    if(repRE || auxRE){
+      const tripBar = el("div",{style:{display:"flex",gap:"10px",flexWrap:"wrap",marginBottom:"14px"}});
+      if(repRE) tripBar.appendChild(el("span",{style:{background:"#eef4fb",color:"#1e3a5f",borderRadius:"8px",padding:"6px 14px",fontSize:"12px",fontWeight:"600"}}, "🚚 "+repRE));
+      if(auxRE) tripBar.appendChild(el("span",{style:{background:"#f0f8f0",color:"#27ae60",borderRadius:"8px",padding:"6px 14px",fontSize:"12px",fontWeight:"600"}}, "👷 "+auxRE));
+      inner.appendChild(tripBar);
+    }
+  }
 
   // ── Card general ──
   const cardGen = el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"18px 20px",marginBottom:"14px",boxShadow:"0 4px 16px rgba(30,58,95,0.18)"}});
@@ -4258,6 +4283,17 @@ function renderResumenLiquidacion() {
   hdr.appendChild(hdrInfo);
   if(state.confirmado) hdr.appendChild(el("span",{style:{background:"#27ae60",borderRadius:"8px",padding:"5px 12px",fontSize:"12px",fontWeight:"700",flexShrink:"0"}},"✅ Confirmada"));
   inner.appendChild(hdr);
+  // Info de tripulación
+  {
+    const repRL = state.loginRepartidor || "";
+    const auxRL = state.loginAuxiliar || "";
+    if(repRL || auxRL){
+      const tripBarL = el("div",{style:{display:"flex",gap:"10px",flexWrap:"wrap",marginBottom:"14px"}});
+      if(repRL) tripBarL.appendChild(el("span",{style:{background:"#eef4fb",color:"#1e3a5f",borderRadius:"8px",padding:"6px 14px",fontSize:"12px",fontWeight:"600"}}, "🚚 "+repRL));
+      if(auxRL) tripBarL.appendChild(el("span",{style:{background:"#f0f8f0",color:"#27ae60",borderRadius:"8px",padding:"6px 14px",fontSize:"12px",fontWeight:"600"}}, "👷 "+auxRL));
+      inner.appendChild(tripBarL);
+    }
+  }
 
   // Panel cuadre editable
   const cuadrePanel = _buildCuadrePanel(state.modoHistorial, ()=>{
@@ -4566,6 +4602,7 @@ function render() {
   else if(state.screen==="nodatos") content=renderNoDatos();
   else if(state.screen==="upload") content=renderUpload();
   else if(state.screen==="resumenEntregas") content=renderResumenEntregas();
+  else if(state.screen==="resumenNotas" && state.clienteDetalle) content=renderDetalleCliente();
   else if(state.screen==="resumenNotas") content=renderResumenNotas();
   else if(state.screen==="resumenLiq") content=renderResumenLiquidacion();
   else if(state.screen==="resumenDevs") content=renderResumenDevoluciones();
