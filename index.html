@@ -4016,11 +4016,9 @@ function renderResumenNotas() {
     const estadoColor = estado==="verde"?"#27ae60":estado==="amarillo"?"#f39c12":estado==="rosado"?"#c0392b":"#888";
     const estadoLbl = estado==="verde"?"Entregado":estado==="amarillo"?"Parcial":estado==="rosado"?"Dev. total":"Pendiente";
 
-    const card = el("div",{style:{background:"#fff",borderRadius:"12px",marginBottom:"10px",overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",cursor:"pointer",transition:"box-shadow 0.15s"}});
-    card.addEventListener("mouseenter",()=>{ card.style.boxShadow="0 4px 14px rgba(30,58,95,0.13)"; });
-    card.addEventListener("mouseleave",()=>{ card.style.boxShadow="0 1px 4px rgba(0,0,0,0.07)"; });
+    const card = el("div",{style:{background:"#fff",borderRadius:"12px",marginBottom:"10px",overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}});
 
-    // Cabecera de la card: cliente + estado + flecha
+    // Cabecera de la card: cliente + estado + botón entrar (igual al listado general)
     const cardHdr = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px",borderBottom:"1px solid #f5f5f5",gap:"10px"}});
     const clienteInfo = el("div",{style:{flex:"1",minWidth:"0"}});
     clienteInfo.appendChild(el("div",{style:{fontWeight:"700",fontSize:"15px",color:"#1e3a5f",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},cliente));
@@ -4028,7 +4026,10 @@ function renderResumenNotas() {
     cardHdr.appendChild(clienteInfo);
     const badgeRow = el("div",{style:{display:"flex",alignItems:"center",gap:"8px",flexShrink:"0"}});
     badgeRow.appendChild(el("span",{style:{background:estadoColor,color:"#fff",borderRadius:"6px",padding:"3px 9px",fontSize:"11px",fontWeight:"700",whiteSpace:"nowrap"}},`${estadoIcon} ${estadoLbl}`));
-    badgeRow.appendChild(el("span",{style:{color:"#1e3a5f",fontWeight:"700",fontSize:"18px",lineHeight:"1"}},"›"));
+    const btnEntrarN = el("button",{style:{background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"8px",padding:"6px 10px",cursor:"pointer",fontSize:"18px",lineHeight:"1",fontWeight:"700",flexShrink:"0"}},"›");
+    btnEntrarN.title = "Ver entrega";
+    btnEntrarN.onclick = () => setState({clienteDetalle: cliente, _screenAnteriorDetalle: "resumenNotas"});
+    badgeRow.appendChild(btnEntrarN);
     cardHdr.appendChild(badgeRow);
     card.appendChild(cardHdr);
 
@@ -4055,9 +4056,6 @@ function renderResumenNotas() {
       comRow.appendChild(comTexto);
       card.appendChild(comRow);
     }
-
-    // Click en la card → abrir detalle del cliente (vuelve a resumenNotas)
-    card.onclick = () => setState({clienteDetalle: cliente, _screenAnteriorDetalle: "resumenNotas"});
 
     inner.appendChild(card);
   });
