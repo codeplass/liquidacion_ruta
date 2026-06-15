@@ -1607,6 +1607,16 @@ function renderUpload() {
   );
 }
 
+// Paleta de colores distintivos para los repartidores en el calendario general
+const PALETA_REP = ["#e74c3c","#3498db","#27ae60","#e67e22","#9b59b6","#16a085","#2c3e50","#e84393","#0984e3","#d35400","#6c5ce7","#8e44ad","#00b894","#c0392b","#2980b9","#f39c12"];
+// Devuelve color de texto (oscuro o blanco) según luminancia del fondo
+function colorTextoContraste(hex){
+  const h=(hex||"").replace("#",""); if(h.length<6) return "#fff";
+  const r=parseInt(h.substring(0,2),16),g=parseInt(h.substring(2,4),16),b=parseInt(h.substring(4,6),16);
+  const lum=(0.299*r+0.587*g+0.114*b)/255;
+  return lum>0.62?"#1e3a5f":"#fff";
+}
+
 function renderHistorial() {
   const esAdmin = state.esAdmin;
   const data = state.historialData || {};
@@ -1622,53 +1632,161 @@ function renderHistorial() {
   inner.appendChild(hdr);
 
   if(esAdmin) {
-    // ── Vista admin: primero lista de repartidores ──
-    if(!state.historialRepSelec) {
-      // Extraer todos los repartidores únicos del historial
-      const repsSet = new Set();
-      Object.values(data).forEach(dia => { if(dia.repartidor) repsSet.add(dia.repartidor); });
-      // También incluir repartidores de la lista aunque no tengan historial aún
-      (state.listaRepartidores||[]).forEach(r=>{ const n=typeof r==="string"?r:(r.nombre||""); if(n) repsSet.add(n); });
-      const reps = [...repsSet].sort();
+    // ── Vista admin: CALENDARIO GENERAL UNIFICADO (vista por defecto del historial) ──
+    // Todos los repartidores en un solo calendario. Tocar un día abre su liquidación;
+    // tocar un nombre en la leyenda entra a la vista detallada de ese repartidor.
+    if((state.historialRepSelec === "" || state.historialRepSelec === "__todos__") && !state.fechaSelec) {
+      // Encabezado de la vista
+      inner.appendChild(el("p",{style:{fontSize:"12px",color:"#888",margin:"0 0 12px"}},
+        "Toca un día para ver su liquidación · toca un repartidor en la leyenda para ver solo el suyo (con descarga, cambiar fecha, etc.)"));
 
-      // Contar fechas sin repartidor asignado
-      const sinAsignar = Object.entries(data).filter(([,v])=>!v.repartidor);
-
-      if(reps.length===0 && sinAsignar.length===0){
-        inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"48px",textAlign:"center",color:"#aaa"}},"No hay liquidaciones registradas aún."));
+      // Construir entradas: cada liquidación con su clave, repartidor y fecha (10 chars)
+      const entradas = Object.entries(data).map(([k,v])=>({key:k, rep:(v.repartidor||"__sin__"), fecha10:k.substring(0,10)}));
+      if(entradas.length===0){
+        inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"32px",textAlign:"center",color:"#aaa"}},"No hay liquidaciones registradas."));
         return wrap;
       }
-      inner.appendChild(el("p",{style:{fontSize:"13px",fontWeight:"600",color:"#555",margin:"0 0 12px"}},"Selecciona un repartidor:"));
 
-      // Cards de repartidores conocidos
-      reps.forEach(rep => {
-        const fechasRep = Object.entries(data).filter(([,v])=>v.repartidor===rep).length;
-        const card = el("div",{style:{background:"#fff",borderRadius:"12px",padding:"16px 20px",marginBottom:"10px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"},
-          onClick:()=>setState({historialRepSelec:rep})});
-        const left = el("div");
-        left.appendChild(el("div",{style:{fontWeight:"700",fontSize:"15px",color:"#1e3a5f"}},rep));
-        left.appendChild(el("div",{style:{fontSize:"12px",color:"#aaa",marginTop:"2px"}},fechasRep>0?fechasRep+" liquidación"+(fechasRep>1?"es":"")+" registrada"+(fechasRep>1?"s":""):"Sin liquidaciones aún"));
-        card.appendChild(left);
-        card.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
-        inner.appendChild(card);
+      // Repartidores presentes (alfabético, "Sin asignar" siempre al final)
+      const repsPresentes = [...new Set(entradas.map(e=>e.rep))];
+      const repsNorm = repsPresentes.filter(r=>r!=="__sin__").sort((a,b)=>a.localeCompare(b));
+      const haySin = repsPresentes.includes("__sin__");
+      // Mapa repartidor -> color (consistente entre leyenda y calendario)
+      const colorRep = {};
+      repsNorm.forEach((r,i)=>{ colorRep[r]=PALETA_REP[i%PALETA_REP.length]; });
+      if(haySin) colorRep["__sin__"]="#795548";
+      const nombreRep = r => r==="__sin__" ? "Sin asignar" : r;
+
+      // ── Leyenda: nombre de cada repartidor + cuadro de su color (tocable) ──
+      const leyenda = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px 10px",background:"#fff",borderRadius:"12px",padding:"12px 14px",marginBottom:"14px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}});
+      [...repsNorm, ...(haySin?["__sin__"]:[])].forEach(r=>{
+        const destino = r==="__sin__" ? "__sin_asignar__" : r;
+        const chip = el("div",{style:{display:"flex",alignItems:"center",gap:"7px",fontSize:"12px",color:"#333",fontWeight:"600",cursor:"pointer",padding:"4px 8px",borderRadius:"8px",background:"#f4f6f9"},
+          title:"Ver solo "+nombreRep(r),
+          onClick:()=>setState({historialRepSelec:destino,historialSeleccionados:{}})});
+        chip.appendChild(el("span",{style:{width:"15px",height:"15px",borderRadius:"4px",background:colorRep[r],flexShrink:"0",border:"1px solid rgba(0,0,0,0.12)"}}));
+        chip.appendChild(document.createTextNode(nombreRep(r)));
+        leyenda.appendChild(chip);
       });
+      inner.appendChild(leyenda);
 
-      // Card "Sin asignar" para liquidaciones sin repartidor
-      if(sinAsignar.length>0){
-        const cardSin = el("div",{style:{background:"#fff8e1",border:"1px solid #ffe082",borderRadius:"12px",padding:"16px 20px",marginBottom:"10px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"},
-          onClick:()=>setState({historialRepSelec:"__sin_asignar__"})});
-        const leftSin = el("div");
-        leftSin.appendChild(el("div",{style:{fontWeight:"700",fontSize:"15px",color:"#795548"}},"⚠️ Sin asignar"));
-        leftSin.appendChild(el("div",{style:{fontSize:"12px",color:"#aaa",marginTop:"2px"}},sinAsignar.length+" liquidación"+(sinAsignar.length>1?"es":"")+" sin repartidor"));
-        cardSin.appendChild(leftSin);
-        cardSin.appendChild(el("span",{style:{fontSize:"20px",color:"#ccc"}},"›"));
-        inner.appendChild(cardSin);
+      // Agrupar entradas por fecha (10 chars). Un día puede tener varios repartidores.
+      const porFecha = {};
+      entradas.forEach(e=>{ (porFecha[e.fecha10] = porFecha[e.fecha10]||[]).push(e); });
+      Object.values(porFecha).forEach(arr=>arr.sort((a,b)=>{
+        const na=a.rep==="__sin__"?"\uffff":a.rep, nb=b.rep==="__sin__"?"\uffff":b.rep; return na.localeCompare(nb);
+      }));
+
+      // Selector para días con más de un repartidor
+      function abrirSelectorDia(fecha10){
+        const prev=document.getElementById("modal-selector-dia"); if(prev) prev.remove();
+        const arr=porFecha[fecha10]||[];
+        const overlay=document.createElement("div");
+        overlay.id="modal-selector-dia";
+        overlay.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;font-family:sans-serif;";
+        overlay.addEventListener("click",ev=>{ if(ev.target===overlay) overlay.remove(); });
+        const box=document.createElement("div");
+        box.style.cssText="background:#fff;border-radius:14px;padding:20px;width:100%;max-width:340px;box-shadow:0 8px 32px rgba(0,0,0,0.25);";
+        const t=document.createElement("h3");
+        t.textContent="Liquidaciones del "+fecha10;
+        t.style.cssText="margin:0 0 4px;color:#1e3a5f;font-size:15px;";
+        box.appendChild(t);
+        const sub=document.createElement("p");
+        sub.textContent="Elige qué repartidor ver:";
+        sub.style.cssText="margin:0 0 14px;font-size:12px;color:#888;";
+        box.appendChild(sub);
+        arr.forEach(e=>{
+          const row=document.createElement("button");
+          row.style.cssText="display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:#f4f6f9;border:none;border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer;font-size:14px;font-weight:600;color:#1e3a5f;font-family:sans-serif;";
+          const sq=document.createElement("span");
+          sq.style.cssText="width:16px;height:16px;border-radius:4px;flex-shrink:0;background:"+colorRep[e.rep]+";";
+          row.appendChild(sq);
+          row.appendChild(document.createTextNode(nombreRep(e.rep)));
+          row.addEventListener("click",()=>{ overlay.remove(); cargarFechaHistorial(e.key); });
+          box.appendChild(row);
+        });
+        const cancel=document.createElement("button");
+        cancel.textContent="Cancelar";
+        cancel.style.cssText="width:100%;background:#eee;border:none;border-radius:10px;padding:10px;cursor:pointer;font-size:13px;color:#555;margin-top:4px;font-family:sans-serif;";
+        cancel.addEventListener("click",()=>overlay.remove());
+        box.appendChild(cancel);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
       }
+
+      // Rango de meses entre la fecha mínima y máxima
+      const fechasAll = Object.keys(porFecha).sort();
+      const minF=fechasAll[0], maxF=fechasAll[fechasAll.length-1];
+      const [minY,minM]=minF.split("-").map(Number);
+      const [maxY,maxM]=maxF.split("-").map(Number);
+      const meses=[]; let cy=minY,cm=minM;
+      while(cy<maxY||(cy===maxY&&cm<=maxM)){ meses.push({y:cy,m:cm}); cm++; if(cm>12){cm=1;cy++;} }
+
+      const MESES_N=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+      const DIAS_N=["L","M","X","J","V","S","D"];
+      const calGrid = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"14px",marginBottom:"14px"}});
+
+      meses.forEach(({y,m})=>{
+        const mesBox = el("div",{style:{background:"#fff",borderRadius:"14px",padding:"14px 10px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)"}});
+        const mesNom = el("div",{style:{textAlign:"center",fontWeight:"700",fontSize:"12px",color:"#1e3a5f",marginBottom:"8px"}});
+        mesNom.appendChild(document.createTextNode(MESES_N[m-1]));
+        mesNom.appendChild(el("span",{style:{fontWeight:"400",color:"#aaa",fontSize:"11px"}},` ${y}`));
+        mesBox.appendChild(mesNom);
+
+        const diasHdr = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"1px",marginBottom:"3px"}});
+        DIAS_N.forEach(d=>{ diasHdr.appendChild(el("div",{style:{textAlign:"center",fontSize:"9px",fontWeight:"700",color:"#bbb",padding:"1px 0"}},d)); });
+        mesBox.appendChild(diasHdr);
+
+        const diasGrid = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"3px"}});
+        const offset = (new Date(y,m-1,1).getDay()+6)%7;
+        const diasMes = new Date(y,m,0).getDate();
+        for(let i=0;i<offset;i++) diasGrid.appendChild(el("div",{}));
+        for(let d=1;d<=diasMes;d++){
+          const fKey=`${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+          const arr = porFecha[fKey];
+          const celdaWrap = el("div",{style:{position:"relative",display:"flex",alignItems:"center",justifyContent:"center"}});
+          if(arr && arr.length){
+            let bg, txtColor;
+            if(arr.length===1){
+              bg = colorRep[arr[0].rep];
+              txtColor = colorTextoContraste(bg);
+            } else {
+              const n=arr.length;
+              const stops = arr.map((e,i)=>`${colorRep[e.rep]} ${(i*360/n).toFixed(1)}deg ${((i+1)*360/n).toFixed(1)}deg`).join(",");
+              bg = `conic-gradient(${stops})`;
+              txtColor = "#fff";
+            }
+            const diaEl = el("div",{style:{
+              textAlign:"center", fontSize:"11px", fontWeight:"700",
+              borderRadius:"50%", width:"26px", height:"26px", lineHeight:"26px",
+              cursor:"pointer", background:bg, color:txtColor,
+              transition:"transform 0.1s"
+            }},String(d));
+            if(arr.length>1) diaEl.style.textShadow="0 0 3px rgba(0,0,0,0.75)";
+            diaEl.title = arr.map(e=>nombreRep(e.rep)).join(", ");
+            diaEl.addEventListener("click",()=>{
+              if(arr.length===1) cargarFechaHistorial(arr[0].key);
+              else abrirSelectorDia(fKey);
+            });
+            celdaWrap.appendChild(diaEl);
+            if(arr.length>1){
+              const badge = el("div",{style:{position:"absolute",top:"-3px",right:"-3px",background:"#1e3a5f",color:"#fff",borderRadius:"50%",width:"14px",height:"14px",fontSize:"8px",fontWeight:"700",lineHeight:"14px",textAlign:"center",border:"1.5px solid #fff",pointerEvents:"none"}},String(arr.length));
+              celdaWrap.appendChild(badge);
+            }
+          } else {
+            celdaWrap.appendChild(el("div",{style:{textAlign:"center",fontSize:"11px",fontWeight:"400",width:"26px",height:"26px",lineHeight:"26px",color:"#ccc"}},String(d)));
+          }
+          diasGrid.appendChild(celdaWrap);
+        }
+        mesBox.appendChild(diasGrid);
+        calGrid.appendChild(mesBox);
+      });
+      inner.appendChild(calGrid);
       return wrap;
     }
 
     // ── Vista admin: fechas del repartidor seleccionado (o sin asignar) ──
-    if(state.historialRepSelec && !state.fechaSelec) {
+    if(state.historialRepSelec && state.historialRepSelec!=="__todos__" && !state.fechaSelec) {
       const repSelec = state.historialRepSelec;
       const esSinAsignar = repSelec === "__sin_asignar__";
       const fechasRep = Object.entries(data)
@@ -1677,7 +1795,7 @@ function renderHistorial() {
 
       const hdrRep = el("div",{style:{display:"flex",alignItems:"center",gap:"10px",marginBottom:"16px"}});
       hdrRep.appendChild(el("button",{style:{background:"#f0f4f8",border:"none",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"13px",color:"#555"},
-        onClick:()=>setState({historialRepSelec:"",fechaSelec:"",historialSeleccionados:{}})},"← Repartidores"));
+        onClick:()=>setState({historialRepSelec:"",fechaSelec:"",historialSeleccionados:{}})},"← Calendario"));
       hdrRep.appendChild(el("h2",{style:{margin:"0",fontSize:"16px",color:esSinAsignar?"#795548":"#1e3a5f"}},
         esSinAsignar?"⚠️ Sin asignar":repSelec));
       inner.appendChild(hdrRep);
