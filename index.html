@@ -1714,6 +1714,59 @@ function renderHistorial() {
         document.body.appendChild(overlay);
       }
 
+      // Editar un día: cambiar fecha o asignar/cambiar repartidor de cada liquidación
+      function abrirEdicionDia(fecha10){
+        const prev=document.getElementById("modal-edicion-dia"); if(prev) prev.remove();
+        const arr=porFecha[fecha10]||[]; if(arr.length===0) return;
+        const overlay=document.createElement("div");
+        overlay.id="modal-edicion-dia";
+        overlay.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;font-family:sans-serif;";
+        overlay.addEventListener("click",ev=>{ if(ev.target===overlay) overlay.remove(); });
+        const box=document.createElement("div");
+        box.style.cssText="background:#fff;border-radius:14px;padding:20px;width:100%;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,0.25);";
+        const t=document.createElement("h3");
+        t.textContent="Editar liquidación · "+fecha10;
+        t.style.cssText="margin:0 0 14px;color:#1e3a5f;font-size:15px;";
+        box.appendChild(t);
+        arr.forEach(e=>{
+          const row=document.createElement("div");
+          row.style.cssText="display:flex;align-items:center;gap:8px;background:#f4f6f9;border-radius:10px;padding:10px 12px;margin-bottom:8px;flex-wrap:wrap;";
+          const sq=document.createElement("span");
+          sq.style.cssText="width:14px;height:14px;border-radius:4px;flex-shrink:0;background:"+colorRep[e.rep]+";";
+          row.appendChild(sq);
+          const nom=document.createElement("span");
+          nom.textContent=nombreRep(e.rep);
+          nom.style.cssText="font-size:13px;font-weight:700;color:#1e3a5f;flex:1;min-width:80px;";
+          row.appendChild(nom);
+          const bFecha=document.createElement("button");
+          bFecha.textContent="📅 Fecha";
+          bFecha.style.cssText="background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:7px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+          bFecha.addEventListener("click",()=>{ overlay.remove(); abrirModalCambiarFecha(e.key); });
+          row.appendChild(bFecha);
+          const bRep=document.createElement("button");
+          bRep.textContent="🚚 Repartidor";
+          bRep.style.cssText="background:#795548;color:#fff;border:none;border-radius:8px;padding:7px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+          bRep.addEventListener("click",()=>{ overlay.remove(); abrirModalAsignarRepartidor(e.key); });
+          row.appendChild(bRep);
+          box.appendChild(row);
+        });
+        const cancel=document.createElement("button");
+        cancel.textContent="Cerrar";
+        cancel.style.cssText="width:100%;background:#eee;border:none;border-radius:10px;padding:10px;cursor:pointer;font-size:13px;color:#555;margin-top:4px;font-family:sans-serif;";
+        cancel.addEventListener("click",()=>overlay.remove());
+        box.appendChild(cancel);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      }
+
+      // Estilos para hover del botón ✏️ y del día (se inyectan una sola vez)
+      if(!document.getElementById("cg-hover-style")){
+        const st=document.createElement("style");
+        st.id="cg-hover-style";
+        st.textContent=".cg-edit{display:none}.cg-cell:hover .cg-edit{display:block}.cg-day{transition:transform .1s}.cg-cell:hover .cg-day{transform:scale(1.12)}";
+        document.head.appendChild(st);
+      }
+
       // Rango de meses entre la fecha mínima y máxima
       const fechasAll = Object.keys(porFecha).sort();
       const minF=fechasAll[0], maxF=fechasAll[fechasAll.length-1];
@@ -1724,62 +1777,50 @@ function renderHistorial() {
 
       const MESES_N=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
       const DIAS_N=["L","M","X","J","V","S","D"];
-      const calGrid = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"14px",marginBottom:"14px"}});
+      const esc=t=>String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+      const cellBase="text-align:center;font-size:11px;font-weight:700;border-radius:50%;width:26px;height:26px;line-height:26px;cursor:pointer;";
+      const editBtnStyle="position:absolute;top:-7px;right:-7px;background:#fff;border:1px solid #a8cff0;border-radius:50%;width:17px;height:17px;font-size:9px;line-height:15px;text-align:center;cursor:pointer;padding:0;box-shadow:0 1px 4px rgba(0,0,0,0.2);z-index:2;";
 
+      // Construcción rápida: un solo string HTML para todos los meses (mucho más liviano)
+      let calHtml="";
       meses.forEach(({y,m})=>{
-        const mesBox = el("div",{style:{background:"#fff",borderRadius:"14px",padding:"14px 10px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)"}});
-        const mesNom = el("div",{style:{textAlign:"center",fontWeight:"700",fontSize:"12px",color:"#1e3a5f",marginBottom:"8px"}});
-        mesNom.appendChild(document.createTextNode(MESES_N[m-1]));
-        mesNom.appendChild(el("span",{style:{fontWeight:"400",color:"#aaa",fontSize:"11px"}},` ${y}`));
-        mesBox.appendChild(mesNom);
-
-        const diasHdr = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"1px",marginBottom:"3px"}});
-        DIAS_N.forEach(d=>{ diasHdr.appendChild(el("div",{style:{textAlign:"center",fontSize:"9px",fontWeight:"700",color:"#bbb",padding:"1px 0"}},d)); });
-        mesBox.appendChild(diasHdr);
-
-        const diasGrid = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"3px"}});
-        const offset = (new Date(y,m-1,1).getDay()+6)%7;
-        const diasMes = new Date(y,m,0).getDate();
-        for(let i=0;i<offset;i++) diasGrid.appendChild(el("div",{}));
+        calHtml+='<div style="background:#fff;border-radius:14px;padding:14px 10px;box-shadow:0 2px 8px rgba(0,0,0,0.07)">';
+        calHtml+='<div style="text-align:center;font-weight:700;font-size:12px;color:#1e3a5f;margin-bottom:8px">'+MESES_N[m-1]+'<span style="font-weight:400;color:#aaa;font-size:11px"> '+y+'</span></div>';
+        calHtml+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:1px;margin-bottom:3px">';
+        DIAS_N.forEach(d=>{ calHtml+='<div style="text-align:center;font-size:9px;font-weight:700;color:#bbb;padding:1px 0">'+d+'</div>'; });
+        calHtml+='</div><div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px">';
+        const offset=(new Date(y,m-1,1).getDay()+6)%7;
+        const diasMes=new Date(y,m,0).getDate();
+        for(let i=0;i<offset;i++) calHtml+='<div></div>';
         for(let d=1;d<=diasMes;d++){
           const fKey=`${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-          const arr = porFecha[fKey];
-          const celdaWrap = el("div",{style:{position:"relative",display:"flex",alignItems:"center",justifyContent:"center"}});
+          const arr=porFecha[fKey];
           if(arr && arr.length){
-            let bg, txtColor;
-            if(arr.length===1){
-              bg = colorRep[arr[0].rep];
-              txtColor = colorTextoContraste(bg);
-            } else {
-              const n=arr.length;
-              const stops = arr.map((e,i)=>`${colorRep[e.rep]} ${(i*360/n).toFixed(1)}deg ${((i+1)*360/n).toFixed(1)}deg`).join(",");
-              bg = `conic-gradient(${stops})`;
-              txtColor = "#fff";
-            }
-            const diaEl = el("div",{style:{
-              textAlign:"center", fontSize:"11px", fontWeight:"700",
-              borderRadius:"50%", width:"26px", height:"26px", lineHeight:"26px",
-              cursor:"pointer", background:bg, color:txtColor,
-              transition:"transform 0.1s"
-            }},String(d));
-            if(arr.length>1) diaEl.style.textShadow="0 0 3px rgba(0,0,0,0.75)";
-            diaEl.title = arr.map(e=>nombreRep(e.rep)).join(", ");
-            diaEl.addEventListener("click",()=>{
-              if(arr.length===1) cargarFechaHistorial(arr[0].key);
-              else abrirSelectorDia(fKey);
-            });
-            celdaWrap.appendChild(diaEl);
-            if(arr.length>1){
-              const badge = el("div",{style:{position:"absolute",top:"-3px",right:"-3px",background:"#1e3a5f",color:"#fff",borderRadius:"50%",width:"14px",height:"14px",fontSize:"8px",fontWeight:"700",lineHeight:"14px",textAlign:"center",border:"1.5px solid #fff",pointerEvents:"none"}},String(arr.length));
-              celdaWrap.appendChild(badge);
-            }
+            let bg,txt,shadow="";
+            if(arr.length===1){ bg=colorRep[arr[0].rep]; txt=colorTextoContraste(bg); }
+            else { const n=arr.length; bg="conic-gradient("+arr.map((e,i)=>colorRep[e.rep]+" "+(i*360/n).toFixed(1)+"deg "+((i+1)*360/n).toFixed(1)+"deg").join(",")+")"; txt="#fff"; shadow="text-shadow:0 0 3px rgba(0,0,0,.75);"; }
+            const titulo=esc(arr.map(e=>nombreRep(e.rep)).join(", "));
+            calHtml+='<div class="cg-cell" data-fkey="'+fKey+'" style="position:relative;display:flex;align-items:center;justify-content:center">';
+            calHtml+='<div class="cg-day" title="'+titulo+'" style="'+cellBase+'background:'+bg+';color:'+txt+';'+shadow+'">'+d+'</div>';
+            if(arr.length>1) calHtml+='<div style="position:absolute;top:-3px;right:-3px;background:#1e3a5f;color:#fff;border-radius:50%;width:14px;height:14px;font-size:8px;font-weight:700;line-height:14px;text-align:center;border:1.5px solid #fff;pointer-events:none">'+arr.length+'</div>';
+            calHtml+='<button class="cg-edit" title="Editar (cambiar fecha / repartidor)" style="'+editBtnStyle+'">✏️</button>';
+            calHtml+='</div>';
           } else {
-            celdaWrap.appendChild(el("div",{style:{textAlign:"center",fontSize:"11px",fontWeight:"400",width:"26px",height:"26px",lineHeight:"26px",color:"#ccc"}},String(d)));
+            calHtml+='<div style="display:flex;align-items:center;justify-content:center"><div style="text-align:center;font-size:11px;font-weight:400;width:26px;height:26px;line-height:26px;color:#ccc">'+d+'</div></div>';
           }
-          diasGrid.appendChild(celdaWrap);
         }
-        mesBox.appendChild(diasGrid);
-        calGrid.appendChild(mesBox);
+        calHtml+='</div></div>';
+      });
+      const calGrid=el("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"14px",marginBottom:"14px"}});
+      calGrid.innerHTML=calHtml;
+      // Un solo manejador de clicks para todo el calendario (delegación → carga instantánea)
+      calGrid.addEventListener("click",ev=>{
+        const cell=ev.target.closest(".cg-cell"); if(!cell) return;
+        const fKey=cell.getAttribute("data-fkey"); if(!fKey) return;
+        if(ev.target.closest(".cg-edit")){ abrirEdicionDia(fKey); return; }
+        const arr=porFecha[fKey]||[];
+        if(arr.length===1) cargarFechaHistorial(arr[0].key);
+        else if(arr.length>1) abrirSelectorDia(fKey);
       });
       inner.appendChild(calGrid);
       return wrap;
