@@ -59,7 +59,16 @@ const toNum = v => { const n=parseFloat(String(v||"").replace(/[Q,\s]/g,"")); re
 // Devoluciones válidas: solo las de clientes presentes en el clienteMap dado.
 // Garantiza que una devolución no pueda quedar "suelta" en otro día si su cliente no está en el mapa.
 const devsValidas = (devs, cMap) => (Array.isArray(devs)?devs:[]).filter(d => cMap && Object.prototype.hasOwnProperty.call(cMap, d.cliente));
-const esRuta = v => typeof v==="string" && /^ruta\s*\d+/i.test(v.trim());
+const esRuta = v => {
+  if(typeof v!=="string") return false;
+  const t = v.trim();
+  if(!t) return false;
+  // No confundir con clientes, productos, pedidos, notas ni la fila de totales general
+  if(/^pt\d+/i.test(t) || /^\[\d+\]/.test(t) || /^so\d+/i.test(t) || t.startsWith("📝")) return false;
+  if(/^total\b/i.test(t) || /venta total/i.test(t)) return false;
+  // Encabezado de ruta de Odoo: "Ruta 101 — 11 clientes", "Administración — 1 clientes", etc.
+  return /^ruta\s*\d+/i.test(t) || /[—–-]\s*\d+\s*clientes?\b/i.test(t);
+};
 const esCliente = v => typeof v==="string" && /^PT\d+/i.test(v.trim());
 const esProducto = v => typeof v==="string" && /^\[\d+\]/.test(v.trim());
 const esPedido = v => typeof v==="string" && /^SO\d+/i.test(v.trim());
@@ -4560,16 +4569,15 @@ function renderResumenDevoluciones() {
 
   // Nombre de ruta limpio (el Excel arrastra "— N clientes" en el encabezado de ruta)
   const rutaNombre = r => (r||"").replace(/[\s—–-]+\d+\s*clientes?/i,"").trim();
-  // Ruta de un cliente. Todas las rutas tienen nombre; clientes sin ruta no se listan aquí.
-  const getRutaCliente = c => cMap[c]?.ruta || "";
+  // Ruta de un cliente, tal como viene cargada del Excel
+  const getRutaCliente = c => cMap[c]?.ruta || "Sin ruta";
 
-  // Solo devoluciones de clientes con ruta asignada (no se genera grupo "Sin ruta")
-  const devs = devsValidas(state.devoluciones, state.clienteMap).filter(d => getRutaCliente(d.cliente));
+  const devs = devsValidas(state.devoluciones, state.clienteMap);
 
   // Recopilar todas las rutas que tienen devoluciones
   const rutasConDevs = new Set();
   devs.forEach(d => rutasConDevs.add(getRutaCliente(d.cliente)));
-  const devsTotalesAll = Object.keys(cMap).filter(c => state.estadoEntrega[c] === "rosado" && getRutaCliente(c));
+  const devsTotalesAll = Object.keys(cMap).filter(c => state.estadoEntrega[c] === "rosado");
   devsTotalesAll.forEach(c => rutasConDevs.add(getRutaCliente(c)));
   const todasRutas = Array.from(rutasConDevs).sort();
 
