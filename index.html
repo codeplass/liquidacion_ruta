@@ -56,6 +56,9 @@ const fQ = v => `Q ${Number(v||0).toLocaleString("es-GT",{minimumFractionDigits:
 const fN = v => Number(v||0).toLocaleString("es-GT");
 const hoy = () => { const d=new Date(); const off=d.getTimezoneOffset(); const local=new Date(d.getTime()-off*60000); return local.toISOString().slice(0,10); };
 const toNum = v => { const n=parseFloat(String(v||"").replace(/[Q,\s]/g,"")); return isNaN(n)?0:n; };
+// Devoluciones válidas: solo las de clientes presentes en el clienteMap dado.
+// Garantiza que una devolución no pueda quedar "suelta" en otro día si su cliente no está en el mapa.
+const devsValidas = (devs, cMap) => (Array.isArray(devs)?devs:[]).filter(d => cMap && Object.prototype.hasOwnProperty.call(cMap, d.cliente));
 const esRuta = v => typeof v==="string" && /^ruta\s*\d+/i.test(v.trim());
 const esCliente = v => typeof v==="string" && /^PT\d+/i.test(v.trim());
 const esProducto = v => typeof v==="string" && /^\[\d+\]/.test(v.trim());
@@ -246,7 +249,7 @@ function _setStateInterno(updates) {
             estadoEntrega: state.estadoEntrega,
             entregados: state.entregados,
             bloqueados: state.bloqueados,
-            devoluciones: state.devoluciones,
+            devoluciones: devsValidas(state.devoluciones, state.clienteMap),
             motivosDevTotal: state.motivosDevTotal,
             descuentos: state.descuentos,
             comentarios: state.comentarios,
@@ -415,7 +418,7 @@ async function iniciarSesionConUsuario(usuario) {
       setState({
         clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:datos.fecha||hoy(),
         estadoEntrega:datos.estadoEntrega||datos.entregados||{}, entregados:datos.entregados||{},
-        bloqueados:datos.bloqueados||{}, devoluciones:datos.devoluciones||[],
+        bloqueados:datos.bloqueados||{}, devoluciones:devsValidas(datos.devoluciones, datos.clienteMap),
         motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
         comentarios:datos.comentarios||{},
         billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
@@ -429,7 +432,7 @@ async function iniciarSesionConUsuario(usuario) {
         clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:hoy(),
         screen:admin?"menu":"menuRepartidor", cargandoDatos:false, confirmado:yaConfirmado,
         estadoEntrega:datos.estadoEntrega||datos.entregados||{}, entregados:datos.entregados||{},
-        bloqueados:datos.bloqueados||{}, devoluciones:datos.devoluciones||[],
+        bloqueados:datos.bloqueados||{}, devoluciones:devsValidas(datos.devoluciones, datos.clienteMap),
         motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
         comentarios:datos.comentarios||{},
         billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
@@ -605,6 +608,7 @@ function navegarConGuard(accion, opciones={}) {
 async function guardarCambiosHistorial() {
   setState({guardando:true});
   try {
+    const devsG = devsValidas(state.devoluciones, state.clienteMap);
     const clienteTotales = {};
     Object.keys(state.clienteMap).forEach(c => {
       if(esClientePre(c)) return;
@@ -625,7 +629,7 @@ async function guardarCambiosHistorial() {
       entregados:state.entregados,
       estadoEntrega:state.estadoEntrega,
       motivosDevTotal:state.motivosDevTotal,
-      devoluciones:state.devoluciones,
+      devoluciones:devsG,
       descuentos:state.descuentos, comentarios:state.comentarios,
       deposito:state.deposito, transferencia:state.transferencia,
       gastosDetalle:state.gastosDetalle, billetes:state.billetes, monedas:state.monedas,
@@ -642,7 +646,7 @@ async function guardarCambiosHistorial() {
       clienteMap:state.clienteMap, fileName:state.fileName, fecha:state.fecha,
       estadoEntrega:state.estadoEntrega, entregados:state.entregados,
       bloqueados:Object.fromEntries(Object.keys(state.estadoEntrega).map(k=>[k,true])),
-      devoluciones:state.devoluciones,
+      devoluciones:devsG,
       motivosDevTotal:state.motivosDevTotal, descuentos:state.descuentos,
       comentarios:state.comentarios,
       billetes:state.billetes, monedas:state.monedas,
@@ -806,6 +810,7 @@ async function confirmarLiquidacion() {
 async function _ejecutarConfirmarLiquidacion() {
   setState({guardando:true});
   try {
+    const devsC = devsValidas(state.devoluciones, state.clienteMap);
     // Calcular totales por cliente para el historial (excluir presupuestos)
     const clienteTotales = {};
     Object.keys(state.clienteMap).forEach(c => {
@@ -826,7 +831,7 @@ async function _ejecutarConfirmarLiquidacion() {
       entregados:state.entregados,
       estadoEntrega:state.estadoEntrega,
       motivosDevTotal:state.motivosDevTotal,
-      devoluciones:state.devoluciones,
+      devoluciones:devsC,
       descuentos:state.descuentos, comentarios:state.comentarios,
       deposito:state.deposito, transferencia:state.transferencia,
       gastosDetalle:state.gastosDetalle, billetes:state.billetes, monedas:state.monedas,
@@ -844,7 +849,7 @@ async function _ejecutarConfirmarLiquidacion() {
     await fbSet("datos-dia", {
       clienteMap:state.clienteMap, fileName:state.fileName, fecha:state.fecha,
       estadoEntrega:state.estadoEntrega, entregados:state.entregados,
-      bloqueados:state.bloqueados, devoluciones:state.devoluciones,
+      bloqueados:state.bloqueados, devoluciones:devsC,
       motivosDevTotal:state.motivosDevTotal, descuentos:state.descuentos,
       comentarios:state.comentarios,
       billetes:state.billetes, monedas:state.monedas,
@@ -874,7 +879,7 @@ async function volverADiaDesdMenu() {
     state.estadoEntrega = datos.estadoEntrega || datos.entregados || {};
     state.entregados    = datos.entregados || {};
     state.bloqueados    = datos.bloqueados || {};
-    state.devoluciones  = datos.devoluciones || [];
+    state.devoluciones  = devsValidas(datos.devoluciones, datos.clienteMap);
     state.motivosDevTotal = datos.motivosDevTotal || {};
     state.descuentos    = datos.descuentos || {};
     state.comentarios   = datos.comentarios || {};
@@ -2033,7 +2038,7 @@ function renderHistorial() {
               const btnFecha = document.createElement("button");
               btnFecha._esBtnFecha = true;
               btnFecha.textContent = "✏️";
-              btnFecha.title = "Cambiar fecha de esta liquidación";
+              btnFecha.title = "Cambiar fecha o repartidor de esta liquidación";
               btnFecha.style.cssText = "position:absolute;top:-8px;right:-8px;background:#fff;border:1px solid #a8cff0;border-radius:50%;width:16px;height:16px;font-size:8px;line-height:16px;text-align:center;cursor:pointer;padding:0;display:none;box-shadow:0 1px 4px rgba(0,0,0,0.18);z-index:2;";
               btnFecha.addEventListener("click",(e)=>{ e.stopPropagation(); abrirModalCambiarFecha(fechaKeyMap[fKey]||fKey); });
               celdaWrap.appendChild(btnFecha);
@@ -2224,7 +2229,7 @@ function cargarFechaHistorial(fecha) {
   setState({
     fechaSelec:fecha, screen:"historialVista",
     clienteMap:reg.clienteMap||{}, fileName:reg.fileName||"", fecha:reg.fecha||fecha,
-    devoluciones:reg.devoluciones||[],
+    devoluciones:devsValidas(reg.devoluciones, reg.clienteMap||{}),
     estadoEntrega:reg.estadoEntrega||reg.entregados||{},
     motivosDevTotal:reg.motivosDevTotal||{},
     descuentos:reg.descuentos||{}, comentarios:reg.comentarios||{},
@@ -2337,9 +2342,14 @@ async function abrirModalAsignarRepartidor(fecha) {
   document.body.appendChild(overlay);
 }
 
-function abrirModalCambiarFecha(fechaVieja) {
+function abrirModalCambiarFecha(claveVieja) {
   const prev = document.getElementById("modal-cambiar-fecha");
   if(prev) prev.remove();
+
+  // claveVieja viene como "YYYY-MM-DD_Repartidor" (clave completa del historial)
+  const fechaActual = (claveVieja||"").substring(0,10);
+  const regActual = (state.historialData && state.historialData[claveVieja]) || {};
+  const repActual = regActual.repartidor || "";
 
   const overlay = document.createElement("div");
   overlay.id = "modal-cambiar-fecha";
@@ -2349,13 +2359,13 @@ function abrirModalCambiarFecha(fechaVieja) {
   box.style.cssText = "background:#fff;border-radius:14px;padding:28px;width:100%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,0.2);";
 
   const titulo = document.createElement("h3");
-  titulo.textContent = "📅 Cambiar fecha de liquidación";
+  titulo.textContent = "📅 Cambiar fecha / repartidor";
   titulo.style.cssText = "margin:0 0 6px;color:#1e3a5f;font-size:16px;";
   box.appendChild(titulo);
 
   const subtitulo = document.createElement("p");
   subtitulo.style.cssText = "font-size:12px;color:#888;margin:0 0 18px;";
-  subtitulo.textContent = `Fecha actual: ${fechaVieja}`;
+  subtitulo.textContent = `Actual: ${fechaActual}${repActual?" · "+repActual:""}`;
   box.appendChild(subtitulo);
 
   const lbl = document.createElement("label");
@@ -2365,9 +2375,34 @@ function abrirModalCambiarFecha(fechaVieja) {
 
   const fechaInp = document.createElement("input");
   fechaInp.type = "date";
-  fechaInp.value = fechaVieja;
+  fechaInp.value = fechaActual;
   fechaInp.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:2px solid #1e3a5f;font-size:15px;box-sizing:border-box;font-family:sans-serif;margin-bottom:16px;";
   box.appendChild(fechaInp);
+
+  const lblR = document.createElement("label");
+  lblR.textContent = "Repartidor";
+  lblR.style.cssText = "display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px;text-transform:uppercase;";
+  box.appendChild(lblR);
+
+  const selRep = document.createElement("select");
+  selRep.style.cssText = "width:100%;padding:10px 12px;border-radius:8px;border:2px solid #1e3a5f;font-size:15px;box-sizing:border-box;font-family:sans-serif;margin-bottom:16px;background:#fff;";
+  let hayActual = false;
+  (state.listaRepartidores||[]).forEach(r=>{
+    const nom = typeof r==="string" ? r : (r.nombre||"");
+    if(!nom) return;
+    const alias = (typeof r==="object" && r.alias) ? r.alias : nom;
+    const o = document.createElement("option");
+    o.value = nom; o.textContent = alias;
+    if(nom===repActual){ o.selected = true; hayActual = true; }
+    selRep.appendChild(o);
+  });
+  // Si el repartidor actual ya no está en la lista, lo agregamos para no perderlo
+  if(repActual && !hayActual){
+    const o = document.createElement("option");
+    o.value = repActual; o.textContent = repActual+" (actual)"; o.selected = true;
+    selRep.appendChild(o);
+  }
+  box.appendChild(selRep);
 
   const errP = document.createElement("p");
   errP.style.cssText = "color:#c00;font-size:12px;margin:0 0 12px;min-height:16px;display:none;";
@@ -2381,17 +2416,22 @@ function abrirModalCambiarFecha(fechaVieja) {
   btnGuardar.style.cssText = "flex:1;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:12px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
   btnGuardar.onclick = async () => {
     const fechaNueva = fechaInp.value.trim();
+    const repNuevo = (selRep.value||"").trim();
     if(!fechaNueva) { errP.textContent="Selecciona una fecha."; errP.style.display="block"; return; }
-    if(fechaNueva === fechaVieja) { errP.textContent="La fecha nueva es igual a la actual."; errP.style.display="block"; return; }
+    if(!repNuevo) { errP.textContent="Selecciona un repartidor."; errP.style.display="block"; return; }
 
-    const historial = await fbGet("historial") || {};
+    // Construir la clave nueva con la MISMA estructura que al confirmar: fecha_repartidor
+    const repKey = repNuevo.replace(/[.#$\/\[\]\s]/g,"_");
+    const claveNueva = repKey ? fechaNueva+"_"+repKey : fechaNueva;
+    if(claveNueva === claveVieja) { errP.textContent="No hay cambios que guardar."; errP.style.display="block"; return; }
 
-    if(historial[fechaNueva]) {
-      // Ya existe una liquidación en esa fecha → pedir confirmación
+    // Verificar colisión contra la clave destino exacta (fecha + repartidor)
+    const existente = await fbGet("historial/"+claveNueva);
+    if(existente) {
       const confirmar = await new Promise(resolve => {
         showModal({
           titulo: "⚠️ Ya existe una liquidación",
-          mensaje: `Ya hay una liquidación registrada el ${fechaNueva}. ¿Deseas reemplazarla con la del ${fechaVieja}?`,
+          mensaje: `Ya hay una liquidación de ${repNuevo} el ${fechaNueva}. ¿Deseas reemplazarla con esta?`,
           tipo: "confirm",
           btnAceptar: "Sí, reemplazar",
           colorAceptar: "#c0392b",
@@ -2406,21 +2446,23 @@ function abrirModalCambiarFecha(fechaVieja) {
     btnGuardar.disabled = true;
     btnGuardar.textContent = "Guardando...";
     try {
-      const registro = historial[fechaVieja];
-      // Mover: copiar con nueva fecha y borrar clave vieja
-      const registroActualizado = { ...registro, fecha: fechaNueva };
-      historial[fechaNueva] = registroActualizado;
-      delete historial[fechaVieja];
-      await fbSet("historial", historial);
+      // Traer el registro fresco del nodo viejo y reescribir fecha + repartidor
+      const registro = (await fbGet("historial/"+claveVieja)) || regActual;
+      const registroActualizado = { ...registro, fecha: fechaNueva, repartidor: repNuevo };
 
-      // Actualizar state local
+      // Mover SOLO ese día: escribir el nodo nuevo y borrar el viejo
+      // (sin reescribir todo el historial, igual que al confirmar)
+      await fbSet("historial/"+claveNueva, registroActualizado);
+      await fbRemove("historial/"+claveVieja);
+
+      // Actualizar state local (historialData usa la clave completa fecha_repartidor)
       const nuevoData = { ...state.historialData };
-      nuevoData[fechaNueva] = registroActualizado;
-      delete nuevoData[fechaVieja];
+      delete nuevoData[claveVieja];
+      nuevoData[claveNueva] = registroActualizado;
       setState({ historialData: nuevoData });
 
       overlay.remove();
-      showToast("✅ Fecha actualizada a " + fechaNueva, "#27ae60");
+      showToast("✅ Liquidación movida a "+fechaNueva+" · "+repNuevo, "#27ae60");
     } catch(e) {
       errP.textContent = "Error al guardar. Intenta de nuevo.";
       errP.style.display = "block";
@@ -3395,12 +3437,12 @@ function renderMain() {
     }},"📊 Excel"));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenEntregas"})},"📦 Entregas"));
     hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Liquidación"));
-    if(state.devoluciones&&state.devoluciones.length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
+    if(devsValidas(state.devoluciones,state.clienteMap).length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"historial",modoHistorial:false,fechaSelec:""})},"← Historial"));
   } else {
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenEntregas"})},"📦 Entregas"));
     hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700",boxShadow:"0 2px 8px rgba(230,126,34,0.4)"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Liquidación"));
-    if(state.devoluciones&&state.devoluciones.length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
+    if(devsValidas(state.devoluciones,state.clienteMap).length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>navegarConGuard(abrirHistorial)},"Historial"));
     if(state.esAdmin && !state.modoHistorial) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,165,0,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({showMoverProd:true,moverOrigenCliente:"",moverOrigenPedido:"",moverProductoSel:"",moverDestinoCliente:"",moverDestinoPedido:"",moverError:""})},"🔀 Mover producto"));
     if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>navegarConGuard(()=>setState({screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()}))},"Nuevo archivo"));
@@ -4514,7 +4556,7 @@ function renderResumenLiquidacion() {
 
 // ── Resumen de Devoluciones ──
 function renderResumenDevoluciones() {
-  const devs = state.devoluciones || [];
+  const devs = devsValidas(state.devoluciones, state.clienteMap);
   const cMap = state.clienteMap || {};
 
   // Helper: obtener ruta de un cliente
