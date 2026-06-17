@@ -4556,16 +4556,20 @@ function renderResumenLiquidacion() {
 
 // ── Resumen de Devoluciones ──
 function renderResumenDevoluciones() {
-  const devs = devsValidas(state.devoluciones, state.clienteMap);
   const cMap = state.clienteMap || {};
 
-  // Helper: obtener ruta de un cliente
-  const getRutaCliente = c => cMap[c]?.ruta || "Sin ruta";
+  // Nombre de ruta limpio (el Excel arrastra "— N clientes" en el encabezado de ruta)
+  const rutaNombre = r => (r||"").replace(/[\s—–-]+\d+\s*clientes?/i,"").trim();
+  // Ruta de un cliente. Todas las rutas tienen nombre; clientes sin ruta no se listan aquí.
+  const getRutaCliente = c => cMap[c]?.ruta || "";
+
+  // Solo devoluciones de clientes con ruta asignada (no se genera grupo "Sin ruta")
+  const devs = devsValidas(state.devoluciones, state.clienteMap).filter(d => getRutaCliente(d.cliente));
 
   // Recopilar todas las rutas que tienen devoluciones
   const rutasConDevs = new Set();
   devs.forEach(d => rutasConDevs.add(getRutaCliente(d.cliente)));
-  const devsTotalesAll = Object.keys(cMap).filter(c => state.estadoEntrega[c] === "rosado");
+  const devsTotalesAll = Object.keys(cMap).filter(c => state.estadoEntrega[c] === "rosado" && getRutaCliente(c));
   devsTotalesAll.forEach(c => rutasConDevs.add(getRutaCliente(c)));
   const todasRutas = Array.from(rutasConDevs).sort();
 
@@ -4642,7 +4646,7 @@ function renderResumenDevoluciones() {
           background: activo ? "#c0392b" : "#fff", color: activo ? "#fff" : "#c0392b",
           boxShadow: "0 1px 4px rgba(0,0,0,0.12)" },
         onClick: () => { state.dvResumenFiltroRuta = activo ? "" : ruta; render(); }
-      }, ruta);
+      }, rutaNombre(ruta));
       chipsWrap.appendChild(chip);
     });
     inner.appendChild(chipsWrap);
@@ -4667,7 +4671,7 @@ function renderResumenDevoluciones() {
     rutasTotales.forEach(ruta => {
       const clientesDeRuta = (totalPorRuta[ruta] || []);
       // Título de ruta
-      rows.push(el("div", { style: { fontWeight: "700", fontSize: "12px", color: "#9b59b6", background: "#f5eef8", borderRadius: "6px", padding: "4px 10px", margin: "6px 0 4px" } }, `📍 ${ruta}`));
+      rows.push(el("div", { style: { fontWeight: "700", fontSize: "12px", color: "#9b59b6", background: "#f5eef8", borderRadius: "6px", padding: "4px 10px", margin: "6px 0 4px" } }, `📍 ${rutaNombre(ruta)} — ${clientesDeRuta.length} cliente${clientesDeRuta.length !== 1 ? "s" : ""}`));
       clientesDeRuta.forEach(c => {
         const tt = totalesCliente(c);
         const mot = state.motivosDevTotal[c];
@@ -4731,7 +4735,7 @@ function renderResumenDevoluciones() {
     // Rebuild rows correctly (hRow before detail rows)
     const rowsFixed = [];
     rutasParciales.forEach(ruta => {
-      rowsFixed.push(el("div", { style: { fontWeight: "700", fontSize: "12px", color: "#9b59b6", background: "#f5eef8", borderRadius: "6px", padding: "4px 10px", margin: "6px 0 4px" } }, `📍 ${ruta}`));
+      rowsFixed.push(el("div", { style: { fontWeight: "700", fontSize: "12px", color: "#9b59b6", background: "#f5eef8", borderRadius: "6px", padding: "4px 10px", margin: "6px 0 4px" } }, `📍 ${rutaNombre(ruta)} — ${Object.keys(porRuta[ruta]).length} cliente${Object.keys(porRuta[ruta]).length !== 1 ? "s" : ""}`));
       Object.entries(porRuta[ruta]).sort((a, b) => b[1].total - a[1].total).forEach(([cliente, data]) => {
         const hRow = el("div", { style: { padding: "6px 0 4px 8px", borderBottom: "1px solid #f0f4f8" } });
         hRow.appendChild(el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2px" } },
