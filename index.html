@@ -954,7 +954,8 @@ function renderConfirmado() {
 async function abrirHistorial() {
   const data=await fbGet("historial")||{};
   const fechas=Object.keys(data).sort().reverse();
-  setState({historialData:data,fechaSelec:"",historialRepSelec:"",screen:"historial"});
+  cgModoSelec=false;
+  setState({historialData:data,fechaSelec:"",historialRepSelec:"",historialSeleccionados:{},screen:"historial"});
 }
 
 async function exportarExcel(reg) {
@@ -1133,6 +1134,7 @@ async function exportarExcelMultiple(fechas) {
   // Hoja resumen global (todos los días)
   const globalRows=[["Fecha","Repartidor","Total Bruto Q","Devoluciones Q","Descuentos Q","Total Neto Q"]];
   let gB=0,gD=0,gDe=0,gN=0;
+  const usados={}; // nombres de hoja ya usados (evitar colisiones)
 
   fechas.sort().forEach(fecha=>{
     const reg=state.historialData[fecha];
@@ -1152,10 +1154,19 @@ async function exportarExcelMultiple(fechas) {
       sB+=bruto; sD+=dv; sDe+=dc; sN+=bruto-dv-dc;
     });
     gB+=sB; gD+=sD; gDe+=sDe; gN+=sN;
-    globalRows.push([fecha,reg.repartidor||"",sB,sD,sDe,sN]);
+    globalRows.push([fecha.substring(0,10),reg.repartidor||"",sB,sD,sDe,sN]);
 
-    // Hoja individual de resumen por cliente para este día
-    const sheetName=fecha.replace(/-/g,"").slice(2); // ej: "250501"
+    // Hoja individual de resumen por cliente para este día.
+    // Nombre seguro (Excel: máx 31 chars, sin : \ / ? * [ ]) y único.
+    let sheetName=(fecha.substring(0,10).replace(/-/g,"").slice(2)) // ej: "250501"
+      + (reg.repartidor ? "_"+reg.repartidor : "");
+    sheetName=sheetName.replace(/[:\\/?*\[\]]/g,"").substring(0,31);
+    if(usados[sheetName]){
+      let n=2, base=sheetName.substring(0,28);
+      while(usados[base+"_"+n]) n++;
+      sheetName=base+"_"+n;
+    }
+    usados[sheetName]=true;
     const resRows=[["Ruta","Cliente","Estado","Total bruto Q","Devoluciones Q","Descuento Q","Total neto Q"]];
     clts.sort((a,b)=>{const ra=cMap[a]?.ruta||"ZZZ",rb=cMap[b]?.ruta||"ZZZ";return ra.localeCompare(rb);}).forEach(c=>{
       const ruta=cMap[c]?.ruta||"";
@@ -1176,8 +1187,8 @@ async function exportarExcelMultiple(fechas) {
   wb.SheetNames.unshift("Resumen General");
   wb.Sheets["Resumen General"]=wbResumen;
 
-  const desde=fechas[0].replace(/-/g,"");
-  const hasta=fechas[fechas.length-1].replace(/-/g,"");
+  const desde=fechas[0].substring(0,10).replace(/-/g,"");
+  const hasta=fechas[fechas.length-1].substring(0,10).replace(/-/g,"");
   XLSX.writeFile(wb,`Liquidaciones_${desde}_${hasta}.xlsx`);
 }
 
@@ -1630,6 +1641,8 @@ function colorTextoContraste(hex){
   const lum=(0.299*r+0.587*g+0.114*b)/255;
   return lum>0.62?"#1e3a5f":"#fff";
 }
+// Modo selección del calendario general (true = tocar días los selecciona para descargar)
+let cgModoSelec = false;
 
 function renderHistorial() {
   const esAdmin = state.esAdmin;
@@ -1641,7 +1654,7 @@ function renderHistorial() {
   // Header
   const hdr = el("div",{style:{background:"#1e3a5f",color:"#fff",borderRadius:"12px",padding:"16px 24px",marginBottom:"20px",display:"flex",alignItems:"center",gap:"12px"}});
   const volverScreen = esAdmin ? "menu" : "menuRepartidor";
-  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>setState({screen:volverScreen,modoHistorial:false,historialRepSelec:"",historialSeleccionados:{}})},"← Volver"));
+  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"},onClick:()=>{ cgModoSelec=false; setState({screen:volverScreen,modoHistorial:false,historialRepSelec:"",historialSeleccionados:{}}); }},"← Volver"));
   hdr.appendChild(el("h1",{style:{margin:"0",fontSize:"18px",fontWeight:"700"}},"Historial de Liquidaciones"));
   inner.appendChild(hdr);
 
@@ -1652,7 +1665,9 @@ function renderHistorial() {
     if((state.historialRepSelec === "" || state.historialRepSelec === "__todos__") && !state.fechaSelec) {
       // Encabezado de la vista
       inner.appendChild(el("p",{style:{fontSize:"12px",color:"#888",margin:"0 0 12px"}},
-        "Toca un día para ver su liquidación · toca un repartidor en la leyenda para ver solo el suyo (con descarga, cambiar fecha, etc.)"));
+        cgModoSelec
+          ? "Modo selección: toca días para marcarlos · arrastra para un rango · usa los botones de abajo para descargar."
+          : "Toca un día para ver su liquidación · toca un repartidor en la leyenda para ver solo el suyo · usa “Seleccionar” para descargar varios días a Excel."));
 
       // Construir entradas: cada liquidación con su clave, repartidor y fecha (10 chars)
       const entradas = Object.entries(data).map(([k,v])=>({key:k, rep:(v.repartidor||"__sin__"), fecha10:k.substring(0,10)}));
@@ -1677,12 +1692,81 @@ function renderHistorial() {
         const destino = r==="__sin__" ? "__sin_asignar__" : r;
         const chip = el("div",{style:{display:"flex",alignItems:"center",gap:"7px",fontSize:"12px",color:"#333",fontWeight:"600",cursor:"pointer",padding:"4px 8px",borderRadius:"8px",background:"#f4f6f9"},
           title:"Ver solo "+nombreRep(r),
-          onClick:()=>setState({historialRepSelec:destino,historialSeleccionados:{}})});
+          onClick:()=>{ cgModoSelec=false; setState({historialRepSelec:destino,historialSeleccionados:{}}); }});
         chip.appendChild(el("span",{style:{width:"15px",height:"15px",borderRadius:"4px",background:colorRep[r],flexShrink:"0",border:"1px solid rgba(0,0,0,0.12)"}}));
         chip.appendChild(document.createTextNode(nombreRep(r)));
         leyenda.appendChild(chip);
       });
       inner.appendChild(leyenda);
+
+      // ── Barra de selección múltiple / descarga a Excel (calendario general) ──
+      let calGrid; // se asigna más abajo; referenciada por los helpers de selección
+      const selCountCG = () => Object.values(state.historialSeleccionados).filter(Boolean).length;
+      const barraCG = el("div",{style:{background:"#fff",borderRadius:"10px",padding:"10px 14px",marginBottom:"14px",display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap",boxShadow:"0 2px 6px rgba(0,0,0,0.06)"}});
+      const lblCG = el("span",{style:{fontSize:"13px",color:"#555",flex:"1",minWidth:"110px"}});
+      const btnDescCG = el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"}},"📊 Descargar Excel");
+      const btnLimpCG = el("button",{style:{background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"}},"✕");
+      const btnModoCG = el("button",{style:{border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"}},"☑️ Seleccionar");
+
+      function pintarBarraCG(){
+        const n = selCountCG();
+        if(cgModoSelec){
+          btnModoCG.textContent = "↩ Ver liquidaciones";
+          btnModoCG.style.background = "#7f8c8d"; btnModoCG.style.color = "#fff";
+          lblCG.textContent = n>0 ? `${n} día${n>1?"s":""} seleccionado${n>1?"s":""}` : "Toca días para seleccionar · arrastra para un rango";
+          btnDescCG.textContent = `📊 Descargar Excel (${n})`;
+          btnDescCG.style.display = n>0 ? "" : "none";
+          btnLimpCG.style.display = n>0 ? "" : "none";
+        } else {
+          btnModoCG.textContent = "☑️ Seleccionar";
+          btnModoCG.style.background = "#1e3a5f"; btnModoCG.style.color = "#fff";
+          lblCG.textContent = "Descargar varios días a Excel";
+          btnDescCG.style.display = "none";
+          btnLimpCG.style.display = "none";
+        }
+      }
+      // Repinta el resaltado de las celdas seleccionadas sin re-renderizar todo
+      function refrescarCeldasCG(){
+        if(!calGrid) return;
+        calGrid.querySelectorAll(".cg-cell").forEach(cell=>{
+          const fk = cell.getAttribute("data-fkey");
+          const day = cell.querySelector(".cg-day");
+          if(!day) return;
+          if(cgModoSelec && state.historialSeleccionados[fk]){
+            day.style.boxShadow = "0 0 0 2px #fff,0 0 0 5px #f1c40f";
+            day.style.transform = "scale(1.08)";
+          } else {
+            day.style.boxShadow = "";
+            day.style.transform = "";
+          }
+        });
+      }
+      const fechasConDatosCG = () => Object.keys(porFecha).sort();
+      function aplicarRangoCG(f1,f2){
+        const arr = fechasConDatosCG();
+        const i1 = arr.indexOf(f1), i2 = arr.indexOf(f2);
+        if(i1<0||i2<0) return;
+        const [ini,fin] = [Math.min(i1,i2),Math.max(i1,i2)];
+        arr.slice(ini,fin+1).forEach(f=>{ state.historialSeleccionados[f]=true; });
+        refrescarCeldasCG(); pintarBarraCG();
+      }
+
+      btnModoCG.addEventListener("click",()=>{ cgModoSelec=!cgModoSelec; setState({historialSeleccionados:{}}); });
+      btnLimpCG.addEventListener("click",()=>{ setState({historialSeleccionados:{}}); });
+      btnDescCG.addEventListener("click",()=>{
+        const sel = Object.keys(state.historialSeleccionados).filter(f=>state.historialSeleccionados[f]);
+        if(sel.length===0){ showToast("Selecciona al menos un día","#e67e22"); return; }
+        const claves=[];
+        sel.forEach(f10=>{ (porFecha[f10]||[]).forEach(e=>claves.push(e.key)); });
+        if(claves.length===0){ showToast("No hay liquidaciones en los días elegidos","#e67e22"); return; }
+        exportarExcelMultiple(claves);
+      });
+      barraCG.appendChild(lblCG);
+      barraCG.appendChild(btnDescCG);
+      barraCG.appendChild(btnLimpCG);
+      barraCG.appendChild(btnModoCG);
+      pintarBarraCG();
+      inner.appendChild(barraCG);
 
       // Agrupar entradas por fecha (10 chars). Un día puede tener varios repartidores.
       const porFecha = {};
@@ -1777,7 +1861,7 @@ function renderHistorial() {
       if(!document.getElementById("cg-hover-style")){
         const st=document.createElement("style");
         st.id="cg-hover-style";
-        st.textContent=".cg-edit{display:none}.cg-cell:hover .cg-edit{display:block}.cg-day{transition:transform .1s}.cg-cell:hover .cg-day{transform:scale(1.12)}";
+        st.textContent=".cg-edit{display:none}.cg-cell:hover .cg-edit{display:block}.cg-day{transition:transform .1s}.cg-cell:hover .cg-day{transform:scale(1.12)}.cg-sel .cg-edit{display:none!important}.cg-sel .cg-cell:hover .cg-day{transform:none}";
         document.head.appendChild(st);
       }
 
@@ -1825,18 +1909,58 @@ function renderHistorial() {
         }
         calHtml+='</div></div>';
       });
-      const calGrid=el("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"14px",marginBottom:"14px"}});
+      calGrid=el("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"14px",marginBottom:"14px",userSelect:"none"}});
+      if(cgModoSelec) calGrid.className="cg-sel";
       calGrid.innerHTML=calHtml;
+      let cgDragInicio=null, cgDragRealizado=false;
       // Un solo manejador de clicks para todo el calendario (delegación → carga instantánea)
       calGrid.addEventListener("click",ev=>{
         const cell=ev.target.closest(".cg-cell"); if(!cell) return;
         const fKey=cell.getAttribute("data-fkey"); if(!fKey) return;
+        if(cgModoSelec){
+          if(cgDragRealizado){ cgDragRealizado=false; return; } // tras arrastrar no togglear
+          if(state.historialSeleccionados[fKey]) delete state.historialSeleccionados[fKey];
+          else state.historialSeleccionados[fKey]=true;
+          refrescarCeldasCG(); pintarBarraCG();
+          return;
+        }
         if(ev.target.closest(".cg-edit")){ abrirEdicionDia(fKey); return; }
         const arr=porFecha[fKey]||[];
         if(arr.length===1) cargarFechaHistorial(arr[0].key);
         else if(arr.length>1) abrirSelectorDia(fKey);
       });
+      // Arrastrar para seleccionar un rango (solo en modo selección)
+      calGrid.addEventListener("mousedown",ev=>{
+        if(!cgModoSelec) return;
+        const cell=ev.target.closest(".cg-cell"); if(!cell) return;
+        const fk=cell.getAttribute("data-fkey"); if(!fk) return;
+        ev.preventDefault(); cgDragInicio=fk; cgDragRealizado=false;
+        const onMove=e=>{
+          const over=document.elementFromPoint(e.clientX,e.clientY);
+          const c=over&&over.closest?over.closest(".cg-cell"):null;
+          if(c){ const f=c.getAttribute("data-fkey"); if(f&&f!==cgDragInicio){ cgDragRealizado=true; aplicarRangoCG(cgDragInicio,f); } }
+        };
+        const onUp=()=>{ document.removeEventListener("mousemove",onMove); document.removeEventListener("mouseup",onUp); };
+        document.addEventListener("mousemove",onMove);
+        document.addEventListener("mouseup",onUp);
+      });
+      // Touch drag para móvil (solo en modo selección)
+      calGrid.addEventListener("touchstart",ev=>{
+        if(!cgModoSelec) return;
+        const cell=ev.target.closest(".cg-cell"); if(!cell) return;
+        const fk=cell.getAttribute("data-fkey"); if(!fk) return;
+        cgDragInicio=fk; cgDragRealizado=false;
+        const onTMove=e=>{
+          const t=e.touches[0]; const over=document.elementFromPoint(t.clientX,t.clientY);
+          const c=over&&over.closest?over.closest(".cg-cell"):null;
+          if(c){ const f=c.getAttribute("data-fkey"); if(f&&f!==cgDragInicio){ cgDragRealizado=true; aplicarRangoCG(cgDragInicio,f); } }
+        };
+        const onTUp=()=>{ document.removeEventListener("touchmove",onTMove); document.removeEventListener("touchend",onTUp); };
+        document.addEventListener("touchmove",onTMove,{passive:true});
+        document.addEventListener("touchend",onTUp);
+      },{passive:true});
       inner.appendChild(calGrid);
+      refrescarCeldasCG();
       return wrap;
     }
 
@@ -1885,7 +2009,9 @@ function renderHistorial() {
             onClick:()=>{
               const fechasSel = Object.entries(state.historialSeleccionados).filter(([,v])=>v).map(([f])=>f).sort();
               if(fechasSel.length===0){ showToast("Selecciona al menos un día","#e67e22"); return; }
-              exportarExcelMultiple(fechasSel);
+              // Mapear cada fecha (10 chars) a su clave completa de historial (fecha_repartidor)
+              const claves = fechasSel.map(f=>fechaKeyMap[f]||f).filter(Boolean);
+              exportarExcelMultiple(claves);
             }},`📊 Descargar Excel (${selCount})`);
           barraMulti.appendChild(btnDescMulti);
           const btnLimpM = el("button",{style:{background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"},
