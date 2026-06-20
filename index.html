@@ -4147,7 +4147,7 @@ function renderListaRutas(container, porRuta) {
 // ── CUADRE (usado en renderResumenLiquidacion) ──
 function _buildCuadrePanel(modoHistorial, onConfirmar) {
   const cuadre=el("div",{style:{background:"#fff",borderRadius:"12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",padding:"20px",marginTop:"0"}});
-  const cuadreGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"20px"}});
+  const cuadreGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 0.7fr 1.6fr",gap:"20px",alignItems:"start"}});
 
   // ── Billetes (sin re-render) ──
   const billDiv=el("div");
