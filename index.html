@@ -958,7 +958,7 @@ async function abrirHistorial() {
   setState({historialData:data,fechaSelec:"",historialRepSelec:"",historialSeleccionados:{},screen:"historial"});
 }
 
-async function exportarExcel(reg) {
+async function exportarExcel(reg, nombreArchivo) {
   const wb=XLSX.utils.book_new();
   const devs=reg.devoluciones||[];
   const descs=reg.descuentos||{};
@@ -1118,7 +1118,8 @@ async function exportarExcel(reg) {
     [],[Math.abs(dif)<0.01?"✓ CUADRADO":dif>0?"SOBRANTE":"FALTANTE","DIFERENCIA",dif],
   ];
   XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(cuadreRows),"Cuadre Final");
-  XLSX.writeFile(wb,"Liquidacion_"+(reg.fecha||"").replace(/[/]/g,"-")+".xlsx");
+  const nombre = nombreArchivo || ("Liquidacion_"+(reg.fecha||"").replace(/[/]/g,"-")+".xlsx");
+  XLSX.writeFile(wb, nombre);
 }
 
 // ── Exportar múltiples días en un solo Excel ──
@@ -1190,6 +1191,24 @@ async function exportarExcelMultiple(fechas) {
   const desde=fechas[0].substring(0,10).replace(/-/g,"");
   const hasta=fechas[fechas.length-1].substring(0,10).replace(/-/g,"");
   XLSX.writeFile(wb,`Liquidaciones_${desde}_${hasta}.xlsx`);
+}
+
+// ── Descargar un archivo Excel por cada día/liquidación (no consolidado) ──
+async function exportarPorDia(claves) {
+  if(!claves || claves.length===0) return;
+  const validas = claves.filter(k=>state.historialData[k]);
+  if(validas.length===0){ showToast("No hay liquidaciones para descargar","#e67e22"); return; }
+  validas.sort();
+  showToast(`Descargando ${validas.length} archivo${validas.length>1?"s":""}…`,"#27ae60");
+  for(let i=0;i<validas.length;i++){
+    const reg = state.historialData[validas[i]];
+    const fecha = (reg.fecha || validas[i].substring(0,10)).replace(/[/]/g,"-");
+    const rep = (reg.repartidor||"").replace(/[\\/:*?"<>|]/g,"").trim();
+    const nombre = "Liquidacion_"+fecha+(rep?"_"+rep:"")+".xlsx";
+    exportarExcel(reg, nombre);
+    // Pausa entre descargas para que el navegador no las agrupe ni bloquee
+    if(i < validas.length-1) await new Promise(r=>setTimeout(r,500));
+  }
 }
 
 function guardarDev() {
@@ -1759,7 +1778,7 @@ function renderHistorial() {
         const claves=[];
         sel.forEach(f10=>{ (porFecha[f10]||[]).forEach(e=>claves.push(e.key)); });
         if(claves.length===0){ showToast("No hay liquidaciones en los días elegidos","#e67e22"); return; }
-        exportarExcelMultiple(claves);
+        exportarPorDia(claves);
       });
       barraCG.appendChild(lblCG);
       barraCG.appendChild(btnDescCG);
@@ -2011,7 +2030,7 @@ function renderHistorial() {
               if(fechasSel.length===0){ showToast("Selecciona al menos un día","#e67e22"); return; }
               // Mapear cada fecha (10 chars) a su clave completa de historial (fecha_repartidor)
               const claves = fechasSel.map(f=>fechaKeyMap[f]||f).filter(Boolean);
-              exportarExcelMultiple(claves);
+              exportarPorDia(claves);
             }},`📊 Descargar Excel (${selCount})`);
           barraMulti.appendChild(btnDescMulti);
           const btnLimpM = el("button",{style:{background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"13px",fontWeight:"700",flexShrink:"0"},
@@ -2214,7 +2233,9 @@ function renderHistorial() {
         onClick:()=>{
           const fechasSel = Object.entries(state.historialSeleccionados).filter(([,v])=>v).map(([f])=>f).sort();
           if(fechasSel.length===0){ showToast("Selecciona al menos un día","#e67e22"); return; }
-          exportarExcelMultiple(fechasSel);
+          // Mapear cada fecha (10 chars) a su clave completa de historial (fecha_repartidor)
+          const claves = fechasSel.map(f=>fechaKeyMapR[f]||f).filter(Boolean);
+          exportarPorDia(claves);
         }},`📊 Descargar Excel (${selCountR})`);
       barraR.appendChild(btnDescR);
       // Botón limpiar selección
