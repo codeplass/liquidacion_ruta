@@ -50,6 +50,7 @@ let MOTIVOS = [
 ];
 const BILLETES = [1,5,10,20,50,100,200];
 let PASS_DESBLOQUEO = "1234"; // sobreescrito por Firebase
+let RUBROS_GASTOS = ["Diésel","Viáticos","Peaje","Pago auxiliar","Otros"]; // sobreescrito por Firebase
 
 // ── Helpers ──
 const fQ = v => `Q ${Number(v||0).toLocaleString("es-GT",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
@@ -400,6 +401,7 @@ async function iniciarSesionConUsuario(usuario) {
     const cfg=await fbGet("config")||{};
     if(cfg.passDesbloqueo) PASS_DESBLOQUEO=cfg.passDesbloqueo;
     if(cfg.motivos && Array.isArray(cfg.motivos) && cfg.motivos.length>0) MOTIVOS=cfg.motivos;
+    if(cfg.rubrosGastos && Array.isArray(cfg.rubrosGastos) && cfg.rubrosGastos.length>0) RUBROS_GASTOS=cfg.rubrosGastos;
     const reps=Array.isArray(cfg.personal?.repartidores)?cfg.personal.repartidores:[];
     const auxs=Array.isArray(cfg.personal?.auxiliares)?cfg.personal.auxiliares:[];
     state.listaRepartidores=reps;
@@ -1106,8 +1108,8 @@ async function exportarExcel(reg, nombreArchivo) {
     ...[1,5,10,20,50,100,200].map(b=>{const c=parseFloat(billetes[b])||0;return c>0?["Q"+b,c,b*c]:null;}).filter(Boolean),
     ["Subtotal billetes","",tB],["Monedas","",mon],["Total efectivo","",tEf],
     [],[" OTROS PAGOS","",""],["Deposito bancario","",tDep],["Transferencia","",tTra],
-    [],[" GASTOS DE RUTA","Descripcion","Monto Q","De cuenta (✓=si)"],
-    ...gastos.filter(g=>parseFloat(g.monto)).map(g=>[g.comentario||"",g.desc||"",parseFloat(g.monto),g.deCuenta?"✓":"—"]),
+    [],[" GASTOS DE RUTA","Detalle","Monto Q","De cuenta (✓=si)"],
+    ...gastos.filter(g=>parseFloat(g.monto)).map(g=>[g.desc||"",g.comentario||"",parseFloat(g.monto),g.deCuenta?"✓":"—"]),
     ["Gastos de ruta (bodega)","",tGasBodega],["Gastos de ruta (de cuenta)","",tGasDeCuenta],["Total gastos","",tGas],
     [],[" RESUMEN","",""],
     ["Total a entregar (bruto)","",sB],["(-) Devoluciones","",-sD],["(-) Descuentos","",-sDe],["(-) Ent. no confirmadas","",-tNoCobrado],
@@ -4253,7 +4255,7 @@ function _buildCuadrePanel(modoHistorial, onConfirmar) {
   gasDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"6px"}},"⛽ Gastos de ruta"));
   const gasTable=el("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:"12px",marginBottom:"6px"}});
   const gasThead=el("thead"); const gasTr=el("tr");
-  [["","20px"],["Descripción","38%"],["Monto Q","22%"],["Comentario",""],["","24px"]].forEach(([h,w])=>{
+  [["","20px"],["Rubro","34%"],["Monto Q","22%"],["Detalle",""],["","24px"]].forEach(([h,w])=>{
     gasTr.appendChild(el("th",{style:{background:"#f0f4f8",padding:"5px 8px",textAlign:h==="Monto Q"?"right":"center",color:"#555",fontWeight:"600",...(w?{width:w}:{})}},h));
   });
   gasThead.appendChild(gasTr); gasTable.appendChild(gasThead);
@@ -4274,12 +4276,15 @@ function _buildCuadrePanel(modoHistorial, onConfirmar) {
     }
     grow.appendChild(gcbTd);
     const gd=el("td",{style:{padding:"3px 4px"}});
-    const gdInp=document.createElement("input"); gdInp.placeholder="Ej: Combustible";
-    gdInp.style.cssText="width:100%;padding:4px 6px;border-radius:6px;border:1px solid #ccc;font-size:12px;box-sizing:border-box;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
+    const gdInp=document.createElement("select");
+    gdInp.style.cssText="width:100%;padding:4px 6px;border-radius:6px;border:1px solid #ccc;font-size:12px;box-sizing:border-box;font-family:sans-serif;background:#fff;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
     if(state.modoHistorial) gdInp.disabled=true;
+    const gdPh=document.createElement("option"); gdPh.value=""; gdPh.textContent="— Rubro —"; gdInp.appendChild(gdPh);
+    const rubrosOpc=[...RUBROS_GASTOS];
+    if(g.desc && !rubrosOpc.includes(g.desc)) rubrosOpc.push(g.desc); // conservar rubros antiguos/personalizados
+    rubrosOpc.forEach(r=>{ const o=document.createElement("option"); o.value=r; o.textContent=r; gdInp.appendChild(o); });
     gdInp.value=g.desc||"";
-    gdInp.addEventListener("input",e=>{state.gastosDetalle[gi].desc=e.target.value;});
-    gdInp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); gm.querySelector("input")?.focus(); } });
+    gdInp.addEventListener("change",e=>{state.gastosDetalle[gi].desc=e.target.value;});
     gd.appendChild(gdInp);
     const gm=el("td",{style:{padding:"3px 4px"}});
     const gmInp=document.createElement("input"); gmInp.type="number"; gmInp.min="0"; gmInp.step="0.01"; gmInp.placeholder="0.00";
@@ -4291,7 +4296,7 @@ function _buildCuadrePanel(modoHistorial, onConfirmar) {
     gmInp.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); gcInp.focus(); } });
     gm.appendChild(gmInp);
     const gc=el("td",{style:{padding:"3px 4px"}});
-    const gcInp=document.createElement("input"); gcInp.placeholder="Opcional";
+    const gcInp=document.createElement("input"); gcInp.placeholder="Ej: lugar / detalle";
     gcInp.style.cssText="width:100%;padding:4px 6px;border-radius:6px;border:1px solid #ccc;font-size:12px;box-sizing:border-box;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
     if(state.modoHistorial) gcInp.disabled=true;
     gcInp.value=g.comentario||"";
@@ -4304,6 +4309,7 @@ function _buildCuadrePanel(modoHistorial, onConfirmar) {
   });
   gasTable.appendChild(gasTbody); gasDiv.appendChild(gasTable);
   gasDiv.appendChild(el("button",{style:{background:"#eef2f7",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"12px",cursor:"pointer",color:"#1e3a5f",fontWeight:"600"},onClick:()=>setState({gastosDetalle:[...state.gastosDetalle,{desc:"",monto:"",comentario:"",deCuenta:true}]})},"+ Agregar gasto"));
+  if(state.esAdmin) gasDiv.appendChild(el("button",{style:{background:"none",border:"1px solid #cbd5e1",borderRadius:"6px",padding:"4px 12px",fontSize:"12px",cursor:"pointer",color:"#64748b",fontWeight:"600",marginLeft:"8px"},onClick:abrirModalRubros},"⚙️ Rubros"));
   otrosDiv.appendChild(gasDiv);
 
   // Resumen cuadre
@@ -5595,6 +5601,65 @@ function abrirModalMotivos() {
         const cfg=await fbGet("config")||{};
         await fbSet("config",{...cfg,motivos:motivosLocal});
         MOTIVOS=motivosLocal; overlay.remove(); showToast("✅ Tipos de devolución actualizados","#27ae60");
+      } catch(e){errP.textContent="Error al guardar."; btnG.textContent="💾 Guardar cambios"; btnG.disabled=false;}
+    };
+    btnRow.appendChild(btnG);
+    const btnC=document.createElement("button"); btnC.textContent="Cancelar";
+    btnC.style.cssText="flex:1;background:#eee;color:#555;border:none;border-radius:8px;padding:11px 0;font-size:14px;cursor:pointer;font-family:sans-serif;";
+    btnC.onclick=()=>overlay.remove(); btnRow.appendChild(btnC); box.appendChild(btnRow);
+  };
+  renderContenido();
+  overlay.appendChild(box);
+  overlay.addEventListener("click",e=>{if(e.target===overlay)overlay.remove();});
+  document.body.appendChild(overlay);
+}
+
+// ── Modal gestionar rubros de gastos (solo admin) ──
+function abrirModalRubros() {
+  const prev = document.getElementById("modal-rubros");
+  if(prev) prev.remove();
+  let rubrosLocal = JSON.parse(JSON.stringify(RUBROS_GASTOS));
+  const overlay = document.createElement("div");
+  overlay.id = "modal-rubros";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;font-family:sans-serif;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:24px;width:100%;max-width:420px;max-height:90vh;overflow-y:auto;";
+
+  const renderContenido = () => {
+    box.innerHTML = "";
+    const titulo=document.createElement("h3"); titulo.textContent="⛽ Rubros de gastos";
+    titulo.style.cssText="margin:0 0 4px;color:#1e3a5f;font-size:16px;"; box.appendChild(titulo);
+    const desc=document.createElement("p"); desc.textContent="Agrega, edita o elimina los rubros disponibles para los gastos de ruta.";
+    desc.style.cssText="font-size:12px;color:#888;margin:0 0 16px;"; box.appendChild(desc);
+    rubrosLocal.forEach((r,idx)=>{
+      const fila=document.createElement("div"); fila.style.cssText="display:flex;gap:8px;align-items:center;margin-bottom:10px;";
+      const iName=document.createElement("input"); iName.type="text"; iName.value=r; iName.placeholder="Nombre del rubro";
+      iName.style.cssText="flex:1;padding:8px 10px;border-radius:8px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;font-family:sans-serif;";
+      iName.addEventListener("input",e=>{rubrosLocal[idx]=e.target.value;});
+      const btnD=document.createElement("button"); btnD.textContent="🗑️";
+      btnD.style.cssText="background:#fce4ec;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;font-size:14px;flex-shrink:0;";
+      btnD.onclick=()=>{ showModal({titulo:"🗑️ Eliminar rubro", mensaje:'¿Eliminar "'+(r||"(vacío)")+'"?', tipo:"confirm", btnAceptar:"Eliminar", colorAceptar:"#c0392b", btnCancelar:"Cancelar", onAceptar:()=>{rubrosLocal.splice(idx,1);renderContenido();} }); };
+      fila.appendChild(iName);fila.appendChild(btnD);box.appendChild(fila);
+    });
+    const btnAgr=document.createElement("button"); btnAgr.textContent="➕ Agregar rubro";
+    btnAgr.style.cssText="width:100%;background:#eef2f7;color:#1e3a5f;border:2px dashed #1e3a5f;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;cursor:pointer;font-family:sans-serif;margin-top:4px;margin-bottom:18px;";
+    btnAgr.onclick=()=>{ rubrosLocal.push(""); renderContenido(); setTimeout(()=>{const ins=box.querySelectorAll("input");ins[ins.length-1]?.focus();},30); };
+    box.appendChild(btnAgr);
+    const errP=document.createElement("p"); errP.style.cssText="color:#c00;font-size:12px;margin:0 0 10px;min-height:16px;"; box.appendChild(errP);
+    const btnRow=document.createElement("div"); btnRow.style.cssText="display:flex;gap:10px;";
+    const btnG=document.createElement("button"); btnG.textContent="💾 Guardar cambios";
+    btnG.style.cssText="flex:1;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+    btnG.onclick=async()=>{
+      const limpios=rubrosLocal.map(r=>(r||"").trim()).filter(r=>r);
+      if(limpios.length===0){errP.textContent="Debe haber al menos un rubro.";return;}
+      const lower=limpios.map(r=>r.toLowerCase());
+      if(new Set(lower).size!==lower.length){errP.textContent="Hay rubros repetidos.";return;}
+      btnG.textContent="Guardando..."; btnG.disabled=true;
+      try {
+        const cfg=await fbGet("config")||{};
+        await fbSet("config",{...cfg,rubrosGastos:limpios});
+        RUBROS_GASTOS=limpios; overlay.remove(); showToast("✅ Rubros de gastos actualizados","#27ae60");
+        render();
       } catch(e){errP.textContent="Error al guardar."; btnG.textContent="💾 Guardar cambios"; btnG.disabled=false;}
     };
     btnRow.appendChild(btnG);
