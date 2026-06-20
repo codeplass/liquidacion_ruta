@@ -418,6 +418,11 @@ async function iniciarSesionConUsuario(usuario) {
     if(repVinculado) state.loginRepartidor = typeof repVinculado==="string"?repVinculado:(repVinculado.nombre||"");
   } catch(e){}
   const datos=await fbGet("datos-dia");
+  // Para el administrador: mostrar la tripulación que quedó asignada en datos-dia
+  if(admin && datos){
+    if(datos.repartidor) state.loginRepartidor = datos.repartidor;
+    if(datos.auxiliar)   state.loginAuxiliar   = datos.auxiliar;
+  }
   // Para repartidores: verificar que los datos-dia les pertenecen
   // Si el campo repartidor existe y no coincide, ignorar los datos
   const repNombreActual = usuario.repartidorVinculado || "";
@@ -902,6 +907,14 @@ async function volverADiaDesdMenu() {
     state.pagoPendiente = datos.pagoPendiente || {};
     state.modoPago      = datos.modoPago || {};
     state.fecha         = datos.fecha || hoy();
+    // Mostrar la tripulación asignada (repartidor/auxiliar) en entregas y liquidación
+    if(state.esAdmin){
+      state.loginRepartidor = datos.repartidor || "";
+      state.loginAuxiliar   = datos.auxiliar   || "";
+    } else {
+      if(datos.repartidor && !state.loginRepartidor) state.loginRepartidor = datos.repartidor;
+      if(datos.auxiliar   && !state.loginAuxiliar)   state.loginAuxiliar   = datos.auxiliar;
+    }
   }
   const yaConfirmado = datos?.confirmado === true;
   setState({screen:"main", modoHistorial:yaConfirmado, confirmado:yaConfirmado, ocultarConfirmados:false, filtroRuta:""});
@@ -3650,6 +3663,7 @@ function renderMain() {
     if(repNomInfo) infoRight.appendChild(el("span",{style:{fontSize:"12px",color:"#444",fontWeight:"600"}},`👤 ${repNomInfo}`));
     if(auxNomInfo) infoRight.appendChild(el("span",{style:{fontSize:"12px",color:"#666"}},`🧑‍🤝‍🧑 ${auxNomInfo}`));
     if(fechaInfo)  infoRight.appendChild(el("span",{style:{fontSize:"12px",color:"#888"}},`📅 ${fechaInfo}`));
+    if(state.esAdmin && !state.modoHistorial) infoRight.appendChild(el("button",{style:{background:"none",border:"1px solid #cbd5e1",borderRadius:"8px",padding:"4px 10px",fontSize:"12px",cursor:"pointer",color:"#1e3a5f",fontWeight:"600"},onClick:abrirModalTripulacion}, (repNomInfo||auxNomInfo)?"✎ Tripulación":"➕ Asignar tripulación"));
     infoBar.appendChild(infoRight);
     inner.appendChild(infoBar);
   }
@@ -4253,9 +4267,9 @@ function _buildCuadrePanel(modoHistorial, onConfirmar) {
   // Gastos
   const gasDiv=el("div");
   gasDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"6px"}},"⛽ Gastos de ruta"));
-  const gasTable=el("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:"12px",marginBottom:"6px"}});
+  const gasTable=el("table",{style:{width:"100%",tableLayout:"fixed",borderCollapse:"collapse",fontSize:"12px",marginBottom:"6px"}});
   const gasThead=el("thead"); const gasTr=el("tr");
-  [["","20px"],["Rubro","34%"],["Monto Q","22%"],["Detalle",""],["","24px"]].forEach(([h,w])=>{
+  [["","20px"],["Rubro","120px"],["Monto Q","80px"],["Detalle",""],["","24px"]].forEach(([h,w])=>{
     gasTr.appendChild(el("th",{style:{background:"#f0f4f8",padding:"5px 8px",textAlign:h==="Monto Q"?"right":"center",color:"#555",fontWeight:"600",...(w?{width:w}:{})}},h));
   });
   gasThead.appendChild(gasTr); gasTable.appendChild(gasThead);
@@ -4648,10 +4662,12 @@ function renderResumenLiquidacion() {
   {
     const repRL = state.loginRepartidor || "";
     const auxRL = state.loginAuxiliar || "";
-    if(repRL || auxRL){
-      const tripBarL = el("div",{style:{display:"flex",gap:"10px",flexWrap:"wrap",marginBottom:"14px"}});
+    const puedeEditarTrip = state.esAdmin && !state.modoHistorial;
+    if(repRL || auxRL || puedeEditarTrip){
+      const tripBarL = el("div",{style:{display:"flex",gap:"10px",flexWrap:"wrap",alignItems:"center",marginBottom:"14px"}});
       if(repRL) tripBarL.appendChild(el("span",{style:{background:"#eef4fb",color:"#1e3a5f",borderRadius:"8px",padding:"6px 14px",fontSize:"12px",fontWeight:"600"}}, "🚚 "+repRL));
       if(auxRL) tripBarL.appendChild(el("span",{style:{background:"#f0f8f0",color:"#27ae60",borderRadius:"8px",padding:"6px 14px",fontSize:"12px",fontWeight:"600"}}, "👷 "+auxRL));
+      if(puedeEditarTrip) tripBarL.appendChild(el("button",{style:{background:"none",border:"1px solid #cbd5e1",borderRadius:"8px",padding:"5px 12px",fontSize:"12px",cursor:"pointer",color:"#1e3a5f",fontWeight:"600"},onClick:abrirModalTripulacion}, (repRL||auxRL)?"✎ Tripulación":"➕ Asignar tripulación"));
       inner.appendChild(tripBarL);
     }
   }
@@ -5668,6 +5684,60 @@ function abrirModalRubros() {
     btnC.onclick=()=>overlay.remove(); btnRow.appendChild(btnC); box.appendChild(btnRow);
   };
   renderContenido();
+  overlay.appendChild(box);
+  overlay.addEventListener("click",e=>{if(e.target===overlay)overlay.remove();});
+  document.body.appendChild(overlay);
+}
+
+// ── Modal asignar/editar tripulación del día (solo admin) ──
+function abrirModalTripulacion() {
+  const prev = document.getElementById("modal-tripulacion");
+  if(prev) prev.remove();
+  let repSel = state.loginRepartidor || "";
+  let auxSel = state.loginAuxiliar || "";
+  const overlay = document.createElement("div");
+  overlay.id = "modal-tripulacion";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;font-family:sans-serif;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:24px;width:100%;max-width:380px;max-height:90vh;overflow-y:auto;";
+  const titulo=document.createElement("h3"); titulo.textContent="🚚 Tripulación del día";
+  titulo.style.cssText="margin:0 0 4px;color:#1e3a5f;font-size:16px;"; box.appendChild(titulo);
+  const desc=document.createElement("p"); desc.textContent="Asigna el repartidor y auxiliar de esta entrega. Se mostrará en entregas y liquidación.";
+  desc.style.cssText="font-size:12px;color:#888;margin:0 0 16px;"; box.appendChild(desc);
+
+  const mkSelect = (label, lista, valor, onChange) => {
+    const l=document.createElement("label"); l.textContent=label;
+    l.style.cssText="display:block;font-size:12px;font-weight:600;color:#555;margin:0 0 6px;"; box.appendChild(l);
+    const sel=document.createElement("select");
+    sel.style.cssText="width:100%;padding:10px 12px;border-radius:8px;border:1px solid #ccc;font-size:14px;box-sizing:border-box;font-family:sans-serif;margin-bottom:14px;background:#fff;";
+    const ph=document.createElement("option"); ph.value=""; ph.textContent="-- Seleccionar --"; sel.appendChild(ph);
+    (lista||[]).forEach(r=>{ const nom=typeof r==="string"?r:(r.nombre||""); const alias=typeof r==="object"&&r.alias?r.alias:nom; const o=document.createElement("option"); o.value=nom; o.textContent=alias; sel.appendChild(o); });
+    if(valor && !Array.from(sel.options).some(o=>o.value===valor)){ const o=document.createElement("option"); o.value=valor; o.textContent=valor; sel.appendChild(o); } // conservar valor previo aunque no esté en la lista
+    sel.value=valor||"";
+    sel.addEventListener("change",e=>onChange(e.target.value));
+    box.appendChild(sel);
+  };
+  mkSelect("🚚 Repartidor", state.listaRepartidores, repSel, v=>repSel=v);
+  mkSelect("👷 Auxiliar", state.listaAuxiliares, auxSel, v=>auxSel=v);
+
+  const errP=document.createElement("p"); errP.style.cssText="color:#c00;font-size:12px;margin:0 0 10px;min-height:16px;"; box.appendChild(errP);
+  const btnRow=document.createElement("div"); btnRow.style.cssText="display:flex;gap:10px;";
+  const btnG=document.createElement("button"); btnG.textContent="💾 Guardar";
+  btnG.style.cssText="flex:1;background:#1e3a5f;color:#fff;border:none;border-radius:8px;padding:11px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  btnG.onclick=async()=>{
+    btnG.textContent="Guardando..."; btnG.disabled=true;
+    try {
+      const dd = await fbGet("datos-dia") || {};
+      await fbSet("datos-dia", {...dd, repartidor: repSel||"", auxiliar: auxSel||""});
+      state.loginRepartidor = repSel||""; state.loginAuxiliar = auxSel||"";
+      overlay.remove(); showToast("✅ Tripulación actualizada","#27ae60"); render();
+    } catch(e){ errP.textContent="Error al guardar."; btnG.textContent="💾 Guardar"; btnG.disabled=false; }
+  };
+  btnRow.appendChild(btnG);
+  const btnC=document.createElement("button"); btnC.textContent="Cancelar";
+  btnC.style.cssText="flex:1;background:#eee;color:#555;border:none;border-radius:8px;padding:11px 0;font-size:14px;cursor:pointer;font-family:sans-serif;";
+  btnC.onclick=()=>overlay.remove(); btnRow.appendChild(btnC); box.appendChild(btnRow);
+
   overlay.appendChild(box);
   overlay.addEventListener("click",e=>{if(e.target===overlay)overlay.remove();});
   document.body.appendChild(overlay);
