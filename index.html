@@ -245,34 +245,56 @@ const PANTALLAS_FLUJO = new Set([
   "main","resumenEntregas","resumenLiq","resumenDevs","historialVista","confirmado"
 ]);
 
+// Ejecuta el guardado real en Firebase de los datos de entrega del día (usado por el
+// autoguardado con debounce y también para forzar el guardado inmediato antes de salir).
+async function _ejecutarAutoSave() {
+  try {
+    const actual = await fbGet("datos-dia");
+    if(actual) {
+      await fbSet("datos-dia", {
+        ...actual,
+        clienteMap: state.clienteMap,
+        estadoEntrega: state.estadoEntrega,
+        entregados: state.entregados,
+        bloqueados: state.bloqueados,
+        devoluciones: devsValidas(state.devoluciones, state.clienteMap),
+        motivosDevTotal: state.motivosDevTotal,
+        descuentos: state.descuentos,
+        comentarios: state.comentarios,
+        pagoPendiente: state.pagoPendiente,
+        modoPago: state.modoPago
+      });
+    }
+  } catch(e) { console.warn("AutoSave error:", e); }
+}
+
+// Fuerza a guardar de inmediato cualquier autoguardado pendiente (cancela el debounce).
+// Debe llamarse (y esperarse) ANTES de cerrar sesión / salir, para no perder cambios
+// que aún no se habían guardado por el retraso de 1.5s del autoguardado normal.
+async function forzarAutoSaveInmediato() {
+  const habiaPendiente = !!window._autoSavePendiente;
+  clearTimeout(window._autoSaveTimer);
+  window._autoSaveTimer = null;
+  window._autoSavePendiente = false;
+  if(habiaPendiente) {
+    await _ejecutarAutoSave();
+  }
+}
+
 function _setStateInterno(updates) {
   Object.assign(state, updates);
   render();
   // Guardado automático en Firebase cuando cambian datos del día
   // Autosave: solo datos de entregas (no cuadre — ese solo se guarda al confirmar)
   const camposGuardar = ["estadoEntrega","entregados","bloqueados",
-    "motivosDevTotal","descuentos","comentarios","pagoPendiente"];
+    "motivosDevTotal","descuentos","comentarios","pagoPendiente","clienteMap"];
   const afecta = Object.keys(updates).some(k => camposGuardar.includes(k));
   if(afecta && state.autenticado && state.clienteMap && Object.keys(state.clienteMap).length > 0){
     clearTimeout(window._autoSaveTimer);
-    window._autoSaveTimer = setTimeout(async () => {
-      try {
-        const actual = await fbGet("datos-dia");
-        if(actual) {
-          await fbSet("datos-dia", {
-            ...actual,
-            estadoEntrega: state.estadoEntrega,
-            entregados: state.entregados,
-            bloqueados: state.bloqueados,
-            devoluciones: devsValidas(state.devoluciones, state.clienteMap),
-            motivosDevTotal: state.motivosDevTotal,
-            descuentos: state.descuentos,
-            comentarios: state.comentarios,
-            pagoPendiente: state.pagoPendiente,
-            modoPago: state.modoPago
-          });
-        }
-      } catch(e) { console.warn("AutoSave error:", e); }
+    window._autoSavePendiente = true;
+    window._autoSaveTimer = setTimeout(() => {
+      window._autoSavePendiente = false;
+      _ejecutarAutoSave();
     }, 1500);
   }
 }
@@ -502,6 +524,10 @@ async function recuperarContrasena() {
 
 async function cerrarSesion() {
   const accionSalir = async () => {
+    // Asegura que cualquier cambio autoguardado pendiente (ej. quitar producto) se
+    // guarde en Firebase ANTES de cerrar sesión — si no, el debounce de 1.5s puede
+    // no alcanzar a ejecutarse (o fallar por falta de sesión) y el cambio se pierde.
+    await forzarAutoSaveInmediato();
     borrarSesionLocal();
     await auth.signOut();
     setState({
