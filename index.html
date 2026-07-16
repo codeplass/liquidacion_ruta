@@ -219,6 +219,10 @@ let state = {
   scrollAfterCliente: null,
   editPrecio: null, // {cliente, pedido, producto, valor}
   editCantidad: null, // {cliente, pedido, producto, valor}
+  quitarProdModal: null, // {cliente, pedido, producto} — quitar producto (solo admin, requiere clave)
+  quitarProdPassInput: "",
+  quitarProdPassError: "",
+  verPassQuitarProd: false,
   dvPopup: null, // {cliente, pedido, producto, dispU, dispM, unidades, error}
   dvTemporal: [], // devoluciones temporales (no guardadas en Firebase hasta confirmar)
   longPressModal: null, // {cliente, paso:"motivo"|"confirmar", codigo, tipo:"cliente"|"producto"}
@@ -1458,6 +1462,26 @@ function ejecutarMoverProducto() {
   newMap[moverDestinoCliente].pedidos[moverDestinoPedido].lineas.push(linea);
   setState({clienteMap:newMap, showMoverProd:false, moverOrigenCliente:"", moverOrigenPedido:"", moverProductoSel:"", moverDestinoCliente:"", moverDestinoPedido:"", moverError:""});
   showToast("Producto movido correctamente","#1e3a5f");
+}
+
+function intentarQuitarProducto() {
+  const {cliente, pedido, producto} = state.quitarProdModal || {};
+  if(!cliente || !pedido || !producto) {
+    setState({quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:""});
+    return;
+  }
+  if(state.quitarProdPassInput !== PASS_DESBLOQUEO) {
+    setState({quitarProdPassError:"Contraseña incorrecta."});
+    return;
+  }
+  const newMap = JSON.parse(JSON.stringify(state.clienteMap));
+  const lineas = newMap[cliente]?.pedidos?.[pedido]?.lineas;
+  if(!lineas) { setState({quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:""}); return; }
+  const idx = lineas.findIndex(l => l.producto === producto);
+  if(idx === -1) { setState({quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:""}); return; }
+  lineas.splice(idx, 1);
+  setState({clienteMap:newMap, quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:""});
+  showToast("🗑️ Producto eliminado del pedido", "#c0392b");
 }
 
 // ── Navegación con Enter en cuadre final ──
@@ -2961,6 +2985,11 @@ function renderDetalleCliente() {
         chips.appendChild(mkC("Neto U:",fN(netoU),netoU<l.unidades?"#c0392b":"#1e3a5f"));
         chips.appendChild(mkC("Neto:",fQ(l.monto-ldM),"#1e3a5f"));
       }
+      if(state.esAdmin && !state.modoHistorial && !pedEsPre && !lineaEsPre){
+        const btnQuitar=el("button",{style:{background:"#fdecea",border:"1px solid #f5c6c6",borderRadius:"6px",padding:"3px 9px",cursor:"pointer",color:"#c0392b",fontWeight:"700",fontSize:"11px",fontFamily:"sans-serif",marginLeft:"auto"}},"🗑️ Quitar");
+        btnQuitar.onclick = e=>{ e.stopPropagation(); setState({quitarProdModal:{cliente:c,pedido,producto:l.producto}, quitarProdPassInput:"", quitarProdPassError:""}); };
+        chips.appendChild(btnQuitar);
+      }
       row.appendChild(chips);
       prodList.appendChild(row);
     });
@@ -3151,6 +3180,29 @@ function renderDetalleCliente() {
     btns.appendChild(el("button",{style:{flex:"1",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer",fontWeight:"700"},onClick:intentarDesbloquear},"Desbloquear"));
     btns.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer"},onClick:()=>setState({passCliente:null,passInput:"",passError:""})},"Cancelar"));
     box.appendChild(btns); modal.appendChild(box); wrap.appendChild(modal);
+  }
+
+  // ── Modal quitar producto (solo admin, requiere clave) ──
+  if(state.quitarProdModal && state.quitarProdModal.cliente === c) {
+    const qp = state.quitarProdModal;
+    const modalQ=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999"}});
+    const boxQ=el("div",{style:{background:"#fff",borderRadius:"12px",padding:"28px",width:"320px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
+    boxQ.appendChild(el("h3",{style:{margin:"0 0 6px",color:"#c0392b"}},"🗑️ Quitar producto"));
+    boxQ.appendChild(el("p",{style:{fontSize:"13px",color:"#555",margin:"0 0 4px",fontWeight:"700",wordBreak:"break-word"}},qp.producto));
+    boxQ.appendChild(el("p",{style:{fontSize:"12px",color:"#888",margin:"0 0 16px"}},"Esta acción elimina el producto del pedido. Ingresa la contraseña de administrador para confirmar."));
+    const pWrapQ=el("div",{style:{position:"relative",marginBottom:"8px"}});
+    const pInpQ=el("input",{type:state.verPassQuitarProd?"text":"password",placeholder:"Contraseña",style:{...inp(),padding:"8px 36px 8px 10px"},autoFocus:true});
+    pInpQ.value=state.quitarProdPassInput;
+    pInpQ.addEventListener('input', e=>{ state.quitarProdPassInput=e.target.value; });
+    pInpQ.addEventListener('keydown', e=>{ if(e.key==="Enter") intentarQuitarProducto(); });
+    pWrapQ.appendChild(pInpQ);
+    pWrapQ.appendChild(el("button",{style:{position:"absolute",right:"8px",top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:"16px",color:"#888",padding:"0"},onClick:()=>setState({verPassQuitarProd:!state.verPassQuitarProd})},state.verPassQuitarProd?"🙈":"👁️"));
+    boxQ.appendChild(pWrapQ);
+    if(state.quitarProdPassError) boxQ.appendChild(el("p",{style:{color:"#c00",fontSize:"12px",margin:"0 0 10px"}},state.quitarProdPassError));
+    const btnsQ=el("div",{style:{display:"flex",gap:"10px",marginTop:"4px"}});
+    btnsQ.appendChild(el("button",{style:{flex:"1",background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer",fontWeight:"700"},onClick:intentarQuitarProducto},"Quitar"));
+    btnsQ.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"10px 0",cursor:"pointer"},onClick:()=>setState({quitarProdModal:null,quitarProdPassInput:"",quitarProdPassError:""})},"Cancelar"));
+    boxQ.appendChild(btnsQ); modalQ.appendChild(boxQ); wrap.appendChild(modalQ);
   }
 
   // ── Botones de confirmación ──
