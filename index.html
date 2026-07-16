@@ -223,6 +223,7 @@ let state = {
   quitarProdPassInput: "",
   quitarProdPassError: "",
   verPassQuitarProd: false,
+  _prodQuitadoPendiente: false, // true si se quitó un producto del cliente abierto (pendiente de reconocer al salir)
   dvPopup: null, // {cliente, pedido, producto, dispU, dispM, unidades, error}
   dvTemporal: [], // devoluciones temporales (no guardadas en Firebase hasta confirmar)
   longPressModal: null, // {cliente, paso:"motivo"|"confirmar", codigo, tipo:"cliente"|"producto"}
@@ -277,47 +278,9 @@ function _setStateInterno(updates) {
 }
 
 function setState(updates) {
-  // Guard: si hay cambio de pantalla que SALE del flujo activo, preguntar
-  if("screen" in updates) {
-    const screenActual = state.screen;
-    const screenNueva  = updates.screen;
-    const enFlujo      = PANTALLAS_FLUJO.has(screenActual);
-    const saleDeFlujo  = !PANTALLAS_FLUJO.has(screenNueva);
-    const hayDatos     = state.autenticado && Object.keys(state.clienteMap||{}).length > 0;
-    const noConfirmado = !state.confirmado && !state.modoHistorial;
-
-    if(enFlujo && saleDeFlujo && hayDatos && noConfirmado) {
-      const overlay = document.createElement("div");
-      overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;font-family:sans-serif;";
-      const box = document.createElement("div");
-      box.style.cssText = "background:#fff;border-radius:14px;padding:28px 24px;max-width:360px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,0.2);";
-      const t = document.createElement("h3");
-      t.style.cssText = "margin:0 0 10px;color:#1e3a5f;font-size:16px;font-weight:700;";
-      t.textContent = "\u26a0\ufe0f Cambios sin confirmar";
-      box.appendChild(t);
-      const msg = document.createElement("p");
-      msg.style.cssText = "margin:0 0 22px;font-size:14px;color:#444;line-height:1.5;white-space:pre-line;";
-      msg.textContent = "La liquidación tiene cambios sin confirmar.\n\n\xBFQué deseas hacer?";
-      box.appendChild(msg);
-      const btns = document.createElement("div");
-      btns.style.cssText = "display:flex;flex-direction:column;gap:10px;";
-      const bGuardar = document.createElement("button");
-      bGuardar.textContent = "\uD83D\uDCBE Guardar liquidación y salir";
-      bGuardar.style.cssText = "background:#27ae60;color:#fff;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
-      bGuardar.onclick = () => { overlay.remove(); confirmarLiquidacion().then(()=>_setStateInterno(updates)); };
-      const bSalir = document.createElement("button");
-      bSalir.textContent = "\uD83D\uDEAA Salir sin guardar";
-      bSalir.style.cssText = "background:#c0392b;color:#fff;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
-      bSalir.onclick = () => { overlay.remove(); _setStateInterno(updates); };
-      const bQuedar = document.createElement("button");
-      bQuedar.textContent = "\uD83D\uDCCB Quedarme";
-      bQuedar.style.cssText = "background:#f0f0f0;color:#555;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
-      bQuedar.onclick = () => overlay.remove();
-      btns.appendChild(bGuardar); btns.appendChild(bSalir); btns.appendChild(bQuedar);
-      box.appendChild(btns); overlay.appendChild(box); document.body.appendChild(overlay);
-      return; // no navegar hasta elegir
-    }
-  }
+  // La liquidación se autoguarda en segundo plano con cada cambio relevante (ver _setStateInterno),
+  // así que cambiar de pantalla (Menú, Historial, etc.) ya no exige confirmar/guardar la liquidación
+  // completa. Esa confirmación final solo ocurre desde su propio botón "✅ Confirmar" en el cuadre.
   _setStateInterno(updates);
 }
 
@@ -589,39 +552,9 @@ function hayDatosActivos() {
 
 // Navegar con confirmación si hay datos no confirmados
 function navegarConGuard(accion, opciones={}) {
-  const { forzar=false } = opciones;
-  if(forzar || !hayDatosActivos() || state.confirmado) {
-    accion();
-    return;
-  }
-  const overlay = document.createElement("div");
-  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;font-family:sans-serif;";
-  const box = document.createElement("div");
-  box.style.cssText = "background:#fff;border-radius:14px;padding:28px 24px;max-width:360px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,0.2);";
-  const t = document.createElement("h3");
-  t.style.cssText = "margin:0 0 10px;color:#1e3a5f;font-size:16px;font-weight:700;";
-  t.textContent = "⚠️ Cambios sin confirmar";
-  box.appendChild(t);
-  const msg = document.createElement("p");
-  msg.style.cssText = "margin:0 0 22px;font-size:14px;color:#444;line-height:1.5;white-space:pre-line;";
-  msg.textContent = "Tienes una liquidación con cambios sin confirmar.\n\n¿Qué deseas hacer?";
-  box.appendChild(msg);
-  const btns = document.createElement("div");
-  btns.style.cssText = "display:flex;flex-direction:column;gap:10px;";
-  const bGuardar = document.createElement("button");
-  bGuardar.textContent = "💾 Guardar liquidación y salir";
-  bGuardar.style.cssText = "background:#27ae60;color:#fff;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
-  bGuardar.onclick = () => { overlay.remove(); confirmarLiquidacion().then(()=>accion()); };
-  const bSalir = document.createElement("button");
-  bSalir.textContent = "🚪 Salir sin guardar";
-  bSalir.style.cssText = "background:#c0392b;color:#fff;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
-  bSalir.onclick = () => { overlay.remove(); accion(); };
-  const bQuedar = document.createElement("button");
-  bQuedar.textContent = "📋 Quedarme";
-  bQuedar.style.cssText = "background:#f0f0f0;color:#555;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
-  bQuedar.onclick = () => overlay.remove();
-  btns.appendChild(bGuardar); btns.appendChild(bSalir); btns.appendChild(bQuedar);
-  box.appendChild(btns); overlay.appendChild(box); document.body.appendChild(overlay);
+  // La liquidación se autoguarda en segundo plano con cada cambio relevante, así que navegar
+  // (Menú, Historial, Nuevo archivo) ya no exige confirmar la liquidación completa primero.
+  accion();
 }
 
 // Guardar cambios del historial editado y re-confirmar en Firebase
@@ -1480,7 +1413,7 @@ function intentarQuitarProducto() {
   const idx = lineas.findIndex(l => l.producto === producto);
   if(idx === -1) { setState({quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:""}); return; }
   lineas.splice(idx, 1);
-  setState({clienteMap:newMap, quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:""});
+  setState({clienteMap:newMap, quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:"", _prodQuitadoPendiente:true});
   showToast("🗑️ Producto eliminado del pedido", "#c0392b");
 }
 
@@ -2818,9 +2751,10 @@ function renderDetalleCliente() {
     const bloqueadoAct = !!state.bloqueados[c];
     const hayTemporales = state.dvTemporal.filter(d=>d.cliente===c).length > 0;
     const sinConfirmarPendiente = !!state._sinConfirmarPendiente;
+    const prodQuitadoPendiente = !!state._prodQuitadoPendiente;
     // fueDesbloqueado: tenía estado previo Y fue desbloqueado, O marcó sin confirmar
     const fueDesbloqueado = (!bloqueadoAct && !!estadoAct) || sinConfirmarPendiente;
-    const hayPendientes = fueDesbloqueado || hayTemporales;
+    const hayPendientes = fueDesbloqueado || hayTemporales || prodQuitadoPendiente;
     const screenOrigen = state._screenAnteriorDetalle || null;
     const extraUpd = screenOrigen ? {screen: screenOrigen, _screenAnteriorDetalle: null} : {};
     if(hayPendientes) {
@@ -2832,7 +2766,7 @@ function renderDetalleCliente() {
         btnCancelar:"Salir sin guardar",
         colorAceptar:"#27ae60",
         onCancelar: () => {
-          const upd = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:screenOrigen?null:c,...extraUpd};
+          const upd = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,_prodQuitadoPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:screenOrigen?null:c,...extraUpd};
           if(estadoAct) upd.bloqueados = {...state.bloqueados,[c]:true};
           setState(upd);
         },
@@ -2841,13 +2775,13 @@ function renderDetalleCliente() {
             showModal({titulo:"⚠️ Atención", mensaje:"Confirma la entrega primero con el botón '✅ Confirmar entrega'.", tipo:"alert", btnAceptar:"Entendido"});
             return;
           }
-          const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:screenOrigen?null:c,...extraUpd};
+          const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,_prodQuitadoPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:screenOrigen?null:c,...extraUpd};
           if(!bloqueadoAct && estadoAct) updVolver.bloqueados = {...state.bloqueados,[c]:true};
           setState(updVolver);
         }
       }); return;
     }
-    const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:screenOrigen?null:c,...extraUpd};
+    const updVolver = {clienteDetalle:null,showDvForm:false,dvPedido:"",dvProducto:"",dvError:"",dvPopup:null,_sinConfirmarPendiente:false,_prodQuitadoPendiente:false,dvTemporal:state.dvTemporal.filter(d=>d.cliente!==c),scrollAfterCliente:screenOrigen?null:c,...extraUpd};
     if(!bloqueadoAct && estadoAct) updVolver.bloqueados = {...state.bloqueados,[c]:true};
     setState(updVolver);
   }},"← Volver"));
