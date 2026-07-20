@@ -412,6 +412,15 @@ async function iniciarSesionConUsuario(usuario) {
     if(datos.repartidor) state.loginRepartidor = datos.repartidor;
     if(datos.auxiliar)   state.loginAuxiliar   = datos.auxiliar;
   }
+  // Punto 5: para el repartidor, si la entrega en proceso ya tiene repartidor+auxiliar
+  // asignados y le pertenecen, restaurarlos para no volver a pedirlos al reingresar.
+  if(!admin && datos && datos.repartidor){
+    const repNomVinc = usuario.repartidorVinculado || "";
+    if(!repNomVinc || datos.repartidor === repNomVinc){
+      state.loginRepartidor = datos.repartidor;
+      if(datos.auxiliar) state.loginAuxiliar = datos.auxiliar;
+    }
+  }
   // Para repartidores: verificar que los datos-dia les pertenecen
   // Si el campo repartidor existe y no coincide, ignorar los datos
   const repNombreActual = usuario.repartidorVinculado || "";
@@ -538,6 +547,12 @@ async function cerrarSesion() {
   };
   // Si no hay datos activos o ya está confirmado, salir directo
   if(!hayDatosActivos() || state.confirmado) { accionSalir(); return; }
+  // Puntos 1-2: preguntar si conservar el archivo SOLO la primera vez. Si ya se decidió
+  // conservarlo antes, salir directo (para quitarlo ya existe el botón "Quitar archivo").
+  try {
+    const ddConserva = await fbGet("datos-dia");
+    if(ddConserva && ddConserva.conservar) { accionSalir(); return; }
+  } catch(e){}
   // Guard personalizado para cerrar sesión: no confirma liquidación, solo decide si dejar o borrar datos-dia
   const overlay = document.createElement("div");
   overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;font-family:sans-serif;";
@@ -556,7 +571,12 @@ async function cerrarSesion() {
   const bGuardar = document.createElement("button");
   bGuardar.textContent = "💾 Conservar archivo y salir";
   bGuardar.style.cssText = "background:#27ae60;color:#fff;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer;font-family:sans-serif;";
-  bGuardar.onclick = () => { overlay.remove(); accionSalir(); };
+  bGuardar.onclick = async () => {
+    overlay.remove();
+    // Marcar el archivo como conservado para no volver a preguntar en las próximas salidas.
+    try { const dd = await fbGet("datos-dia") || {}; await fbSet("datos-dia", {...dd, conservar:true}); } catch(e){}
+    accionSalir();
+  };
   const bSalir = document.createElement("button");
   bSalir.textContent = "🗑️ Descartar archivo y salir";
   bSalir.style.cssText = "background:#c0392b;color:#fff;border:none;border-radius:8px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:sans-serif;";
@@ -754,6 +774,7 @@ async function procesarArchivo(file) {
       deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],
       billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,
       modoPago:{},pagoPendiente:{},
+      loginRepartidor:"",loginAuxiliar:"",
       fileName:file.name,screen:"main",busqueda:""
     });
   } catch(e){setState({error:"Error: "+e.message});}
@@ -824,23 +845,16 @@ async function _ejecutarConfirmarLiquidacion() {
     const claveHistorial = repKeyH ? state.fecha+"_"+repKeyH : state.fecha;
     // Escribir solo el nodo del día — evita reescribir todo el historial (límite ~10MB)
     await fbSet("historial/"+claveHistorial, registroDia);
-    // Guardar datos-dia con todos los datos actuales (para que al volver a entrar cargue correctamente)
-    await fbSet("datos-dia", {
-      clienteMap:state.clienteMap, fileName:state.fileName, fecha:state.fecha,
-      estadoEntrega:state.estadoEntrega, entregados:state.entregados,
-      bloqueados:state.bloqueados, devoluciones:devsC,
-      motivosDevTotal:state.motivosDevTotal, descuentos:state.descuentos,
-      comentarios:state.comentarios,
-      billetes:state.billetes, monedas:state.monedas,
-      deposito:state.deposito, transferencia:state.transferencia,
-      gastosDetalle:state.gastosDetalle,
-      pagoPendiente:state.pagoPendiente,
-      modoPago:state.modoPago,
-      repartidor:state.loginRepartidor||"",
-      auxiliar:state.loginAuxiliar||"",
-      confirmado:true
+    // Punto 3: la liquidación ya quedó en el historial, así que ya NO se deja cargada.
+    // Se elimina datos-dia y se limpia el estado. Para editarla, se abre desde el historial.
+    clearTimeout(window._autoSaveTimer); window._autoSaveTimer=null; window._autoSavePendiente=false;
+    await fbRemove("datos-dia");
+    setState({
+      confirmado:true, showConfirmar:false, guardando:false, screen:"confirmado",
+      clienteMap:{}, devoluciones:[], entregados:{}, estadoEntrega:{}, bloqueados:{},
+      descuentos:{}, comentarios:{}, motivosDevTotal:{}, modoPago:{}, pagoPendiente:{},
+      loginRepartidor:"", loginAuxiliar:""
     });
-    setState({confirmado:true,showConfirmar:false,guardando:false,screen:"confirmado"});
     state._cuadreModificado = false;
   } catch(e){
     console.error(e);
@@ -2880,17 +2894,10 @@ function renderDetalleCliente() {
       const row=el("div",{style:{borderTop:"1px solid #f0f0f0",background:rowBgProd,padding:"10px 14px",cursor:puedeDev?"pointer":"default",transition:"background 0.15s"}});
 
       if(puedeDev){
-        let lpTimer = null;
-        let _didLongPress = false;
-        row.addEventListener("mousedown", ()=>{ _didLongPress=false; lpTimer=setTimeout(()=>{ lpTimer=null; _didLongPress=true; devolverProductoTotal(c,pedido,l.producto); },600); });
-        row.addEventListener("mouseup", ()=>{ clearTimeout(lpTimer); });
-        row.addEventListener("mouseleave", ()=>{ clearTimeout(lpTimer); });
-        row.addEventListener("touchstart", e=>{ _didLongPress=false; lpTimer=setTimeout(()=>{ lpTimer=null; _didLongPress=true; e.preventDefault(); devolverProductoTotal(c,pedido,l.producto); },600); },{passive:false});
-        row.addEventListener("touchend", ()=>{ clearTimeout(lpTimer); });
-        row.addEventListener("touchmove", ()=>{ clearTimeout(lpTimer); });
+        // Punto 6: el tap sobre la fila abre el popup de devolución parcial (escribir unidades).
+        // La devolución total ahora se hace con el botón ↩ (ver abajo), ya no con long-press.
         row.addEventListener("click", e=>{
           if(e.target.closest('button')) return;
-          if(_didLongPress) return;
           const dispU = l.unidades - ldU;
           if(dispU <= 0) return;
           const dispM = l.monto - ldM;
@@ -2902,14 +2909,22 @@ function renderDetalleCliente() {
         }
       }
 
-      // Nombre producto (título)
-      const prodNomWrap=el("div",{style:{marginBottom:"6px"}});
+      // Nombre producto (título) + botón ↩ de devolución total a la derecha
+      const prodNomWrap=el("div",{style:{marginBottom:"6px",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:"8px"}});
+      const prodNomLeft=el("div",{style:{flex:"1",minWidth:"0"}});
       const prodNom=document.createElement("span");
       prodNom.style.cssText=`font-weight:700;font-size:13px;color:${colTexto||"#1e3a5f"};line-height:1.3;word-break:break-word;`;
       prodNom.textContent=l.producto;
-      prodNomWrap.appendChild(prodNom);
+      prodNomLeft.appendChild(prodNom);
       if(lineaEsPre && !pedEsPre){
-        prodNomWrap.appendChild(el("span",{style:{marginLeft:"6px",background:"#9e9e9e",color:"#fff",borderRadius:"3px",padding:"1px 5px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"PRESUP."));
+        prodNomLeft.appendChild(el("span",{style:{marginLeft:"6px",background:"#9e9e9e",color:"#fff",borderRadius:"3px",padding:"1px 5px",fontSize:"10px",fontWeight:"700",verticalAlign:"middle"}},"PRESUP."));
+      }
+      prodNomWrap.appendChild(prodNomLeft);
+      // Punto 6: botón ↩ — devuelve todo el producto de una vez (reemplaza el long-press).
+      if(puedeDev){
+        const btnDevTotal=el("button",{style:{background:"#fff0f0",border:"1px solid #f5c6c6",borderRadius:"8px",padding:"3px 11px",cursor:"pointer",color:"#c0392b",fontWeight:"700",fontSize:"17px",fontFamily:"sans-serif",flexShrink:"0",lineHeight:"1.1"},title:"Devolver todo el producto"},"↩");
+        btnDevTotal.onclick=e=>{ e.stopPropagation(); devolverProductoTotal(c,pedido,l.producto); };
+        prodNomWrap.appendChild(btnDevTotal);
       }
       row.appendChild(prodNomWrap);
 
@@ -3966,6 +3981,8 @@ function renderListaRutas(container, porRuta) {
       const estado = state.estadoEntrega[cliente] || null;
       const esPresupuesto = esClientePre(cliente);
       const notasVendedor = Object.values(state.clienteMap[cliente].pedidos||{}).map(p=>p.nota).filter(Boolean);
+      // Punto 7: el cliente necesita cambio de producto si alguna línea de producto contiene "cambio".
+      const tieneCambio = Object.values(state.clienteMap[cliente].pedidos||{}).some(p=>(p.lineas||[]).some(l=>/cambio/i.test(l.producto||"")));
       const mpBadge = state.modoPago[cliente] || (state.pagoPendiente[cliente]?"pendiente":"contado");
 
       const cardBg = esPresupuesto?"#f0f0f0":estado==="verde"?"#e8f5e9":estado==="amarillo"?"#fffde7":estado==="rosado"?"#fce4ec":state.pagoPendiente[cliente]?"#fff3e0":"#fff";
@@ -4036,6 +4053,13 @@ function renderListaRutas(container, porRuta) {
         notaIcon.style.cssText="font-size:14px;cursor:help;flex-shrink:0;";
         notaIcon.textContent="📝";
         nameLine.appendChild(notaIcon);
+      }
+      if(tieneCambio){
+        const cambioIcon=document.createElement("span");
+        cambioIcon.title = "Cambio de producto";
+        cambioIcon.style.cssText="font-size:14px;cursor:help;flex-shrink:0;";
+        cambioIcon.textContent="🔄";
+        nameLine.appendChild(cambioIcon);
       }
       nameBtn.appendChild(nameLine);
       if(!esPresupuesto && !state.bloqueados[cliente] && !state.modoHistorial){
@@ -5331,7 +5355,13 @@ function renderMenuRepartidor() {
   };
 
   box.appendChild(btn("📋","Ver historial","#2980b9", abrirHistorialRepartidor));
-  box.appendChild(btn("🚚","Entregar","#27ae60", ()=>setState({screen:"seleccionEntrega"})));
+  box.appendChild(btn("🚚","Entregar","#27ae60", ()=>{
+    // Punto 5: si la entrega ya está en proceso con repartidor+auxiliar asignados,
+    // entrar directo sin volver a pedir la tripulación.
+    const yaHayTrip = (state.loginRepartidor||"") && (state.loginAuxiliar||"");
+    const hayData = Object.keys(state.clienteMap||{}).length>0;
+    setState({screen: (yaHayTrip && hayData) ? "main" : "seleccionEntrega"});
+  }));
 
   box.appendChild(el("button",{style:{background:"none",border:"none",color:"#aaa",fontSize:"13px",cursor:"pointer",marginTop:"4px"},onClick:cerrarSesion},"🚪 Cerrar sesión"));
   wrap.appendChild(box);
