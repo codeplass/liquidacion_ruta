@@ -3096,7 +3096,7 @@ function renderDetalleCliente() {
     if(pedEsPre) phdrLeft.appendChild(el("span",{style:{background:"rgba(255,255,255,0.25)",borderRadius:"4px",padding:"1px 8px",fontSize:"11px",fontWeight:"700"}},"📋 PRESUPUESTO"));
     else if(esPedEraPre(pData)) phdrLeft.appendChild(el("span",{title:"Este pedido era un presupuesto y el administrador lo habilitó para entrega",style:{background:"#f39c12",color:"#fff",borderRadius:"4px",padding:"1px 8px",fontSize:"11px",fontWeight:"700"}},"📋 ERA PRESUPUESTO"));
     // Botón admin: alternar presupuesto ↔ entregable (por pedido)
-    if(state.esAdmin && !state.modoHistorial && !state.estadoEntrega[c]){
+    if(state.esAdmin && !state.modoHistorial && !state.bloqueados[c]){
       const btnPre=el("button",{style:{background:pedEsPre?"rgba(39,174,96,0.95)":"rgba(255,255,255,0.18)",color:"#fff",border:"1px solid rgba(255,255,255,0.55)",borderRadius:"6px",padding:"3px 10px",cursor:"pointer",fontSize:"11px",fontWeight:"700",fontFamily:"sans-serif"}}, pedEsPre?"✅ Habilitar entrega":"📋 Pasar a presupuesto");
       btnPre.onclick=e=>{
         e.stopPropagation();
