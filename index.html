@@ -220,6 +220,10 @@ let state = {
   editPrecio: null, // {cliente, pedido, producto, valor}
   editCantidad: null, // {cliente, pedido, producto, valor}
   quitarProdModal: null, // {cliente, pedido, producto} — quitar producto (solo admin, requiere clave)
+  addProdModal: null, // {cliente, pedido, nombre, unidades, precio}
+  editPedidoModal: null, // {cliente, pedido, nuevo}
+  busquedaCarga: "",
+  cargaExpandido: {},
   quitarProdPassInput: "",
   quitarProdPassError: "",
   verPassQuitarProd: false,
@@ -337,6 +341,96 @@ function togglePresupPedido(c, pedido) {
   }
   setState({clienteMap: state.clienteMap});
   showToast(esPre ? "✅ Pedido habilitado para entrega" : "📋 Pedido pasado a presupuesto", esPre ? "#27ae60" : "#616161");
+}
+
+// ── Lista ordenada de clientes visibles (misma lógica que el listado principal) ──
+function clientesVisiblesOrden() {
+  const _norm = s => (s||"").normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+  const bq = _norm((state.busqueda||"").trim());
+  const clientes = Object.keys(state.clienteMap);
+  const filtrados = clientes.filter(c=>{
+    if(!bq) return true;
+    if(_norm(c).includes(bq)) return true;
+    const productos = Object.values(state.clienteMap[c]?.pedidos||{}).flatMap(p=>p.lineas||[]).map(l=>_norm(l.producto||""));
+    return productos.some(p=>p.includes(bq));
+  });
+  const porRuta={};
+  filtrados.forEach(c=>{
+    const r=state.clienteMap[c].ruta||"Sin ruta";
+    if(state.filtroRuta && r!==state.filtroRuta) return;
+    (porRuta[r]=porRuta[r]||[]).push(c);
+  });
+  const rutasOrd = Object.entries(porRuta).sort(([a],[b])=>{
+    const na=parseInt((a.match(/\d+/)||["9999"])[0]),nb=parseInt((b.match(/\d+/)||["9999"])[0]);
+    return na-nb;
+  });
+  const flat=[];
+  rutasOrd.forEach(([,cls])=>cls.forEach(c=>flat.push(c)));
+  return flat;
+}
+
+// ── Ir al cliente anterior/siguiente sin volver al listado ──
+function irAClienteAdyacente(dir) {
+  const c = state.clienteDetalle;
+  const lista = clientesVisiblesOrden();
+  const idx = lista.indexOf(c);
+  if(idx===-1) return;
+  const nuevo = lista[idx+dir];
+  if(!nuevo){ showToast(dir>0?"Es el último cliente":"Es el primer cliente","#888"); return; }
+  const hayTemporales = state.dvTemporal.filter(d=>d.cliente===c).length>0;
+  if(hayTemporales){
+    showModal({titulo:"⚠️ Confirma primero", mensaje:"Tienes devoluciones pendientes de confirmar en este cliente. Confírmalas o cancélalas antes de cambiar de cliente.", tipo:"alert", btnAceptar:"Entendido"});
+    return;
+  }
+  const estadoAct = state.estadoEntrega[c];
+  const bloqueadoAct = !!state.bloqueados[c];
+  const upd = {clienteDetalle:nuevo, showDvForm:false, dvPedido:"", dvProducto:"", dvError:"", dvPopup:null, _sinConfirmarPendiente:false, _prodQuitadoPendiente:false, addProdModal:null, editPedidoModal:null};
+  if(!bloqueadoAct && estadoAct) upd.bloqueados = {...state.bloqueados,[c]:true};
+  setState(upd);
+  try{ window.scrollTo(0,0); }catch(e){}
+}
+
+// ── Eliminar un pedido completo (solo admin) ──
+function eliminarPedido(c, pedido) {
+  const cl=state.clienteMap[c];
+  if(!cl||!cl.pedidos[pedido]) return;
+  delete cl.pedidos[pedido];
+  state.devoluciones=state.devoluciones.filter(d=>!(d.cliente===c&&d.pedido===pedido));
+  state.dvTemporal=state.dvTemporal.filter(d=>!(d.cliente===c&&d.pedido===pedido));
+  setState({clienteMap:state.clienteMap, devoluciones:state.devoluciones, dvTemporal:state.dvTemporal});
+  showToast("🗑️ Pedido eliminado","#c0392b");
+}
+
+// ── Agregar un producto a un pedido (solo admin) ──
+function agregarProductoAPedido(c, pedido, nombre, unidades, precio) {
+  nombre=(nombre||"").trim();
+  const u=parseFloat(unidades)||0;
+  const pu=parseFloat(precio)||0;
+  if(!nombre){ showToast("Escribe el nombre del producto","#e67e22"); return; }
+  if(u<=0){ showToast("La cantidad debe ser mayor a 0","#e67e22"); return; }
+  const pData=state.clienteMap[c]?.pedidos?.[pedido];
+  if(!pData){ setState({addProdModal:null}); return; }
+  const monto=parseFloat((u*pu).toFixed(2));
+  pData.lineas.push({producto:nombre, unidades:u, monto, estPed:""});
+  setState({clienteMap:state.clienteMap, addProdModal:null});
+  showToast("✅ Producto agregado","#27ae60");
+}
+
+// ── Cambiar el número de un pedido (solo admin) ──
+function cambiarNumPedido(c, viejo, nuevo) {
+  nuevo=(nuevo||"").trim();
+  if(!nuevo){ showToast("Escribe el nuevo número de pedido","#e67e22"); return; }
+  const cl=state.clienteMap[c];
+  if(!cl||!cl.pedidos[viejo]){ setState({editPedidoModal:null}); return; }
+  if(nuevo===viejo){ setState({editPedidoModal:null}); return; }
+  if(cl.pedidos[nuevo]){ showToast("Ya existe un pedido con ese número","#e67e22"); return; }
+  const nuevos={};
+  Object.keys(cl.pedidos).forEach(k=>{ nuevos[k===viejo?nuevo:k]=cl.pedidos[k]; });
+  cl.pedidos=nuevos;
+  state.devoluciones=state.devoluciones.map(d=>(d.cliente===c&&d.pedido===viejo)?{...d,pedido:nuevo}:d);
+  state.dvTemporal=state.dvTemporal.map(d=>(d.cliente===c&&d.pedido===viejo)?{...d,pedido:nuevo}:d);
+  setState({clienteMap:state.clienteMap, devoluciones:state.devoluciones, dvTemporal:state.dvTemporal, editPedidoModal:null});
+  showToast("✅ Número de pedido actualizado","#27ae60");
 }
 
 function totalesCliente(c) {
@@ -2769,6 +2863,77 @@ function renderDetalleCliente() {
     wrap.appendChild(modal2);
   }
 
+  // Modal agregar producto
+  if(state.addProdModal && state.addProdModal.cliente === c){
+    const ap=state.addProdModal;
+    // Catálogo de productos del día (para autocompletar nombre y precio)
+    const _catMap={};
+    Object.values(state.clienteMap).forEach(cl2=>Object.values(cl2.pedidos||{}).forEach(pd=>(pd.lineas||[]).forEach(l=>{
+      const nm=(l.producto||"").trim(); if(!nm) return;
+      if(l.unidades>0 && (!_catMap[nm] || _catMap[nm]===0)) _catMap[nm]=l.monto/l.unidades;
+      else if(!(nm in _catMap)) _catMap[nm]=0;
+    })));
+    const _catNombres=Object.keys(_catMap).sort((a,b)=>a.localeCompare(b,'es'));
+    const modalA=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999"}});
+    const boxA=el("div",{style:{background:"#fff",borderRadius:"14px",padding:"28px",width:"360px",maxHeight:"90vh",overflowY:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
+    boxA.appendChild(el("h3",{style:{margin:"0 0 4px",color:"#1e8449",fontSize:"16px"}},"➕ Agregar producto"));
+    boxA.appendChild(el("p",{style:{margin:"0 0 16px",fontSize:"12px",color:"#888"}},[`Pedido: `,el("b",{},ap.pedido)]));
+    boxA.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Producto (elige de la lista o escribe)"));
+    const dlist=el("datalist",{id:"addprod-datalist"});
+    _catNombres.forEach(nm=>dlist.appendChild(el("option",{value:nm})));
+    boxA.appendChild(dlist);
+    const nInp=el("input",{type:"text",list:"addprod-datalist",placeholder:`Escribe o elige (${_catNombres.length} productos)...`,style:{...inp(),marginBottom:"10px"},autoFocus:true}); nInp.value=ap.nombre||"";
+    boxA.appendChild(nInp);
+    const grid=el("div",{style:{display:"flex",gap:"10px"}});
+    const uDiv=el("div",{style:{flex:"1"}});
+    uDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Cantidad"));
+    const uInp=el("input",{type:"number",min:"0",step:"1",style:inp()}); uInp.value=ap.unidades||"";
+    uDiv.appendChild(uInp); grid.appendChild(uDiv);
+    const pDiv=el("div",{style:{flex:"1"}});
+    pDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Precio unit. (Q)"));
+    const pInpA=el("input",{type:"number",min:"0",step:"0.0001",style:inp()}); pInpA.value=ap.precio||"";
+    pDiv.appendChild(pInpA); grid.appendChild(pDiv);
+    boxA.appendChild(grid);
+    const resA=el("div",{style:{background:"#f0f4f8",borderRadius:"8px",padding:"10px 14px",margin:"12px 0",fontSize:"13px",textAlign:"center"}});
+    const pintarResA=()=>{ const u=parseFloat(uInp.value)||0,pp=parseFloat(pInpA.value)||0; resA.innerHTML=`<span style="color:#555">Monto:</span> <b style="color:#1e3a5f;font-size:15px">${fQ(parseFloat((u*pp).toFixed(2)))}</b>`; };
+    nInp.addEventListener("input",e=>{
+      const val=e.target.value;
+      state.addProdModal.nombre=val;
+      const nm=val.trim();
+      if((nm in _catMap) && _catMap[nm]>0){
+        pInpA.value=Number(_catMap[nm].toFixed(4));
+        state.addProdModal.precio=String(pInpA.value);
+      }
+      pintarResA();
+    });
+    pintarResA();
+    uInp.addEventListener("input",e=>{ state.addProdModal.unidades=e.target.value; pintarResA(); });
+    pInpA.addEventListener("input",e=>{ state.addProdModal.precio=e.target.value; pintarResA(); });
+    boxA.appendChild(resA);
+    const btnsA=el("div",{style:{display:"flex",gap:"10px"}});
+    btnsA.appendChild(el("button",{style:{flex:"1",background:"#1e8449",color:"#fff",border:"none",borderRadius:"8px",padding:"11px 0",cursor:"pointer",fontWeight:"700",fontSize:"14px"},onClick:()=>agregarProductoAPedido(c,ap.pedido,state.addProdModal.nombre,state.addProdModal.unidades,state.addProdModal.precio)},"✅ Agregar"));
+    btnsA.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"11px 0",cursor:"pointer"},onClick:()=>setState({addProdModal:null})},"Cancelar"));
+    boxA.appendChild(btnsA); modalA.appendChild(boxA); wrap.appendChild(modalA);
+  }
+
+  // Modal editar número de pedido
+  if(state.editPedidoModal && state.editPedidoModal.cliente === c){
+    const em=state.editPedidoModal;
+    const modalE=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999"}});
+    const boxE=el("div",{style:{background:"#fff",borderRadius:"14px",padding:"28px",width:"340px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
+    boxE.appendChild(el("h3",{style:{margin:"0 0 4px",color:"#1e3a5f",fontSize:"16px"}},"✏️ Editar número de pedido"));
+    boxE.appendChild(el("p",{style:{margin:"0 0 16px",fontSize:"12px",color:"#888"}},[`Actual: `,el("b",{},em.pedido)]));
+    boxE.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"Nuevo número de pedido"));
+    const eInp=el("input",{type:"text",style:inp(),autoFocus:true}); eInp.value=em.nuevo!==undefined?em.nuevo:em.pedido;
+    eInp.addEventListener("input",e=>{ state.editPedidoModal.nuevo=e.target.value; });
+    eInp.addEventListener("keydown",e=>{ if(e.key==="Enter") cambiarNumPedido(c,em.pedido,state.editPedidoModal.nuevo); });
+    boxE.appendChild(eInp);
+    const btnsE=el("div",{style:{display:"flex",gap:"10px",marginTop:"16px"}});
+    btnsE.appendChild(el("button",{style:{flex:"1",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"8px",padding:"11px 0",cursor:"pointer",fontWeight:"700",fontSize:"14px"},onClick:()=>cambiarNumPedido(c,em.pedido,state.editPedidoModal.nuevo)},"✅ Guardar"));
+    btnsE.appendChild(el("button",{style:{flex:"1",background:"#eee",color:"#555",border:"none",borderRadius:"8px",padding:"11px 0",cursor:"pointer"},onClick:()=>setState({editPedidoModal:null})},"Cancelar"));
+    boxE.appendChild(btnsE); modalE.appendChild(boxE); wrap.appendChild(modalE);
+  }
+
   // Modal devolución por producto
   if(state.dvPopup && state.dvPopup.cliente === c) {
     const dp = state.dvPopup;
@@ -2867,6 +3032,23 @@ function renderDetalleCliente() {
   }
   hdrLeft.appendChild(subtitleRow);
   hdr.appendChild(hdrLeft);
+  // ── Navegación anterior / siguiente entre clientes ──
+  const _listaNav = clientesVisiblesOrden();
+  const _idxNav = _listaNav.indexOf(c);
+  if(_listaNav.length>1 && _idxNav!==-1){
+    const navWrap=el("div",{style:{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"6px",flexShrink:"0"}});
+    const navBtns=el("div",{style:{display:"flex",gap:"6px"}});
+    const mkNav=(txt,dir,disabled)=>{
+      const b=el("button",{style:{background:disabled?"rgba(255,255,255,0.08)":"rgba(255,255,255,0.2)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 15px",cursor:disabled?"default":"pointer",fontSize:"16px",fontWeight:"700",opacity:disabled?"0.4":"1",fontFamily:"sans-serif"}},txt);
+      if(!disabled) b.onclick=()=>irAClienteAdyacente(dir);
+      return b;
+    };
+    navBtns.appendChild(mkNav("‹ Ant.",-1,_idxNav<=0));
+    navBtns.appendChild(mkNav("Sig. ›",1,_idxNav>=_listaNav.length-1));
+    navWrap.appendChild(navBtns);
+    navWrap.appendChild(el("span",{style:{fontSize:"11px",opacity:"0.7"}},`${_idxNav+1} / ${_listaNav.length}`));
+    hdr.appendChild(navWrap);
+  }
   const pedidosEntregables=pedidos.filter(([,p])=>!esPedPre(p));
   inner.appendChild(hdr);
 
@@ -2906,10 +3088,15 @@ function renderDetalleCliente() {
     const phdr=el("div",{style:{background:phdrBg,color:"#fff",padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}});
     const phdrLeft=el("div",{style:{display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap"}});
     phdrLeft.appendChild(el("span",{style:{fontWeight:"700",fontSize:"14px"}},`Pedido: ${pedido}`));
+    if(state.esAdmin && !state.modoHistorial){
+      const btnEditPed=el("button",{title:"Editar número de pedido",style:{background:"rgba(255,255,255,0.18)",color:"#fff",border:"none",borderRadius:"6px",padding:"2px 8px",cursor:"pointer",fontSize:"12px",fontFamily:"sans-serif"}},"✏️");
+      btnEditPed.onclick=e=>{ e.stopPropagation(); setState({editPedidoModal:{cliente:c,pedido,nuevo:pedido}}); };
+      phdrLeft.appendChild(btnEditPed);
+    }
     if(pedEsPre) phdrLeft.appendChild(el("span",{style:{background:"rgba(255,255,255,0.25)",borderRadius:"4px",padding:"1px 8px",fontSize:"11px",fontWeight:"700"}},"📋 PRESUPUESTO"));
     else if(esPedEraPre(pData)) phdrLeft.appendChild(el("span",{title:"Este pedido era un presupuesto y el administrador lo habilitó para entrega",style:{background:"#f39c12",color:"#fff",borderRadius:"4px",padding:"1px 8px",fontSize:"11px",fontWeight:"700"}},"📋 ERA PRESUPUESTO"));
     // Botón admin: alternar presupuesto ↔ entregable (por pedido)
-    if(state.esAdmin && !state.modoHistorial){
+    if(state.esAdmin && !state.modoHistorial && !state.estadoEntrega[c]){
       const btnPre=el("button",{style:{background:pedEsPre?"rgba(39,174,96,0.95)":"rgba(255,255,255,0.18)",color:"#fff",border:"1px solid rgba(255,255,255,0.55)",borderRadius:"6px",padding:"3px 10px",cursor:"pointer",fontSize:"11px",fontWeight:"700",fontFamily:"sans-serif"}}, pedEsPre?"✅ Habilitar entrega":"📋 Pasar a presupuesto");
       btnPre.onclick=e=>{
         e.stopPropagation();
@@ -3044,6 +3231,20 @@ function renderDetalleCliente() {
     totRow.appendChild(totChips);
     prodList.appendChild(totRow);
     box.appendChild(prodList);
+    if(state.esAdmin && !state.modoHistorial){
+      const adminBar=el("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap",padding:"8px 14px",background:"#fafbfc",borderTop:"1px solid #eee"}});
+      if(!pedEsPre){
+        const btnAddProd=el("button",{style:{background:"#eafaf1",border:"1px solid #a7e3c4",borderRadius:"6px",padding:"5px 11px",cursor:"pointer",color:"#1e8449",fontWeight:"700",fontSize:"12px",fontFamily:"sans-serif"}},"➕ Agregar producto");
+        btnAddProd.onclick=()=>setState({addProdModal:{cliente:c,pedido,nombre:"",unidades:"",precio:""}});
+        adminBar.appendChild(btnAddProd);
+      }
+      const btnDelPed=el("button",{style:{background:"#fdecea",border:"1px solid #f5c6c6",borderRadius:"6px",padding:"5px 11px",cursor:"pointer",color:"#c0392b",fontWeight:"700",fontSize:"12px",fontFamily:"sans-serif",marginLeft:"auto"}},"🗑️ Eliminar pedido");
+      btnDelPed.onclick=()=>{
+        showModal({titulo:"🗑️ Eliminar pedido", mensaje:`¿Estás seguro que quieres eliminar el pedido "${pedido}" completo? Esta acción no se puede deshacer.`, tipo:"confirm", btnAceptar:"Sí, eliminar", colorAceptar:"#c0392b", btnCancelar:"Cancelar", onAceptar:()=>eliminarPedido(c,pedido)});
+      };
+      adminBar.appendChild(btnDelPed);
+      box.appendChild(adminBar);
+    }
     // Nota del vendedor
     if(pData.nota){
       const notaDiv=el("div",{style:{background:"#fffbea",borderTop:"1px solid #f0e68c",padding:"10px 16px",display:"flex",alignItems:"flex-start",gap:"8px"}});
@@ -3406,6 +3607,86 @@ function renderDetalleCliente() {
   return wrap;
 }
 
+function renderCargaProducto(){
+  const _norm = s => (s||"").normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+  const bq=_norm((state.busquedaCarga||"").trim());
+  const prodMap={};
+  Object.keys(state.clienteMap).forEach(c=>{
+    const cl=state.clienteMap[c];
+    Object.entries(cl.pedidos||{}).forEach(([pedido,pData])=>{
+      if(esPedPre(pData)) return;
+      (pData.lineas||[]).forEach(l=>{
+        if(/^pre$/i.test(l.estPed||"")) return;
+        const key=l.producto||"(sin nombre)";
+        if(!prodMap[key]) prodMap[key]={unidades:0,monto:0,items:[]};
+        prodMap[key].unidades+=l.unidades;
+        prodMap[key].monto+=l.monto;
+        prodMap[key].items.push({cliente:c,pedido,unidades:l.unidades,monto:l.monto});
+      });
+    });
+  });
+  let productos=Object.keys(prodMap).sort((a,b)=>a.localeCompare(b,'es'));
+  if(bq){
+    productos=productos.filter(p=>{
+      if(_norm(p).includes(bq)) return true;
+      return prodMap[p].items.some(it=>_norm(it.cliente).includes(bq)||_norm(it.pedido).includes(bq));
+    });
+  }
+  const totalUnidadesGeneral=Object.values(prodMap).reduce((s,v)=>s+v.unidades,0);
+
+  const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
+  const inner=el("div",{style:{maxWidth:"860px",margin:"0 auto"}});
+  wrap.appendChild(inner);
+
+  const hdr=el("div",{style:{background:"#0d9488",color:"#fff",borderRadius:"12px",padding:"16px 22px",marginBottom:"16px"}});
+  hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"8px"},onClick:()=>setState({screen:"main",busquedaCarga:""})},"← Volver"));
+  hdr.appendChild(el("h2",{style:{margin:"0",fontSize:"18px"}},"📦 Carga por producto"));
+  hdr.appendChild(el("p",{style:{margin:"3px 0 0",fontSize:"12px",opacity:"0.8"}},`${productos.length} producto(s) · ${fN(totalUnidadesGeneral)} unidades en total`));
+  inner.appendChild(hdr);
+
+  const buscInp=el("input",{type:"text",placeholder:"🔍 Buscar por producto, cliente o # de pedido...",style:{...inp(),marginBottom:"14px"}});
+  buscInp.value=state.busquedaCarga||"";
+  buscInp.oninput=e=>{ state.busquedaCarga=e.target.value; render(); };
+  inner.appendChild(buscInp);
+
+  if(productos.length===0){
+    inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"30px",textAlign:"center",color:"#888"}}, bq?"No hay productos que coincidan con la búsqueda.":"No hay productos para cargar."));
+    return wrap;
+  }
+
+  productos.forEach(p=>{
+    const info=prodMap[p];
+    const abierto=!!state.cargaExpandido[p];
+    const card=el("div",{style:{background:"#fff",borderRadius:"12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"10px",overflow:"hidden"}});
+    const head=el("div",{style:{padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",gap:"10px"}});
+    head.onclick=()=>{ const ce={...state.cargaExpandido}; if(ce[p]) delete ce[p]; else ce[p]=true; setState({cargaExpandido:ce}); };
+    const hleft=el("div",{style:{flex:"1",minWidth:"0"}});
+    hleft.appendChild(el("div",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"14px",wordBreak:"break-word"}},p));
+    hleft.appendChild(el("div",{style:{fontSize:"12px",color:"#888",marginTop:"2px"}},`${info.items.length} cliente(s)/pedido(s)`));
+    head.appendChild(hleft);
+    const hright=el("div",{style:{display:"flex",alignItems:"center",gap:"10px",flexShrink:"0"}});
+    hright.appendChild(el("span",{style:{background:"#e0f2f1",color:"#0d9488",borderRadius:"8px",padding:"5px 12px",fontWeight:"700",fontSize:"15px"}},`${fN(info.unidades)} u`));
+    hright.appendChild(el("span",{style:{fontSize:"13px",color:"#888"}}, abierto?"▲":"▼"));
+    head.appendChild(hright);
+    card.appendChild(head);
+    if(abierto){
+      const list=el("div",{style:{borderTop:"1px solid #eee"}});
+      info.items.slice().sort((a,b)=>a.cliente.localeCompare(b.cliente,'es')).forEach((it,i)=>{
+        const row=el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"10px",padding:"8px 16px",background:i%2?"#fafbfc":"#fff",fontSize:"13px"}});
+        const rl=el("div",{style:{flex:"1",minWidth:"0"}});
+        rl.appendChild(el("div",{style:{color:"#1e3a5f",fontWeight:"600",wordBreak:"break-word"}},it.cliente));
+        rl.appendChild(el("div",{style:{fontSize:"11px",color:"#888"}},`Pedido: ${it.pedido}`));
+        row.appendChild(rl);
+        row.appendChild(el("span",{style:{fontWeight:"700",color:"#2563eb",flexShrink:"0"}},`${fN(it.unidades)} u`));
+        list.appendChild(row);
+      });
+      card.appendChild(list);
+    }
+    inner.appendChild(card);
+  });
+  return wrap;
+}
+
 function renderMain() {
   const clientes=Object.keys(state.clienteMap);
   const clientesEntregables=clientes.filter(c=>!esClientePre(c));
@@ -3701,6 +3982,7 @@ function renderMain() {
     if(devsValidas(state.devoluciones,state.clienteMap).length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"historial",modoHistorial:false,fechaSelec:""})},"← Historial"));
   } else {
+    hdrBtns.appendChild(el("button",{style:{background:"#0d9488",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"cargaProducto"})},"📦 Carga"));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenEntregas"})},"📦 Entregas"));
     hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700",boxShadow:"0 2px 8px rgba(230,126,34,0.4)"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Liquidación"));
     if(devsValidas(state.devoluciones,state.clienteMap).length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
@@ -5088,6 +5370,7 @@ function render() {
   else if(state.screen==="historial") content=renderHistorial();
   else if(state.screen==="historialVista" && state.clienteDetalle) content=renderDetalleCliente();
   else if(state.screen==="confirmado") content=renderConfirmado();
+  else if(state.screen==="cargaProducto") content=renderCargaProducto();
   else if(state.screen==="opciones") content=renderOpciones();
   else if(state.screen==="historialVista") content=renderMain();
   else if(state.clienteDetalle) content=renderDetalleCliente();
