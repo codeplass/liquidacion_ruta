@@ -3264,7 +3264,8 @@ function renderDetalleCliente() {
     descDiv.appendChild(el("div",{style:{padding:"8px 10px",background:"#f4f6f9",borderRadius:"8px",fontSize:"14px",fontWeight:"700",color:"#c0392b"}},tc.desc>0?`-${fQ(tc.desc)}`:"Q 0.00"));
   } else {
     const descInp=el("input",{type:"number",min:"0",step:"0.01",value:state.descuentos[c]||"",placeholder:"0.00",style:inp()});
-    descInp.oninput=e=>{ state.descuentos[c]=e.target.value; render(); };
+    descInp.oninput=e=>{ state.descuentos[c]=e.target.value; };
+    descInp.addEventListener("change",e=>{ state.descuentos[c]=e.target.value; render(); });
     descDiv.appendChild(descInp);
     if(tc.desc>0) descDiv.appendChild(el("p",{style:{margin:"6px 0 0",fontSize:"12px",color:"#c0392b"}},`Descuento: -${fQ(tc.desc)}`));
   }
@@ -3609,7 +3610,6 @@ function renderDetalleCliente() {
 
 function renderCargaProducto(){
   const _norm = s => (s||"").normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
-  const bq=_norm((state.busquedaCarga||"").trim());
   const prodMap={};
   Object.keys(state.clienteMap).forEach(c=>{
     const cl=state.clienteMap[c];
@@ -3625,13 +3625,6 @@ function renderCargaProducto(){
       });
     });
   });
-  let productos=Object.keys(prodMap).sort((a,b)=>a.localeCompare(b,'es'));
-  if(bq){
-    productos=productos.filter(p=>{
-      if(_norm(p).includes(bq)) return true;
-      return prodMap[p].items.some(it=>_norm(it.cliente).includes(bq)||_norm(it.pedido).includes(bq));
-    });
-  }
   const totalUnidadesGeneral=Object.values(prodMap).reduce((s,v)=>s+v.unidades,0);
 
   const wrap=el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"24px"}});
@@ -3641,49 +3634,66 @@ function renderCargaProducto(){
   const hdr=el("div",{style:{background:"#0d9488",color:"#fff",borderRadius:"12px",padding:"16px 22px",marginBottom:"16px"}});
   hdr.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px",marginBottom:"8px"},onClick:()=>setState({screen:"main",busquedaCarga:""})},"← Volver"));
   hdr.appendChild(el("h2",{style:{margin:"0",fontSize:"18px"}},"📦 Carga por producto"));
-  hdr.appendChild(el("p",{style:{margin:"3px 0 0",fontSize:"12px",opacity:"0.8"}},`${productos.length} producto(s) · ${fN(totalUnidadesGeneral)} unidades en total`));
+  const cntSpan=el("p",{style:{margin:"3px 0 0",fontSize:"12px",opacity:"0.8"}},"");
+  hdr.appendChild(cntSpan);
   inner.appendChild(hdr);
 
   const buscInp=el("input",{type:"text",placeholder:"🔍 Buscar por producto, cliente o # de pedido...",style:{...inp(),marginBottom:"14px"}});
   buscInp.value=state.busquedaCarga||"";
-  buscInp.oninput=e=>{ state.busquedaCarga=e.target.value; render(); };
   inner.appendChild(buscInp);
 
-  if(productos.length===0){
-    inner.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"30px",textAlign:"center",color:"#888"}}, bq?"No hay productos que coincidan con la búsqueda.":"No hay productos para cargar."));
-    return wrap;
-  }
+  const lista=el("div",{id:"carga-lista"});
+  inner.appendChild(lista);
 
-  productos.forEach(p=>{
-    const info=prodMap[p];
-    const abierto=!!state.cargaExpandido[p];
-    const card=el("div",{style:{background:"#fff",borderRadius:"12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"10px",overflow:"hidden"}});
-    const head=el("div",{style:{padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",gap:"10px"}});
-    head.onclick=()=>{ const ce={...state.cargaExpandido}; if(ce[p]) delete ce[p]; else ce[p]=true; setState({cargaExpandido:ce}); };
-    const hleft=el("div",{style:{flex:"1",minWidth:"0"}});
-    hleft.appendChild(el("div",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"14px",wordBreak:"break-word"}},p));
-    hleft.appendChild(el("div",{style:{fontSize:"12px",color:"#888",marginTop:"2px"}},`${info.items.length} cliente(s)/pedido(s)`));
-    head.appendChild(hleft);
-    const hright=el("div",{style:{display:"flex",alignItems:"center",gap:"10px",flexShrink:"0"}});
-    hright.appendChild(el("span",{style:{background:"#e0f2f1",color:"#0d9488",borderRadius:"8px",padding:"5px 12px",fontWeight:"700",fontSize:"15px"}},`${fN(info.unidades)} u`));
-    hright.appendChild(el("span",{style:{fontSize:"13px",color:"#888"}}, abierto?"▲":"▼"));
-    head.appendChild(hright);
-    card.appendChild(head);
-    if(abierto){
-      const list=el("div",{style:{borderTop:"1px solid #eee"}});
-      info.items.slice().sort((a,b)=>a.cliente.localeCompare(b.cliente,'es')).forEach((it,i)=>{
-        const row=el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"10px",padding:"8px 16px",background:i%2?"#fafbfc":"#fff",fontSize:"13px"}});
-        const rl=el("div",{style:{flex:"1",minWidth:"0"}});
-        rl.appendChild(el("div",{style:{color:"#1e3a5f",fontWeight:"600",wordBreak:"break-word"}},it.cliente));
-        rl.appendChild(el("div",{style:{fontSize:"11px",color:"#888"}},`Pedido: ${it.pedido}`));
-        row.appendChild(rl);
-        row.appendChild(el("span",{style:{fontWeight:"700",color:"#2563eb",flexShrink:"0"}},`${fN(it.unidades)} u`));
-        list.appendChild(row);
+  const pintarLista=()=>{
+    const bq=_norm((state.busquedaCarga||"").trim());
+    let productos=Object.keys(prodMap).sort((a,b)=>a.localeCompare(b,'es'));
+    if(bq){
+      productos=productos.filter(p=>{
+        if(_norm(p).includes(bq)) return true;
+        return prodMap[p].items.some(it=>_norm(it.cliente).includes(bq)||_norm(it.pedido).includes(bq));
       });
-      card.appendChild(list);
     }
-    inner.appendChild(card);
-  });
+    cntSpan.textContent=`${productos.length} producto(s) · ${fN(totalUnidadesGeneral)} unidades en total`;
+    lista.innerHTML="";
+    if(productos.length===0){
+      lista.appendChild(el("div",{style:{background:"#fff",borderRadius:"12px",padding:"30px",textAlign:"center",color:"#888"}}, bq?"No hay productos que coincidan con la búsqueda.":"No hay productos para cargar."));
+      return;
+    }
+    productos.forEach(p=>{
+      const info=prodMap[p];
+      const abierto=!!state.cargaExpandido[p];
+      const card=el("div",{style:{background:"#fff",borderRadius:"12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"10px",overflow:"hidden"}});
+      const head=el("div",{style:{padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",gap:"10px"}});
+      head.onclick=()=>{ const ce={...state.cargaExpandido}; if(ce[p]) delete ce[p]; else ce[p]=true; state.cargaExpandido=ce; pintarLista(); };
+      const hleft=el("div",{style:{flex:"1",minWidth:"0"}});
+      hleft.appendChild(el("div",{style:{fontWeight:"700",color:"#1e3a5f",fontSize:"14px",wordBreak:"break-word"}},p));
+      hleft.appendChild(el("div",{style:{fontSize:"12px",color:"#888",marginTop:"2px"}},`${info.items.length} cliente(s)/pedido(s)`));
+      head.appendChild(hleft);
+      const hright=el("div",{style:{display:"flex",alignItems:"center",gap:"10px",flexShrink:"0"}});
+      hright.appendChild(el("span",{style:{background:"#e0f2f1",color:"#0d9488",borderRadius:"8px",padding:"5px 12px",fontWeight:"700",fontSize:"15px"}},`${fN(info.unidades)} u`));
+      hright.appendChild(el("span",{style:{fontSize:"13px",color:"#888"}}, abierto?"▲":"▼"));
+      head.appendChild(hright);
+      card.appendChild(head);
+      if(abierto){
+        const sub=el("div",{style:{borderTop:"1px solid #eee"}});
+        info.items.slice().sort((a,b)=>a.cliente.localeCompare(b.cliente,'es')).forEach((it,i)=>{
+          const row=el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"10px",padding:"8px 16px",background:i%2?"#fafbfc":"#fff",fontSize:"13px"}});
+          const rl=el("div",{style:{flex:"1",minWidth:"0"}});
+          rl.appendChild(el("div",{style:{color:"#1e3a5f",fontWeight:"600",wordBreak:"break-word"}},it.cliente));
+          rl.appendChild(el("div",{style:{fontSize:"11px",color:"#888"}},`Pedido: ${it.pedido}`));
+          row.appendChild(rl);
+          row.appendChild(el("span",{style:{fontWeight:"700",color:"#2563eb",flexShrink:"0"}},`${fN(it.unidades)} u`));
+          sub.appendChild(row);
+        });
+        card.appendChild(sub);
+      }
+      lista.appendChild(card);
+    });
+  };
+
+  buscInp.addEventListener("input", e=>{ state.busquedaCarga=e.target.value; pintarLista(); });
+  pintarLista();
   return wrap;
 }
 
