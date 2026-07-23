@@ -314,6 +314,30 @@ function esClientePre(c) {
 }
 // Helper: true si un pedido específico es "Pre"
 const esPedPre = p => /^pre$/i.test(p?.estPed||"");
+// Helper: true si el pedido fue habilitado desde presupuesto por el admin
+const esPedEraPre = p => !!(p && p.eraPresup) && !esPedPre(p);
+
+// ── Toggle presupuesto por pedido (solo admin) ──
+// Alterna un pedido entre "presupuesto" (solo consulta, no se entrega) y "entregable".
+// Al habilitar un presupuesto para entrega, se marca eraPresup=true para que el reparto
+// sepa que ese pedido era originalmente un presupuesto.
+function togglePresupPedido(c, pedido) {
+  const pData = state.clienteMap[c]?.pedidos?.[pedido];
+  if(!pData) return;
+  const esPre = esPedPre(pData);
+  if(esPre) {
+    // Habilitar para entrega
+    pData.estPed = "";
+    (pData.lineas||[]).forEach(l=>{ if(/^pre$/i.test(l.estPed||"")) l.estPed=""; });
+    pData.eraPresup = true;
+  } else {
+    // Pasar a presupuesto (solo consulta): el producto no va en el camión, no se entrega.
+    pData.estPed = "Pre";
+    pData.eraPresup = false;
+  }
+  setState({clienteMap: state.clienteMap});
+  showToast(esPre ? "✅ Pedido habilitado para entrega" : "📋 Pedido pasado a presupuesto", esPre ? "#27ae60" : "#616161");
+}
 
 function totalesCliente(c) {
   let u=0,m=0;
@@ -428,7 +452,15 @@ async function iniciarSesionConUsuario(usuario) {
     && (admin || !datos.repartidor || !repNombreActual || datos.repartidor===repNombreActual);
   if(datosValidos){
     const yaConfirmado = datos.confirmado === true;
-    if(yaConfirmado && admin){
+    if(yaConfirmado && !admin){
+      // Reparto: la liquidación ya fue confirmada (queda en el historial). No se recarga
+      // como pendiente, para que "Entregar" indique que no hay liquidaciones pendientes.
+      setState({
+        screen:"menuRepartidor", cargandoDatos:false, confirmado:false, modoHistorial:false,
+        clienteMap:{}, estadoEntrega:{}, entregados:{}, bloqueados:{}, devoluciones:[],
+        motivosDevTotal:{}, descuentos:{}, comentarios:{}, pagoPendiente:{}, modoPago:{}
+      });
+    } else if(yaConfirmado && admin){
       setState({
         clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:datos.fecha||hoy(),
         estadoEntrega:datos.estadoEntrega||datos.entregados||{}, entregados:datos.entregados||{},
@@ -613,7 +645,7 @@ async function guardarCambiosHistorial() {
       if(esClientePre(c)) return;
       if(!state.estadoEntrega[c]) return;
       let m=0;
-      Object.values(state.clienteMap[c].pedidos||{}).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));
+      Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
       const devM=state.devoluciones.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
       const desc=parseFloat(state.descuentos[c])||0;
       clienteTotales[c] = m - devM - desc;
@@ -817,7 +849,7 @@ async function _ejecutarConfirmarLiquidacion() {
       if(esClientePre(c)) return;
       if(!state.estadoEntrega[c]) return;
       let m=0;
-      Object.values(state.clienteMap[c].pedidos||{}).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));
+      Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
       const devM=state.devoluciones.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
       const desc=parseFloat(state.descuentos[c])||0;
       clienteTotales[c] = m - devM - desc;
@@ -938,6 +970,8 @@ function renderConfirmado() {
   box.appendChild(p1); box.appendChild(p2); box.appendChild(p3);
   if(state.esAdmin){
     box.appendChild(el("button",{style:{width:"100%",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"10px",padding:"14px 0",fontSize:"15px",fontWeight:"700",cursor:"pointer"},onClick:abrirHistorial},"📋 Ver historial"));
+  } else {
+    box.appendChild(el("button",{style:{width:"100%",background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"10px",padding:"14px 0",fontSize:"15px",fontWeight:"700",cursor:"pointer"},onClick:()=>setState({screen:"menuRepartidor",confirmado:false,modoHistorial:false,clienteMap:{},estadoEntrega:{},entregados:{},bloqueados:{},devoluciones:[]})},"🏠 Volver al inicio"));
   }
   wrap.appendChild(box);
   return wrap;
@@ -1489,7 +1523,7 @@ function actualizarResumen() {
   const totalDevCuadre = Object.keys(state.clienteMap).reduce((acc,c)=>{
     if(esClientePre(c)) return acc;
     if(state.estadoEntrega[c]==="rosado"){
-      let m=0; Object.values(state.clienteMap[c].pedidos||{}).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));
+      let m=0; Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
       return acc + m;
     }
     return acc + state.devoluciones.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
@@ -2844,6 +2878,14 @@ function renderDetalleCliente() {
       el("span",{},"Este cliente tiene pedido(s) en presupuesto (marcados en gris). Esos productos no se entregan y no suman en los totales.")
     ));
   }
+  // Banner informativo si algún pedido era presupuesto y el admin lo habilitó para entrega
+  const tienePedidosEraPre = pedidos.some(([,p])=>esPedEraPre(p));
+  if(tienePedidosEraPre && !esPresupuesto){
+    inner.appendChild(el("div",{style:{background:"#fff8e1",border:"1px solid #f0c14b",borderRadius:"10px",padding:"12px 18px",marginBottom:"16px",display:"flex",alignItems:"center",gap:"10px",fontSize:"13px",color:"#7a5c00"}},
+      el("span",{style:{fontSize:"18px"}},"📋"),
+      el("span",{},"Este cliente tiene pedido(s) que eran presupuesto y el administrador habilitó para entrega (marcados con “ERA PRESUPUESTO”).")
+    ));
+  }
   if(esPresupuesto){
     inner.appendChild(el("div",{style:{background:"#f5f5f5",border:"1px solid #bdbdbd",borderRadius:"10px",padding:"12px 18px",marginBottom:"16px",display:"flex",alignItems:"center",gap:"10px",fontSize:"13px",color:"#555"}},
       el("span",{style:{fontSize:"18px"}},"📋"),
@@ -2861,10 +2903,31 @@ function renderDetalleCliente() {
     const boxBg = pedEsPre ? "#f0f0f0" : "#fff";
     const box=el("div",{style:{background:boxBg,borderRadius:"12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",marginBottom:"16px",overflow:"hidden"}});
     const phdrBg = pedEsPre ? "#616161" : "#2d5f8a";
-    const phdr=el("div",{style:{background:phdrBg,color:"#fff",padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}});
-    const phdrLeft=el("div",{style:{display:"flex",alignItems:"center",gap:"10px"}});
+    const phdr=el("div",{style:{background:phdrBg,color:"#fff",padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}});
+    const phdrLeft=el("div",{style:{display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap"}});
     phdrLeft.appendChild(el("span",{style:{fontWeight:"700",fontSize:"14px"}},`Pedido: ${pedido}`));
     if(pedEsPre) phdrLeft.appendChild(el("span",{style:{background:"rgba(255,255,255,0.25)",borderRadius:"4px",padding:"1px 8px",fontSize:"11px",fontWeight:"700"}},"📋 PRESUPUESTO"));
+    else if(esPedEraPre(pData)) phdrLeft.appendChild(el("span",{title:"Este pedido era un presupuesto y el administrador lo habilitó para entrega",style:{background:"#f39c12",color:"#fff",borderRadius:"4px",padding:"1px 8px",fontSize:"11px",fontWeight:"700"}},"📋 ERA PRESUPUESTO"));
+    // Botón admin: alternar presupuesto ↔ entregable (por pedido)
+    if(state.esAdmin && !state.modoHistorial){
+      const btnPre=el("button",{style:{background:pedEsPre?"rgba(39,174,96,0.95)":"rgba(255,255,255,0.18)",color:"#fff",border:"1px solid rgba(255,255,255,0.55)",borderRadius:"6px",padding:"3px 10px",cursor:"pointer",fontSize:"11px",fontWeight:"700",fontFamily:"sans-serif"}}, pedEsPre?"✅ Habilitar entrega":"📋 Pasar a presupuesto");
+      btnPre.onclick=e=>{
+        e.stopPropagation();
+        const habilitar = pedEsPre;
+        showModal({
+          titulo: habilitar?"✅ Habilitar pedido para entrega":"📋 Pasar pedido a presupuesto",
+          mensaje: habilitar
+            ? `El pedido "${pedido}" está en presupuesto (solo consulta).\n\n¿Habilitarlo para entrega? El reparto lo verá como entregable, con una marca de que era presupuesto.`
+            : `¿Pasar el pedido "${pedido}" a presupuesto? Dejará de entregarse y no sumará en los totales (solo consulta).`,
+          tipo:"confirm",
+          btnAceptar: habilitar?"Sí, habilitar":"Sí, pasar a presupuesto",
+          colorAceptar: habilitar?"#27ae60":"#616161",
+          btnCancelar:"Cancelar",
+          onAceptar: ()=>togglePresupPedido(c, pedido)
+        });
+      };
+      phdrLeft.appendChild(btnPre);
+    }
     phdr.appendChild(phdrLeft);
     const psum=el("div",{style:{display:"flex",gap:"16px",fontSize:"13px"}});
     if(!pedEsPre){
@@ -5356,11 +5419,20 @@ function renderMenuRepartidor() {
 
   box.appendChild(btn("📋","Ver historial","#2980b9", abrirHistorialRepartidor));
   box.appendChild(btn("🚚","Entregar","#27ae60", ()=>{
+    // Solo hay algo que entregar si existe una liquidación activa (cargada y sin confirmar).
+    const hayData = Object.keys(state.clienteMap||{}).length>0 && !state.confirmado && !state.modoHistorial;
+    if(!hayData){
+      showModal({
+        titulo:"📭 Sin liquidaciones pendientes",
+        mensaje:"No hay liquidaciones pendientes de liquidar en este momento.\n\nCuando el administrador cargue un archivo del día, aparecerá aquí para entregar.",
+        tipo:"alert", btnAceptar:"Entendido", colorAceptar:"#1e3a5f"
+      });
+      return;
+    }
     // Punto 5: si la entrega ya está en proceso con repartidor+auxiliar asignados,
     // entrar directo sin volver a pedir la tripulación.
     const yaHayTrip = (state.loginRepartidor||"") && (state.loginAuxiliar||"");
-    const hayData = Object.keys(state.clienteMap||{}).length>0;
-    setState({screen: (yaHayTrip && hayData) ? "main" : "seleccionEntrega"});
+    setState({screen: yaHayTrip ? "main" : "seleccionEntrega"});
   }));
 
   box.appendChild(el("button",{style:{background:"none",border:"none",color:"#aaa",fontSize:"13px",cursor:"pointer",marginTop:"4px"},onClick:cerrarSesion},"🚪 Cerrar sesión"));
