@@ -5728,6 +5728,12 @@ function renderMenuRepartidor() {
     setState({screen: yaHayTrip ? "main" : "seleccionEntrega"});
   }));
 
+  // Carga por producto: disponible para el reparto cuando hay una liquidación activa cargada
+  const hayDataMenu = Object.keys(state.clienteMap||{}).length>0 && !state.confirmado && !state.modoHistorial;
+  if(hayDataMenu){
+    box.appendChild(btn("📦","Carga por producto","#0d9488", ()=>setState({screen:"cargaProducto",busquedaCarga:""})));
+  }
+
   box.appendChild(el("button",{style:{background:"none",border:"none",color:"#aaa",fontSize:"13px",cursor:"pointer",marginTop:"4px"},onClick:cerrarSesion},"🚪 Cerrar sesión"));
   wrap.appendChild(box);
   return wrap;
