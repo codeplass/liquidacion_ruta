@@ -318,6 +318,16 @@ function esClientePre(c) {
 }
 // Helper: true si un pedido específico es "Pre"
 const esPedPre = p => /^pre$/i.test(p?.estPed||"");
+// Motivo de devolución del cliente (solo descripción). "" si el cliente no tiene devoluciones.
+function motivoDevCliente(c) {
+  const dsc = (codigo, d) => d || (MOTIVOS.find(m=>m.codigo===codigo)||{}).desc || "";
+  const tieneDev = state.estadoEntrega?.[c] === "rosado" || (state.devoluciones||[]).some(d=>d.cliente===c);
+  if (!tieneDev) return "";
+  const mt = state.motivosDevTotal?.[c];
+  if (mt && (mt.desc || mt.codigo)) return dsc(mt.codigo, mt.desc);
+  const set = [...new Set((state.devoluciones||[]).filter(d=>d.cliente===c).map(d=>dsc(d.codigo,d.desc)).filter(Boolean))];
+  return set.join(" / ");
+}
 // Helper: true si el pedido fue habilitado desde presupuesto por el admin
 const esPedEraPre = p => !!(p && p.eraPresup) && !esPedPre(p);
 
@@ -4426,6 +4436,14 @@ function renderListaRutas(container, porRuta) {
       const nameLine = document.createElement("span");
       nameLine.style.cssText = "display:inline-flex;align-items:center;gap:5px;";
       nameLine.appendChild(document.createTextNode(cliente));
+      // Motivo de la devolución entre paréntesis, después del nombre
+      const _motDev = motivoDevCliente(cliente);
+      if(_motDev){
+        const motSpan = document.createElement("span");
+        motSpan.style.cssText = `color:${estado==="rosado"?"#e91e8c":"#c0392b"};font-weight:600;font-size:12px;`;
+        motSpan.textContent = `(${_motDev})`;
+        nameLine.appendChild(motSpan);
+      }
       if(notasVendedor.length>0){
         const notaIcon=document.createElement("span");
         notaIcon.title = notasVendedor.join(" | ");
@@ -5162,73 +5180,127 @@ function renderResumenDevoluciones() {
   const cMap = state.clienteMap || {};
 
   // Nombre de ruta limpio (el Excel arrastra "— N clientes" en el encabezado de ruta)
-  const rutaNombre = r => (r||"").replace(/[\s—–-]+\d+\s*clientes?/i,"").trim();
-  // Ruta de un cliente, tal como viene cargada del Excel
+  const rutaNombre = r => (r || "").replace(/[\s—–-]+\d+\s*clientes?/i, "").trim();
   const getRutaCliente = c => cMap[c]?.ruta || "Sin ruta";
+  // Quitar el código del cliente: la clave viene como "CODIGO - NOMBRE"
+  const nombreSinCodigo = c => { const s = String(c || ""); const i = s.indexOf(" - "); return i > 0 ? s.slice(i + 3).trim() : s; };
+  const descMotivo = (codigo, desc) => desc || (MOTIVOS.find(m => m.codigo === codigo) || {}).desc || codigo || "";
+  const motivoCliente = c => {
+    const mt = state.motivosDevTotal?.[c];
+    if (mt && (mt.desc || mt.codigo)) return descMotivo(mt.codigo, mt.desc);
+    const set = [...new Set((state.devoluciones || []).filter(d => d.cliente === c).map(d => descMotivo(d.codigo, d.desc)).filter(Boolean))];
+    return set.join(" / ");
+  };
 
-  const devs = devsValidas(state.devoluciones, state.clienteMap);
+  const COL_TOTAL = "#e91e8c";   // devolución total
+  const COL_PARCIAL = "#f39c12"; // devolución parcial
 
-  // Recopilar todas las rutas que tienen devoluciones
-  const rutasConDevs = new Set();
-  devs.forEach(d => rutasConDevs.add(getRutaCliente(d.cliente)));
-  const devsTotalesAll = Object.keys(cMap).filter(c => state.estadoEntrega[c] === "rosado");
-  devsTotalesAll.forEach(c => rutasConDevs.add(getRutaCliente(c)));
-  const todasRutas = Array.from(rutasConDevs).sort();
+  // Estado de apertura del drill-down (rutas y clientes cerrados por defecto)
+  if (!state.dvOpen) state.dvOpen = { rutas: {}, clientes: {} };
+  const openR = state.dvOpen.rutas, openC = state.dvOpen.clientes;
 
-  // Filtro activo de ruta
+  const devs = devsValidas(state.devoluciones, cMap);
+  const clientesRosado = Object.keys(cMap).filter(c => state.estadoEntrega[c] === "rosado");
+
+  // ── Líneas unificadas (parciales + totales) ──
+  const lineasRaw = [];
+  devs.forEach(d => lineasRaw.push({
+    cliente: d.cliente, pedido: d.pedido || "S/N", producto: d.producto,
+    unidades: d.unidades, monto: d.monto, codigo: d.codigo, desc: d.desc
+  }));
+  // Rosados sin devoluciones registradas línea a línea → devolución total implícita
+  clientesRosado.forEach(c => {
+    if (devs.some(d => d.cliente === c)) return;
+    const mot = state.motivosDevTotal?.[c] || {};
+    Object.entries(cMap[c]?.pedidos || {}).forEach(([ped, pd]) => {
+      if (esPedPre(pd)) return;
+      (pd.lineas || []).forEach(l => {
+        if (/^pre$/i.test(l.estPed || "")) return;
+        lineasRaw.push({ cliente: c, pedido: ped, producto: l.producto, unidades: l.unidades, monto: l.monto, codigo: mot.codigo, desc: mot.desc });
+      });
+    });
+  });
+
+  // Agregar por cliente | pedido | producto
+  const aggMap = {};
+  lineasRaw.forEach(l => {
+    const k = `${l.cliente}||${l.pedido}||${l.producto}`;
+    if (!aggMap[k]) aggMap[k] = { ...l, unidades: 0, monto: 0 };
+    aggMap[k].unidades += l.unidades;
+    aggMap[k].monto += l.monto;
+    if (!aggMap[k].desc && l.desc) aggMap[k].desc = l.desc;
+    if (!aggMap[k].codigo && l.codigo) aggMap[k].codigo = l.codigo;
+  });
+  const lineasAgg = Object.values(aggMap);
+
+  // Estatus de la devolución a nivel de producto: total si se devolvieron todas las unidades
+  const estatusProducto = l => {
+    const orig = (cMap[l.cliente]?.pedidos?.[l.pedido]?.lineas || []).filter(x => x.producto === l.producto);
+    const uOrig = orig.reduce((s, x) => s + x.unidades, 0);
+    const esTotal = uOrig > 0 ? (l.unidades >= uOrig - 0.0001) : true;
+    return esTotal ? { label: "Total", color: COL_TOTAL } : { label: "Parcial", color: COL_PARCIAL };
+  };
+  const estatusCliente = c => state.estadoEntrega[c] === "rosado"
+    ? { label: "Total", color: COL_TOTAL }
+    : { label: "Parcial", color: COL_PARCIAL };
+
+  // Círculo de color
+  const dot = (color, titulo) => el("span", { title: titulo || "", style: { display: "inline-block", width: "9px", height: "9px", borderRadius: "50%", background: color, flexShrink: "0" } });
+  const chipEstatus = (est) => {
+    const s = el("span", { style: { display: "inline-flex", alignItems: "center", gap: "4px", background: est.color + "1f", color: est.color, borderRadius: "10px", padding: "1px 7px", fontSize: "10px", fontWeight: "700", flexShrink: "0" } });
+    s.appendChild(dot(est.color));
+    s.appendChild(document.createTextNode(est.label));
+    return s;
+  };
+
+  // ── Rutas y filtro ──
+  const todasRutas = [...new Set(lineasAgg.map(l => getRutaCliente(l.cliente)))].sort((a, b) => {
+    const na = parseInt((a.match(/\d+/) || ["9999"])[0]), nb = parseInt((b.match(/\d+/) || ["9999"])[0]);
+    return na - nb || String(a).localeCompare(String(b));
+  });
   const filtroRuta = state.dvResumenFiltroRuta || "";
+  const lineasF = filtroRuta ? lineasAgg.filter(l => getRutaCliente(l.cliente) === filtroRuta) : lineasAgg;
 
-  // Aplicar filtro
-  const devsFiltr = filtroRuta ? devs.filter(d => getRutaCliente(d.cliente) === filtroRuta) : devs;
-  const devsTotales = devsTotalesAll.filter(c => !filtroRuta || getRutaCliente(c) === filtroRuta);
-
-  // Agrupar devs parciales por ruta → cliente
-  const porRuta = {};
-  devsFiltr.forEach(d => {
-    const ruta = getRutaCliente(d.cliente);
-    if (!porRuta[ruta]) porRuta[ruta] = {};
-    if (!porRuta[ruta][d.cliente]) porRuta[ruta][d.cliente] = { devs: [], total: 0 };
-    porRuta[ruta][d.cliente].devs.push(d);
-    porRuta[ruta][d.cliente].total += d.monto;
+  // ── Árbol: ruta → cliente → pedido → productos ──
+  const arbol = {};
+  lineasF.forEach(l => {
+    const ruta = getRutaCliente(l.cliente);
+    if (!arbol[ruta]) arbol[ruta] = {};
+    if (!arbol[ruta][l.cliente]) arbol[ruta][l.cliente] = {};
+    if (!arbol[ruta][l.cliente][l.pedido]) arbol[ruta][l.cliente][l.pedido] = [];
+    arbol[ruta][l.cliente][l.pedido].push(l);
   });
 
-  // Agrupar devs totales (rosados) por ruta
-  const totalPorRuta = {};
-  devsTotales.forEach(c => {
-    const ruta = getRutaCliente(c);
-    if (!totalPorRuta[ruta]) totalPorRuta[ruta] = [];
-    totalPorRuta[ruta].push(c);
-  });
+  // ── Totales ──
+  const totalGeneral = lineasF.reduce((s, l) => s + l.monto, 0);
+  const totalUnidades = lineasF.reduce((s, l) => s + l.unidades, 0);
+  const lineasTotales = lineasF.filter(l => state.estadoEntrega[l.cliente] === "rosado");
+  const lineasParciales = lineasF.filter(l => state.estadoEntrega[l.cliente] !== "rosado");
+  const montoTotales = lineasTotales.reduce((s, l) => s + l.monto, 0);
+  const montoParciales = lineasParciales.reduce((s, l) => s + l.monto, 0);
+  const clientesConDev = [...new Set(lineasF.map(l => l.cliente))];
+  const cntClientesTotal = clientesConDev.filter(c => state.estadoEntrega[c] === "rosado").length;
+  const cntClientesParcial = clientesConDev.length - cntClientesTotal;
 
-  // Agrupar por producto (todas las devs filtradas)
+  // Por producto (listado de abajo, igual que antes)
   const porProducto = {};
-  devsFiltr.forEach(d => {
-    const k = d.producto;
-    if (!porProducto[k]) porProducto[k] = { unidades: 0, monto: 0, clientes: new Set() };
-    porProducto[k].unidades += d.unidades;
-    porProducto[k].monto += d.monto;
-    porProducto[k].clientes.add(d.cliente);
+  lineasF.forEach(l => {
+    if (!porProducto[l.producto]) porProducto[l.producto] = { unidades: 0, monto: 0, clientes: new Set() };
+    porProducto[l.producto].unidades += l.unidades;
+    porProducto[l.producto].monto += l.monto;
+    porProducto[l.producto].clientes.add(l.cliente);
   });
-
-  const totalDevM = devsFiltr.reduce((s, d) => s + d.monto, 0);
-  const totalDevU = devsFiltr.reduce((s, d) => s + d.unidades, 0);
-  const totalDevTotalesM = devsTotales.reduce((s, c) => s + totalesCliente(c).monto, 0);
-  const totalGeneral = totalDevM + totalDevTotalesM;
 
   const wrap = el("div", { style: { fontFamily: "sans-serif", background: "#f4f6f9", minHeight: "100vh", padding: "24px" } });
   const inner = el("div", { style: { maxWidth: "700px", margin: "0 auto" } });
   wrap.appendChild(inner);
 
-  // Header
+  // ── Header ──
   const hdr = el("div", { style: { background: "#c0392b", color: "#fff", borderRadius: "12px", padding: "14px 20px", marginBottom: "16px", display: "flex", alignItems: "center", gap: "12px" } });
   hdr.appendChild(el("button", { style: { background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: "8px", padding: "7px 14px", cursor: "pointer", fontSize: "13px", flexShrink: "0" }, onClick: () => setState({ screen: state.modoHistorial ? "historialVista" : "main" }) }, "← Volver"));
   const hdrInfo = el("div", { style: { flex: "1" } });
   hdrInfo.appendChild(el("h2", { style: { margin: "0", fontSize: "17px", fontWeight: "700" } }, "↩️ Resumen de Devoluciones"));
-  const totalClientesConDev = new Set([
-    ...devsFiltr.map(d => d.cliente),
-    ...devsTotales
-  ]).size;
-  hdrInfo.appendChild(el("p", { style: { margin: "2px 0 0", fontSize: "11px", opacity: "0.7" } }, `${state.fecha} · ${totalClientesConDev} cliente${totalClientesConDev !== 1 ? "s" : ""} con devolución · Total: ${fQ(totalGeneral)}`));
+  hdrInfo.appendChild(el("p", { style: { margin: "2px 0 0", fontSize: "11px", opacity: "0.8" } }, `${state.fecha} · ${clientesConDev.length} cliente${clientesConDev.length !== 1 ? "s" : ""} con devolución`));
   hdr.appendChild(hdrInfo);
   inner.appendChild(hdr);
 
@@ -5236,17 +5308,21 @@ function renderResumenDevoluciones() {
   if (todasRutas.length > 1) {
     const chipsWrap = el("div", { style: { display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "16px" } });
     const chipTodas = el("button", {
-      style: { padding: "6px 14px", borderRadius: "20px", border: "none", cursor: "pointer", fontSize: "12px", fontWeight: "700",
-        background: !filtroRuta ? "#c0392b" : "#e0e0e0", color: !filtroRuta ? "#fff" : "#555" },
+      style: {
+        padding: "6px 14px", borderRadius: "20px", border: "none", cursor: "pointer", fontSize: "12px", fontWeight: "700",
+        background: !filtroRuta ? "#c0392b" : "#e0e0e0", color: !filtroRuta ? "#fff" : "#555"
+      },
       onClick: () => { state.dvResumenFiltroRuta = ""; render(); }
     }, "Todas");
     chipsWrap.appendChild(chipTodas);
     todasRutas.forEach(ruta => {
       const activo = filtroRuta === ruta;
       const chip = el("button", {
-        style: { padding: "6px 14px", borderRadius: "20px", border: "none", cursor: "pointer", fontSize: "12px", fontWeight: "700",
+        style: {
+          padding: "6px 14px", borderRadius: "20px", border: "none", cursor: "pointer", fontSize: "12px", fontWeight: "700",
           background: activo ? "#c0392b" : "#fff", color: activo ? "#fff" : "#c0392b",
-          boxShadow: "0 1px 4px rgba(0,0,0,0.12)" },
+          boxShadow: "0 1px 4px rgba(0,0,0,0.12)"
+        },
         onClick: () => { state.dvResumenFiltroRuta = activo ? "" : ruta; render(); }
       }, rutaNombre(ruta));
       chipsWrap.appendChild(chip);
@@ -5254,7 +5330,7 @@ function renderResumenDevoluciones() {
     inner.appendChild(chipsWrap);
   }
 
-  if (devsFiltr.length === 0 && devsTotales.length === 0) {
+  if (lineasF.length === 0) {
     inner.appendChild(el("div", { style: { background: "#fff", borderRadius: "12px", padding: "40px", textAlign: "center", color: "#aaa", fontSize: "14px" } }, "No hay devoluciones registradas."));
     return wrap;
   }
@@ -5266,114 +5342,131 @@ function renderResumenDevoluciones() {
     return d;
   };
 
-  // ── Devoluciones totales (rosados) agrupadas por ruta ──
-  const rutasTotales = Array.from(new Set(devsTotales.map(c => getRutaCliente(c)))).sort();
-  if (devsTotales.length > 0) {
-    const rows = [];
-    rutasTotales.forEach(ruta => {
-      const clientesDeRuta = (totalPorRuta[ruta] || []);
-      // Título de ruta
-      rows.push(el("div", { style: { fontWeight: "700", fontSize: "12px", color: "#9b59b6", background: "#f5eef8", borderRadius: "6px", padding: "4px 10px", margin: "6px 0 4px" } }, `📍 ${rutaNombre(ruta)} — ${clientesDeRuta.length} cliente${clientesDeRuta.length !== 1 ? "s" : ""}`));
-      clientesDeRuta.forEach(c => {
-        const tt = totalesCliente(c);
-        const mot = state.motivosDevTotal[c];
-        const r = el("div", { style: { padding: "6px 0 6px 8px", borderBottom: "1px solid #f0f4f8" } });
-        r.appendChild(el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
-          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#e91e8c" } }, c),
-          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#c0392b" } }, fQ(tt.monto))
-        ));
-        if (mot) r.appendChild(el("div", { style: { fontSize: "11px", color: "#888", marginTop: "2px" } }, `${mot.codigo} — ${mot.desc}`));
-        rows.push(r);
-      });
-    });
-    const totRow = el("div", { style: { display: "flex", justifyContent: "space-between", marginTop: "8px", fontWeight: "700", fontSize: "13px", color: "#c0392b" } });
-    totRow.appendChild(el("span", {}, "Total devoluciones totales"));
-    totRow.appendChild(el("span", {}, fQ(totalDevTotalesM)));
-    rows.push(totRow);
-    inner.appendChild(secCard(`🔴 Devoluciones Totales (${devsTotales.length} cliente${devsTotales.length > 1 ? "s" : ""})`, "#e91e8c", rows));
-  }
+  // ── Total de la devolución en valores ──
+  const totCard = el("div", { style: { background: "#fff", borderRadius: "12px", padding: "16px 20px", marginBottom: "14px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", borderLeft: "5px solid #c0392b" } });
+  const totTop = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "10px" } });
+  totTop.appendChild(el("span", { style: { fontSize: "12px", fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: "0.5px" } }, "Total de la devolución"));
+  totTop.appendChild(el("span", { style: { fontSize: "22px", fontWeight: "800", color: "#c0392b" } }, fQ(totalGeneral)));
+  totCard.appendChild(totTop);
+  totCard.appendChild(el("div", { style: { fontSize: "11px", color: "#999", marginTop: "2px", textAlign: "right" } }, `${fN(totalUnidades)} unidades`));
+  const totBreak = el("div", { style: { display: "flex", gap: "10px", marginTop: "12px", flexWrap: "wrap" } });
+  const miniBox = (label, monto, cnt, color) => {
+    const b = el("div", { style: { flex: "1", minWidth: "140px", background: color + "12", borderRadius: "8px", padding: "8px 12px" } });
+    const t = el("div", { style: { display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: "700", color: color } });
+    t.appendChild(dot(color));
+    t.appendChild(document.createTextNode(label));
+    b.appendChild(t);
+    b.appendChild(el("div", { style: { fontSize: "15px", fontWeight: "700", color: "#333", marginTop: "2px" } }, fQ(monto)));
+    b.appendChild(el("div", { style: { fontSize: "10px", color: "#999" } }, `${cnt} cliente${cnt !== 1 ? "s" : ""}`));
+    return b;
+  };
+  totBreak.appendChild(miniBox("Devolución total", montoTotales, cntClientesTotal, COL_TOTAL));
+  totBreak.appendChild(miniBox("Devolución parcial", montoParciales, cntClientesParcial, COL_PARCIAL));
+  totCard.appendChild(totBreak);
+  inner.appendChild(totCard);
 
-  // ── Por ruta → cliente (parciales) ──
-  const rutasParciales = Object.keys(porRuta).sort();
-  if (rutasParciales.length > 0) {
-    const rows = [];
-    rutasParciales.forEach(ruta => {
-      // Título de ruta
-      rows.push(el("div", { style: { fontWeight: "700", fontSize: "12px", color: "#9b59b6", background: "#f5eef8", borderRadius: "6px", padding: "4px 10px", margin: "6px 0 4px" } }, `📍 ${ruta}`));
-      Object.entries(porRuta[ruta]).sort((a, b) => b[1].total - a[1].total).forEach(([cliente, data]) => {
-        const hRow = el("div", { style: { padding: "6px 0 4px 8px", borderBottom: "1px solid #f0f4f8" } });
-        hRow.appendChild(el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" } },
-          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#1e3a5f" } }, cliente),
-          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#c0392b" } }, `-${fQ(data.total)}`)
-        ));
-        data.devs.forEach(d => {
-          const dr = el("div", { style: { padding: "2px 0 2px 12px", fontSize: "12px", color: "#666" } });
-          // Fila producto
-          const prodRow = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" } });
-          prodRow.appendChild(el("span", { style: { flex: "1", wordBreak: "break-word" } }, d.producto));
-          const vals = el("div", { style: { display: "flex", gap: "10px", flexShrink: "0" } });
-          vals.appendChild(el("span", { style: { color: "#555" } }, `${fN(d.unidades)} u`));
-          vals.appendChild(el("span", { style: { color: "#c0392b", fontWeight: "600" } }, `-${fQ(d.monto)}`));
-          prodRow.appendChild(vals);
-          dr.appendChild(prodRow);
-          // Fila meta: pedido + motivo
-          const meta = [];
-          if (d.pedido && d.pedido !== "S/N") meta.push(`📋 ${d.pedido}`);
-          if (d.codigo) {
-            const mot = MOTIVOS.find(m => m.codigo === d.codigo);
-            if (mot) meta.push(`${mot.codigo} — ${mot.desc}`);
-            else meta.push(d.codigo);
-          }
-          if (meta.length > 0) {
-            dr.appendChild(el("div", { style: { fontSize: "11px", color: "#999", marginTop: "1px" } }, meta.join(" · ")));
-          }
-          rows.push(dr);
-        });
-        rows.push(hRow);
-        // reorder: hRow first, then detail rows — fix by building array properly
-      });
-    });
+  // ── Drill-down: Ruta → Cliente → Pedido → Productos ──
+  const rutasOrden = Object.keys(arbol).sort((a, b) => {
+    const na = parseInt((a.match(/\d+/) || ["9999"])[0]), nb = parseInt((b.match(/\d+/) || ["9999"])[0]);
+    return na - nb || String(a).localeCompare(String(b));
+  });
 
-    // Rebuild rows correctly (hRow before detail rows)
-    const rowsFixed = [];
-    rutasParciales.forEach(ruta => {
-      rowsFixed.push(el("div", { style: { fontWeight: "700", fontSize: "12px", color: "#9b59b6", background: "#f5eef8", borderRadius: "6px", padding: "4px 10px", margin: "6px 0 4px" } }, `📍 ${rutaNombre(ruta)} — ${Object.keys(porRuta[ruta]).length} cliente${Object.keys(porRuta[ruta]).length !== 1 ? "s" : ""}`));
-      Object.entries(porRuta[ruta]).sort((a, b) => b[1].total - a[1].total).forEach(([cliente, data]) => {
-        const hRow = el("div", { style: { padding: "6px 0 4px 8px", borderBottom: "1px solid #f0f4f8" } });
-        hRow.appendChild(el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2px" } },
-          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#1e3a5f" } }, cliente),
-          el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#c0392b" } }, `-${fQ(data.total)}`)
-        ));
-        rowsFixed.push(hRow);
-        data.devs.forEach(d => {
-          const dr = el("div", { style: { padding: "3px 0 3px 14px", fontSize: "12px", color: "#666" } });
-          const prodRow = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" } });
-          prodRow.appendChild(el("span", { style: { flex: "1", wordBreak: "break-word" } }, d.producto));
+  const drillRows = [];
+  rutasOrden.forEach(ruta => {
+    const clientesRuta = Object.keys(arbol[ruta]);
+    const montoRuta = clientesRuta.reduce((s, c) => s + Object.values(arbol[ruta][c]).flat().reduce((x, l) => x + l.monto, 0), 0);
+    const rutaAbierta = !!openR[ruta];
+
+    // Fila de ruta (nivel 1)
+    const rHdr = el("div", {
+      style: {
+        display: "flex", alignItems: "center", gap: "8px", cursor: "pointer",
+        background: rutaAbierta ? "#f5eef8" : "#fafafa", borderRadius: "8px",
+        padding: "9px 12px", margin: "6px 0 2px", userSelect: "none"
+      },
+      onClick: () => { openR[ruta] = !openR[ruta]; render(); }
+    });
+    rHdr.appendChild(el("span", { style: { fontSize: "11px", color: "#9b59b6", width: "12px", flexShrink: "0" } }, rutaAbierta ? "▼" : "▶"));
+    rHdr.appendChild(el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#9b59b6", flex: "1", wordBreak: "break-word" } }, `📍 ${rutaNombre(ruta)}`));
+    rHdr.appendChild(el("span", { style: { fontSize: "11px", color: "#888", flexShrink: "0" } }, `${clientesRuta.length} cli.`));
+    rHdr.appendChild(el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#c0392b", flexShrink: "0" } }, `-${fQ(montoRuta)}`));
+    drillRows.push(rHdr);
+
+    if (!rutaAbierta) return;
+
+    // Clientes ordenados por monto desc
+    const clientesOrden = clientesRuta
+      .map(c => ({ c, monto: Object.values(arbol[ruta][c]).flat().reduce((x, l) => x + l.monto, 0) }))
+      .sort((a, b) => b.monto - a.monto);
+
+    clientesOrden.forEach(({ c, monto }) => {
+      const key = ruta + "||" + c;
+      const cliAbierto = !!openC[key];
+      const est = estatusCliente(c);
+      const mot = motivoCliente(c);
+      const unidadesCli = Object.values(arbol[ruta][c]).flat().reduce((x, l) => x + l.unidades, 0);
+
+      // Fila de cliente (nivel 2)
+      const cHdr = el("div", {
+        style: {
+          cursor: "pointer", padding: "8px 10px 8px 26px", borderBottom: "1px solid #f0f4f8",
+          background: cliAbierto ? "#fdf6f5" : "transparent", userSelect: "none"
+        },
+        onClick: () => { openC[key] = !openC[key]; render(); }
+      });
+      const cTop = el("div", { style: { display: "flex", alignItems: "center", gap: "7px" } });
+      cTop.appendChild(el("span", { style: { fontSize: "10px", color: "#c0392b", width: "10px", flexShrink: "0" } }, cliAbierto ? "▼" : "▶"));
+      cTop.appendChild(dot(est.color, est.label));
+      cTop.appendChild(el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#1e3a5f", flex: "1", wordBreak: "break-word" } }, nombreSinCodigo(c)));
+      cTop.appendChild(el("span", { style: { fontWeight: "700", fontSize: "13px", color: "#c0392b", flexShrink: "0" } }, `-${fQ(monto)}`));
+      cHdr.appendChild(cTop);
+      const metaCli = [];
+      if (mot) metaCli.push(mot);
+      metaCli.push(`${fN(unidadesCli)} u`);
+      cHdr.appendChild(el("div", { style: { fontSize: "11px", color: "#999", marginLeft: "26px", marginTop: "1px" } }, metaCli.join(" · ")));
+      drillRows.push(cHdr);
+
+      if (!cliAbierto) return;
+
+      // Pedidos del cliente (nivel 3)
+      const pedidos = Object.keys(arbol[ruta][c]).sort();
+      pedidos.forEach(ped => {
+        const lins = arbol[ruta][c][ped];
+        const montoPed = lins.reduce((s, l) => s + l.monto, 0);
+        const pRow = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", padding: "5px 10px 5px 44px", background: "#f7f9fc", borderRadius: "6px", margin: "4px 0 2px" } });
+        pRow.appendChild(el("span", { style: { fontSize: "11px", fontWeight: "700", color: "#2d5f8a", wordBreak: "break-all" } }, `📋 Pedido ${ped}`));
+        pRow.appendChild(el("span", { style: { fontSize: "11px", fontWeight: "700", color: "#c0392b", flexShrink: "0" } }, `-${fQ(montoPed)}`));
+        drillRows.push(pRow);
+
+        // Productos (nivel 4)
+        lins.sort((a, b) => b.monto - a.monto).forEach(l => {
+          const eProd = estatusProducto(l);
+          const pr = el("div", { style: { padding: "3px 10px 3px 52px", fontSize: "12px", color: "#666" } });
+          const top = el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" } });
+          const izq = el("div", { style: { flex: "1", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" } });
+          izq.appendChild(el("span", { style: { wordBreak: "break-word" } }, l.producto));
+          izq.appendChild(chipEstatus(eProd));
+          top.appendChild(izq);
           const vals = el("div", { style: { display: "flex", gap: "10px", flexShrink: "0" } });
-          vals.appendChild(el("span", { style: { color: "#555" } }, `${fN(d.unidades)} u`));
-          vals.appendChild(el("span", { style: { color: "#c0392b", fontWeight: "600" } }, `-${fQ(d.monto)}`));
-          prodRow.appendChild(vals);
-          dr.appendChild(prodRow);
-          const meta = [];
-          if (d.pedido && d.pedido !== "S/N") meta.push(`📋 ${d.pedido}`);
-          if (d.codigo) {
-            const mot = MOTIVOS.find(m => m.codigo === d.codigo);
-            if (mot) meta.push(`${mot.codigo} — ${mot.desc}`);
-            else meta.push(d.codigo);
-          }
-          if (meta.length > 0) {
-            dr.appendChild(el("div", { style: { fontSize: "11px", color: "#999", marginTop: "1px" } }, meta.join(" · ")));
-          }
-          rowsFixed.push(dr);
+          vals.appendChild(el("span", { style: { color: "#555" } }, `${fN(l.unidades)} u`));
+          vals.appendChild(el("span", { style: { color: "#c0392b", fontWeight: "600" } }, `-${fQ(l.monto)}`));
+          top.appendChild(vals);
+          pr.appendChild(top);
+          const motProd = descMotivo(l.codigo, l.desc);
+          // Solo mostrar el motivo del producto si difiere del motivo general del cliente
+          if (motProd && motProd !== mot) pr.appendChild(el("div", { style: { fontSize: "11px", color: "#aaa", marginTop: "1px" } }, motProd));
+          drillRows.push(pr);
         });
       });
     });
-    const totRow = el("div", { style: { display: "flex", justifyContent: "space-between", marginTop: "8px", padding: "8px 0 0", fontWeight: "700", fontSize: "13px", color: "#c0392b", borderTop: "2px solid #f0f4f8" } });
-    totRow.appendChild(el("span", {}, `Total parciales (${fN(totalDevU)} u)`));
-    totRow.appendChild(el("span", {}, `-${fQ(totalDevM)}`));
-    rowsFixed.push(totRow);
-    inner.appendChild(secCard(`↩️ Por Ruta / Cliente (${Object.values(porRuta).reduce((s, r) => s + Object.keys(r).length, 0)})`, "#c0392b", rowsFixed));
-  }
+  });
+
+  const totDrill = el("div", { style: { display: "flex", justifyContent: "space-between", marginTop: "10px", padding: "9px 0 0", fontWeight: "700", fontSize: "13px", color: "#c0392b", borderTop: "2px solid #f0f4f8" } });
+  totDrill.appendChild(el("span", {}, `Total devoluciones (${fN(totalUnidades)} u)`));
+  totDrill.appendChild(el("span", {}, `-${fQ(totalGeneral)}`));
+  drillRows.push(totDrill);
+
+  inner.appendChild(secCard(`↩️ Por Ruta / Cliente (${clientesConDev.length})`, "#c0392b", drillRows));
 
   // ── Por producto ──
   if (Object.keys(porProducto).length > 0) {
