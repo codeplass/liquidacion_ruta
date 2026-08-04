@@ -126,7 +126,7 @@ function parseFile(raw) {
       if(unidades!==0||monto!==0){
         if(!map[cliente].pedidos[pedido]) map[cliente].pedidos[pedido]={lineas:[],estPed:""};
         if(estPed) map[cliente].pedidos[pedido].estPed=estPed;
-        map[cliente].pedidos[pedido].lineas.push({producto:A,unidades,monto,estPed});
+        map[cliente].pedidos[pedido].lineas.push({lid:nuevoLid(),producto:A,unidades,monto,estPed});
       }
     }
     if(esNota(A)&&cliente){
@@ -146,6 +146,68 @@ function parseFile(raw) {
     });
   });
   return map;
+}
+
+// ── Identificador único por línea de detalle ──
+// Permite distinguir dos líneas del MISMO producto dentro de un mismo pedido.
+let _lidSeq = 0;
+function nuevoLid(){ _lidSeq++; return "L"+Date.now().toString(36)+"-"+_lidSeq; }
+function asegurarLids(map){
+  Object.values(map||{}).forEach(cl=>Object.values((cl&&cl.pedidos)||{}).forEach(pd=>{
+    ((pd&&pd.lineas)||[]).forEach(l=>{ if(l && !l.lid) l.lid = nuevoLid(); });
+  }));
+  return map;
+}
+// Reparte las devoluciones de un pedido entre sus líneas.
+// Devoluciones nuevas traen `lid` (línea exacta). Las antiguas (sin lid) se reparten
+// por nombre de producto, llenando cada línea hasta su tope antes de pasar a la siguiente.
+function devsPorLinea(lineas, devs){
+  const L = lineas||[];
+  const res = L.map(()=>({u:0,m:0}));
+  const idxByLid = {};
+  L.forEach((l,i)=>{ if(l && l.lid!=null) idxByLid[l.lid]=i; });
+  const legacy = [];
+  (devs||[]).forEach(d=>{
+    const i = (d && d.lid!=null) ? idxByLid[d.lid] : undefined;
+    if(i!==undefined){ res[i].u += d.unidades||0; res[i].m += d.monto||0; }
+    else legacy.push(d);
+  });
+  legacy.forEach(d=>{
+    let restU = d.unidades||0, restM = d.monto||0;
+    const idxs = [];
+    L.forEach((l,i)=>{ if(l && l.producto===d.producto) idxs.push(i); });
+    if(idxs.length===0) return;
+    idxs.forEach(i=>{
+      if(restU<=0 && restM<=0) return;
+      const capU = Math.max(0,(L[i].unidades||0)-res[i].u);
+      const capM = Math.max(0,(L[i].monto||0)-res[i].m);
+      const tU = Math.min(restU,capU), tM = Math.min(restM,capM);
+      res[i].u+=tU; res[i].m+=tM; restU-=tU; restM-=tM;
+    });
+    if(restU>0||restM>0){ const last=idxs[idxs.length-1]; res[last].u+=restU; res[last].m+=restM; }
+  });
+  return res;
+}
+// ¿Dos registros (devolución/línea) apuntan a la misma línea del detalle?
+function mismaLineaRef(a,b){
+  if(!a||!b) return false;
+  if(a.pedido!=null && b.pedido!=null && a.pedido!==b.pedido) return false;
+  if(a.lid!=null && b.lid!=null) return a.lid===b.lid;
+  return a.producto===b.producto;
+}
+// Devolución TOTAL solo si todas las líneas entregables quedaron devueltas por completo.
+function esDevolucionTotal(pedidosEntregables, devsCl){
+  let hayLineas=false, todas=true;
+  (pedidosEntregables||[]).forEach(([pedido,pData])=>{
+    const lineas = (pData && pData.lineas)||[];
+    const rep = devsPorLinea(lineas, (devsCl||[]).filter(d=>d.pedido===pedido));
+    lineas.forEach((l,i)=>{
+      if(/^pre$/i.test(l.estPed||"")) return;
+      hayLineas=true;
+      if(rep[i].u + 0.0001 < (l.unidades||0)) todas=false;
+    });
+  });
+  return hayLineas && todas;
 }
 
 // ── Estado global ──
@@ -421,7 +483,7 @@ function agregarProductoAPedido(c, pedido, nombre, unidades, precio) {
   const pData=state.clienteMap[c]?.pedidos?.[pedido];
   if(!pData){ setState({addProdModal:null}); return; }
   const monto=parseFloat((u*pu).toFixed(2));
-  pData.lineas.push({producto:nombre, unidades:u, monto, estPed:""});
+  pData.lineas.push({lid:nuevoLid(), producto:nombre, unidades:u, monto, estPed:""});
   setState({clienteMap:state.clienteMap, addProdModal:null});
   showToast("✅ Producto agregado","#27ae60");
 }
@@ -477,11 +539,9 @@ function totalesGral() {
 }
 
 function prodsDisp(c,p) {
-  return (state.clienteMap[c]?.pedidos?.[p]?.lineas||[]).map(l=>{
-    const yU=state.devoluciones.filter(d=>d.cliente===c&&d.pedido===p&&d.producto===l.producto).reduce((s,d)=>s+d.unidades,0);
-    const yM=state.devoluciones.filter(d=>d.cliente===c&&d.pedido===p&&d.producto===l.producto).reduce((s,d)=>s+d.monto,0);
-    return {...l,dispU:l.unidades-yU,dispM:l.monto-yM};
-  }).filter(l=>l.dispU>0);
+  const lineas = state.clienteMap[c]?.pedidos?.[p]?.lineas||[];
+  const rep = devsPorLinea(lineas, state.devoluciones.filter(d=>d.cliente===c&&d.pedido===p));
+  return lineas.map((l,i)=>({...l,dispU:l.unidades-rep[i].u,dispM:l.monto-rep[i].m})).filter(l=>l.dispU>0);
 }
 
 function precioUnit(cliente,pedido,producto) {
@@ -566,7 +626,7 @@ async function iniciarSesionConUsuario(usuario) {
       });
     } else if(yaConfirmado && admin){
       setState({
-        clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:datos.fecha||hoy(),
+        clienteMap:asegurarLids(datos.clienteMap), fileName:datos.fileName||"", fecha:datos.fecha||hoy(),
         estadoEntrega:datos.estadoEntrega||datos.entregados||{}, entregados:datos.entregados||{},
         bloqueados:datos.bloqueados||{}, devoluciones:devsValidas(datos.devoluciones, datos.clienteMap),
         motivosDevTotal:datos.motivosDevTotal||{}, descuentos:datos.descuentos||{},
@@ -579,7 +639,7 @@ async function iniciarSesionConUsuario(usuario) {
       });
     } else {
       setState({
-        clienteMap:datos.clienteMap, fileName:datos.fileName||"", fecha:hoy(),
+        clienteMap:asegurarLids(datos.clienteMap), fileName:datos.fileName||"", fecha:hoy(),
         screen:admin?"menu":"menuRepartidor", cargandoDatos:false, confirmado:yaConfirmado,
         estadoEntrega:datos.estadoEntrega||datos.entregados||{}, entregados:datos.entregados||{},
         bloqueados:datos.bloqueados||{}, devoluciones:devsValidas(datos.devoluciones, datos.clienteMap),
@@ -1003,7 +1063,7 @@ async function _ejecutarConfirmarLiquidacion() {
 async function volverADiaDesdMenu() {
   const datos = await fbGet("datos-dia");
   if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length > 0) {
-    state.clienteMap    = datos.clienteMap;
+    state.clienteMap    = asegurarLids(datos.clienteMap);
     state.fileName      = datos.fileName || state.fileName;
     state.estadoEntrega = datos.estadoEntrega || datos.entregados || {};
     state.entregados    = datos.entregados || {};
@@ -1152,15 +1212,15 @@ async function exportarExcel(reg, nombreArchivo) {
     const lbl=est==="verde"?"Entregado":est==="amarillo"?"Parcial":est==="rosado"?"Dev. total":"Pendiente";
     const esRosado = est==="rosado";
     Object.entries(cMap[c]?.pedidos||{}).forEach(([ped,pd])=>{
-      pd.lineas.forEach(l=>{
+      const repExp = devsPorLinea(pd.lineas, devs.filter(d=>d.cliente===c&&d.pedido===ped));
+      pd.lineas.forEach((l,li)=>{
         let du,dm;
         if(esRosado){
           // Devolución total: todas las unidades y monto del producto
           du=l.unidades; dm=l.monto;
         } else {
-          const dv=devs.filter(d=>d.cliente===c&&d.pedido===ped&&d.producto===l.producto);
-          du=dv.reduce((s,d)=>s+d.unidades,0);
-          dm=dv.reduce((s,d)=>s+d.monto,0);
+          du=repExp[li].u;
+          dm=repExp[li].m;
         }
         pRows.push([ruta,c,lbl,ped,l.producto,l.unidades,l.monto,du||0,dm||0,l.unidades-du,l.monto-dm]);
       });
@@ -1351,7 +1411,7 @@ function guardarDev() {
   if(m>prod.dispM+0.01){setState({dvError:`Máximo: ${fQ(prod.dispM)}.`});return;}
   const motivo=MOTIVOS.find(x=>x.codigo===state.dvCodigo);
   setState({
-    devoluciones:[...state.devoluciones,{id:Date.now(),cliente:state.clienteDetalle,pedido:state.dvPedido,producto:state.dvProducto,unidades:u,monto:m,codigo:state.dvCodigo,desc:motivo.desc}],
+    devoluciones:[...state.devoluciones,{id:Date.now(),lid:prod.lid,cliente:state.clienteDetalle,pedido:state.dvPedido,producto:state.dvProducto,unidades:u,monto:m,codigo:state.dvCodigo,desc:motivo.desc}],
     dvPedido:"",dvProducto:"",dvUnidades:"",dvMonto:"",dvCodigo:"D01",dvError:"",showDvForm:false
   });
 }
@@ -1364,21 +1424,23 @@ function guardarDevPopup() {
   if(u>p.dispU){ setState({dvPopup:{...p,error:`Máximo: ${fN(p.dispU)} unidades.`}}); return; }
   const pu = p.dispM / p.dispU;
   const m = parseFloat((u * pu).toFixed(2));
-  // Quitar dev temporal previa del mismo producto y agregar la nueva
-  const sinEste = state.dvTemporal.filter(d=>!(d.cliente===p.cliente&&d.pedido===p.pedido&&d.producto===p.producto));
+  // Quitar dev temporal previa de ESTA MISMA línea (no de otras líneas con el mismo producto)
+  const sinEste = state.dvTemporal.filter(d=>!(d.cliente===p.cliente && mismaLineaRef(d,p)));
   setState({
-    dvTemporal:[...sinEste,{id:Date.now(),cliente:p.cliente,pedido:p.pedido,producto:p.producto,unidades:u,monto:m,codigo:"",desc:""}],
+    dvTemporal:[...sinEste,{id:Date.now(),lid:p.lid,cliente:p.cliente,pedido:p.pedido,producto:p.producto,unidades:u,monto:m,codigo:"",desc:""}],
     dvPopup:null
   });
 }
 
-function devolverProductoTotal(cliente, pedido, producto) {
-  // Long press: devolver 100% de un producto
-  const linea = state.clienteMap[cliente]?.pedidos?.[pedido]?.lineas?.find(l=>l.producto===producto);
+function devolverProductoTotal(cliente, pedido, lid, producto) {
+  // Devolver el 100% de UNA línea concreta del detalle
+  const lineas = state.clienteMap[cliente]?.pedidos?.[pedido]?.lineas || [];
+  const linea = (lid!=null ? lineas.find(l=>l.lid===lid) : null) || lineas.find(l=>l.producto===producto);
   if(!linea) return;
-  const sinEste = state.dvTemporal.filter(d=>!(d.cliente===cliente&&d.pedido===pedido&&d.producto===producto));
+  const refLinea = {pedido, lid:linea.lid, producto:linea.producto};
+  const sinEste = state.dvTemporal.filter(d=>!(d.cliente===cliente && mismaLineaRef(d,refLinea)));
   setState({
-    dvTemporal:[...sinEste,{id:Date.now(),cliente,pedido,producto,unidades:linea.unidades,monto:linea.monto,codigo:"",desc:""}],
+    dvTemporal:[...sinEste,{id:Date.now(),lid:linea.lid,cliente,pedido,producto:linea.producto,unidades:linea.unidades,monto:linea.monto,codigo:"",desc:""}],
     dvPopup:null
   });
   showToast("↩️ Devolución total del producto marcada","#e91e8c");
@@ -1390,7 +1452,7 @@ function devolverClienteTotal(cliente) {
   Object.entries(state.clienteMap[cliente]?.pedidos||{}).forEach(([pedido,pData])=>{
     if(esPedPre(pData)) return;
     pData.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{
-      lineas.push({id:Date.now()+Math.random(),cliente,pedido,producto:l.producto,unidades:l.unidades,monto:l.monto,codigo:"",desc:""});
+      lineas.push({id:Date.now()+Math.random(),lid:l.lid,cliente,pedido,producto:l.producto,unidades:l.unidades,monto:l.monto,codigo:"",desc:""});
     });
   });
   const sinCliente = state.dvTemporal.filter(d=>d.cliente!==cliente);
@@ -1401,7 +1463,7 @@ function devolverClienteTotal(cliente) {
 }
 
 function aplicarEditPrecio() {
-  const {cliente, pedido, producto, valor} = state.editPrecio || {};
+  const {cliente, pedido, producto, lid, valor} = state.editPrecio || {};
   const pu = parseFloat(valor);
   if(!cliente || !pedido || !producto || isNaN(pu) || pu < 0) {
     setState({editPrecio: null}); return;
@@ -1409,7 +1471,7 @@ function aplicarEditPrecio() {
   const newMap = JSON.parse(JSON.stringify(state.clienteMap));
   const lineas = newMap[cliente]?.pedidos?.[pedido]?.lineas;
   if(!lineas) { setState({editPrecio: null}); return; }
-  const linea = lineas.find(l => l.producto === producto);
+  const linea = (lid!=null ? lineas.find(l=>l.lid===lid) : null) || lineas.find(l => l.producto === producto);
   if(!linea) { setState({editPrecio: null}); return; }
   linea.monto = parseFloat((pu * linea.unidades).toFixed(2));
   setState({clienteMap: newMap, editPrecio: null});
@@ -1417,7 +1479,7 @@ function aplicarEditPrecio() {
 }
 
 function aplicarEditCantidad() {
-  const {cliente, pedido, producto, valor} = state.editCantidad || {};
+  const {cliente, pedido, producto, lid, valor} = state.editCantidad || {};
   const cant = parseFloat(valor);
   if(!cliente || !pedido || !producto || isNaN(cant) || cant < 0) {
     setState({editCantidad: null}); return;
@@ -1425,7 +1487,7 @@ function aplicarEditCantidad() {
   const newMap = JSON.parse(JSON.stringify(state.clienteMap));
   const lineas = newMap[cliente]?.pedidos?.[pedido]?.lineas;
   if(!lineas) { setState({editCantidad: null}); return; }
-  const linea = lineas.find(l => l.producto === producto);
+  const linea = (lid!=null ? lineas.find(l=>l.lid===lid) : null) || lineas.find(l => l.producto === producto);
   if(!linea) { setState({editCantidad: null}); return; }
   const pu = linea.unidades > 0 ? linea.monto / linea.unidades : 0;
   linea.unidades = cant;
@@ -1563,7 +1625,8 @@ function ejecutarMoverProducto() {
   const newMap = JSON.parse(JSON.stringify(state.clienteMap));
   const lineasOrigen = newMap[moverOrigenCliente]?.pedidos?.[moverOrigenPedido]?.lineas;
   if(!lineasOrigen){setState({moverError:"Pedido origen no encontrado."}); return;}
-  const idx = lineasOrigen.findIndex(l=>l.producto===moverProductoSel);
+  let idx = lineasOrigen.findIndex(l=>l.lid===moverProductoSel);
+  if(idx===-1) idx = lineasOrigen.findIndex(l=>l.producto===moverProductoSel);
   if(idx===-1){setState({moverError:"Producto no encontrado en origen."}); return;}
   const [linea] = lineasOrigen.splice(idx,1);
   if(!newMap[moverDestinoCliente]){setState({moverError:"Cliente destino no encontrado."}); return;}
@@ -1576,7 +1639,7 @@ function ejecutarMoverProducto() {
 }
 
 function intentarQuitarProducto() {
-  const {cliente, pedido, producto} = state.quitarProdModal || {};
+  const {cliente, pedido, producto, lid} = state.quitarProdModal || {};
   if(!cliente || !pedido || !producto) {
     setState({quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:""});
     return;
@@ -1588,10 +1651,15 @@ function intentarQuitarProducto() {
   const newMap = JSON.parse(JSON.stringify(state.clienteMap));
   const lineas = newMap[cliente]?.pedidos?.[pedido]?.lineas;
   if(!lineas) { setState({quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:""}); return; }
-  const idx = lineas.findIndex(l => l.producto === producto);
+  let idx = (lid!=null) ? lineas.findIndex(l => l.lid === lid) : -1;
+  if(idx === -1) idx = lineas.findIndex(l => l.producto === producto);
   if(idx === -1) { setState({quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:""}); return; }
+  const lineaQuitada = lineas[idx];
   lineas.splice(idx, 1);
-  setState({clienteMap:newMap, quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:"", _prodQuitadoPendiente:true});
+  const refQ = {pedido, lid:lineaQuitada.lid, producto:lineaQuitada.producto};
+  const devsRestantes = state.devoluciones.filter(d=>!(d.cliente===cliente && d.lid!=null && mismaLineaRef(d,refQ)));
+  const dvTempRestantes = state.dvTemporal.filter(d=>!(d.cliente===cliente && d.lid!=null && mismaLineaRef(d,refQ)));
+  setState({clienteMap:newMap, devoluciones:devsRestantes, dvTemporal:dvTempRestantes, quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:"", _prodQuitadoPendiente:true});
   showToast("🗑️ Producto eliminado del pedido", "#c0392b");
 }
 
@@ -2534,7 +2602,7 @@ function cargarFechaHistorial(fecha) {
   if(!reg) return;
   setState({
     fechaSelec:fecha, screen:"historialVista",
-    clienteMap:reg.clienteMap||{}, fileName:reg.fileName||"", fecha:reg.fecha||fecha,
+    clienteMap:asegurarLids(reg.clienteMap||{}), fileName:reg.fileName||"", fecha:reg.fecha||fecha,
     devoluciones:devsValidas(reg.devoluciones, reg.clienteMap||{}),
     estadoEntrega:reg.estadoEntrega||reg.entregados||{},
     motivosDevTotal:reg.motivosDevTotal||{},
@@ -2798,7 +2866,7 @@ function renderDetalleCliente() {
   const devsPermCliente = state.devoluciones.filter(d=>d.cliente===c);
   const devsTempCliente = state.dvTemporal.filter(d=>d.cliente===c);
   // Para mostrar en detalle: combinar permanentes + temporales (temporales sobreescriben si mismo producto)
-  const devsCl = [...devsPermCliente.filter(dp=>!devsTempCliente.some(dt=>dt.pedido===dp.pedido&&dt.producto===dp.producto)), ...devsTempCliente];
+  const devsCl = [...devsPermCliente.filter(dp=>!devsTempCliente.some(dt=>mismaLineaRef(dt,dp))), ...devsTempCliente];
   const pedidos=Object.entries(cl.pedidos);
   const tc=totalesCliente(c);
   const prodsSel=state.dvPedido?prodsDisp(c,state.dvPedido):[];
@@ -2811,7 +2879,8 @@ function renderDetalleCliente() {
   // Modal editar precio unitario
   if(state.editPrecio && state.editPrecio.cliente === c) {
     const ep = state.editPrecio;
-    const unidades = state.clienteMap[c]?.pedidos?.[ep.pedido]?.lineas?.find(l=>l.producto===ep.producto)?.unidades||0;
+    const _lineasEP = state.clienteMap[c]?.pedidos?.[ep.pedido]?.lineas||[];
+    const unidades = ((ep.lid!=null?_lineasEP.find(l=>l.lid===ep.lid):null) || _lineasEP.find(l=>l.producto===ep.producto))?.unidades||0;
     const puActual = parseFloat(ep.valor)||0;
     const montoCalc = parseFloat((puActual * unidades).toFixed(2));
     const modal = el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999"}});
@@ -2844,7 +2913,8 @@ function renderDetalleCliente() {
   // Modal editar cantidad
   if(state.editCantidad && state.editCantidad.cliente === c) {
     const ec = state.editCantidad;
-    const linea = state.clienteMap[c]?.pedidos?.[ec.pedido]?.lineas?.find(l=>l.producto===ec.producto);
+    const _lineasEC = state.clienteMap[c]?.pedidos?.[ec.pedido]?.lineas||[];
+    const linea = (ec.lid!=null?_lineasEC.find(l=>l.lid===ec.lid):null) || _lineasEC.find(l=>l.producto===ec.producto);
     const pu = linea && linea.unidades > 0 ? linea.monto / linea.unidades : 0;
     const cantActual = parseFloat(ec.valor)||0;
     const montoCalc = parseFloat((pu * cantActual).toFixed(2));
@@ -3136,10 +3206,11 @@ function renderDetalleCliente() {
     }
     phdr.appendChild(psum); box.appendChild(phdr);
     const prodList=el("div",{style:{padding:"4px 0"}});
+    const repLineaPed = devsPorLinea(pData.lineas, devsCl.filter(d=>d.pedido===pedido));
     pData.lineas.forEach((l,li)=>{
       const lineaEsPre = pedEsPre || /^pre$/i.test(l.estPed||"");
-      const ldU=devsCl.filter(d=>d.pedido===pedido&&d.producto===l.producto).reduce((s,d)=>s+d.unidades,0);
-      const ldM=devsCl.filter(d=>d.pedido===pedido&&d.producto===l.producto).reduce((s,d)=>s+d.monto,0);
+      const ldU=repLineaPed[li].u;
+      const ldM=repLineaPed[li].m;
       const pu2=l.unidades>0?(l.monto/l.unidades):0;
       const esDevTotal = !lineaEsPre && ldU >= l.unidades;
       const esDevParcial = !lineaEsPre && ldU > 0 && ldU < l.unidades;
@@ -3161,7 +3232,7 @@ function renderDetalleCliente() {
           const dispU = l.unidades - ldU;
           if(dispU <= 0) return;
           const dispM = l.monto - ldM;
-          setState({dvPopup:{cliente:c, pedido, producto:l.producto, dispU, dispM, unidades:"", error:""}});
+          setState({dvPopup:{cliente:c, pedido, lid:l.lid, producto:l.producto, dispU, dispM, unidades:"", error:""}});
         });
         if(!esDevTotal){
           row.addEventListener("mouseenter",()=>{ row.style.background=esDevParcial?"#fff8e1":"#fff0f0"; });
@@ -3183,7 +3254,7 @@ function renderDetalleCliente() {
       // Punto 6: botón ↩ — devuelve todo el producto de una vez (reemplaza el long-press).
       if(puedeDev){
         const btnDevTotal=el("button",{style:{background:"#fff0f0",border:"1px solid #f5c6c6",borderRadius:"8px",padding:"3px 11px",cursor:"pointer",color:"#c0392b",fontWeight:"700",fontSize:"17px",fontFamily:"sans-serif",flexShrink:"0",lineHeight:"1.1"},title:"Devolver todo el producto"},"↩");
-        btnDevTotal.onclick=e=>{ e.stopPropagation(); devolverProductoTotal(c,pedido,l.producto); };
+        btnDevTotal.onclick=e=>{ e.stopPropagation(); devolverProductoTotal(c,pedido,l.lid,l.producto); };
         prodNomWrap.appendChild(btnDevTotal);
       }
       row.appendChild(prodNomWrap);
@@ -3204,8 +3275,8 @@ function renderDetalleCliente() {
       };
 
       if(!lineaEsPre && !state.bloqueados[c] && !state.modoHistorial){
-        chips.appendChild(mkC("Unid:",fN(l.unidades),colTexto||"#2563eb",()=>setState({editCantidad:{cliente:c,pedido,producto:l.producto,valor:l.unidades}})));
-        chips.appendChild(mkC("P.U.:",`Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`,colTexto||"#2563eb",()=>setState({editPrecio:{cliente:c,pedido,producto:l.producto,valor:pu2.toFixed(4)}})));
+        chips.appendChild(mkC("Unid:",fN(l.unidades),colTexto||"#2563eb",()=>setState({editCantidad:{cliente:c,pedido,lid:l.lid,producto:l.producto,valor:l.unidades}})));
+        chips.appendChild(mkC("P.U.:",`Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`,colTexto||"#2563eb",()=>setState({editPrecio:{cliente:c,pedido,lid:l.lid,producto:l.producto,valor:pu2.toFixed(4)}})));
       } else {
         chips.appendChild(mkC("Unid:",fN(l.unidades),colTexto));
         chips.appendChild(mkC("P.U.:",`Q ${Number(pu2).toLocaleString("es-GT",{minimumFractionDigits:4,maximumFractionDigits:4})}`,colTexto||"#888"));
@@ -3222,7 +3293,7 @@ function renderDetalleCliente() {
       }
       if(state.esAdmin && !state.modoHistorial && !pedEsPre && !lineaEsPre){
         const btnQuitar=el("button",{style:{background:"#fdecea",border:"1px solid #f5c6c6",borderRadius:"6px",padding:"3px 9px",cursor:"pointer",color:"#c0392b",fontWeight:"700",fontSize:"11px",fontFamily:"sans-serif",marginLeft:"auto"}},"🗑️ Quitar");
-        btnQuitar.onclick = e=>{ e.stopPropagation(); setState({quitarProdModal:{cliente:c,pedido,producto:l.producto}, quitarProdPassInput:"", quitarProdPassError:""}); };
+        btnQuitar.onclick = e=>{ e.stopPropagation(); setState({quitarProdModal:{cliente:c,pedido,lid:l.lid,producto:l.producto}, quitarProdPassInput:"", quitarProdPassError:""}); };
         chips.appendChild(btnQuitar);
       }
       row.appendChild(chips);
@@ -3402,7 +3473,7 @@ function renderDetalleCliente() {
       const lineas=[];
       pedidosEntregables.forEach(([pedido,pData])=>{
         pData.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{
-          lineas.push({id:Date.now()+Math.random(),cliente:c,pedido,producto:l.producto,unidades:l.unidades,monto:l.monto,codigo:"",desc:""});
+          lineas.push({id:Date.now()+Math.random(),lid:l.lid,cliente:c,pedido,producto:l.producto,unidades:l.unidades,monto:l.monto,codigo:"",desc:""});
         });
       });
       const sinCliente = state.dvTemporal.filter(d=>d.cliente!==c);
@@ -3514,9 +3585,7 @@ function renderDetalleCliente() {
         btnConfirmar.textContent="✅ Confirmar entrega";
         btnConfirmar.onclick = () => {
           if(tieneDevsParciales){
-            const totalUnidadesEntregables = pedidosEntregables.reduce((s,[,p])=>s+p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).reduce((ss,l)=>ss+l.unidades,0),0);
-            const totalDevUnidades = devsCl.reduce((s,d)=>s+d.unidades,0);
-            const esDevTotal = totalDevUnidades >= totalUnidadesEntregables;
+            const esDevTotal = esDevolucionTotal(pedidosEntregables, devsCl);
             setState({showDvForm:true, _dvTipo: esDevTotal?"rosado":"amarillo"});
           } else {
             confirmarDesdeDetalle(c,"verde");
@@ -3587,10 +3656,8 @@ function renderDetalleCliente() {
         btnConfirmar.textContent="✅ Confirmar entrega";
         btnConfirmar.onclick = () => {
           if(tieneDevsParciales){
-            // Verificar si todas las unidades entregables fueron devueltas → rosado
-            const totalUnidadesEntregables = pedidosEntregables.reduce((s,[,p])=>s+p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).reduce((ss,l)=>ss+l.unidades,0),0);
-            const totalDevUnidades = devsCl.reduce((s,d)=>s+d.unidades,0);
-            const esDevTotal = totalDevUnidades >= totalUnidadesEntregables;
+            // Rosado solo si TODAS las líneas entregables quedaron devueltas por completo
+            const esDevTotal = esDevolucionTotal(pedidosEntregables, devsCl);
             if(esDevTotal){
               setState({showDvForm:true, _dvTipo:"rosado"});
             } else {
@@ -3884,7 +3951,7 @@ function renderMain() {
       const lineas = state.clienteMap[state.moverOrigenCliente]?.pedidos?.[state.moverOrigenPedido]?.lineas||[];
       const selProd = el("select",{style:{width:"100%",padding:"8px 10px",borderRadius:"8px",border:"1px solid #ccc",marginBottom:"16px",fontSize:"13px"}});
       selProd.appendChild(el("option",{value:""},"— Selecciona producto —"));
-      lineas.forEach(l=>{ const o=el("option",{value:l.producto},`${l.producto} (${l.unidades} u — Q${l.monto.toFixed(2)})`); if(state.moverProductoSel===l.producto) o.selected=true; selProd.appendChild(o); });
+      lineas.forEach((l,i)=>{ const val=l.lid||l.producto; const o=el("option",{value:val},`${l.producto} (${l.unidades} u — Q${l.monto.toFixed(2)})`); if(state.moverProductoSel===val) o.selected=true; selProd.appendChild(o); });
       selProd.addEventListener("change",e=>{setState({moverProductoSel:e.target.value});});
       mBox.appendChild(selProd);
     }
