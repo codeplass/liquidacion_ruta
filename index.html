@@ -352,10 +352,14 @@ function _setStateInterno(updates) {
   render();
   // Guardado automático en Firebase cuando cambian datos del día
   // Autosave: solo datos de entregas (no cuadre — ese solo se guarda al confirmar)
+  // IMPORTANTE: nunca autoguardar mientras se está solo consultando un historial
+  // (modoHistorial=true), porque esos datos son de un día distinto al que está
+  // activo en "datos-dia" — guardar aquí sobrescribiría la entrega en proceso de
+  // otro día/repartidor con los datos del día histórico que se está viendo.
   const camposGuardar = ["estadoEntrega","entregados","bloqueados",
     "motivosDevTotal","descuentos","comentarios","pagoPendiente","clienteMap"];
   const afecta = Object.keys(updates).some(k => camposGuardar.includes(k));
-  if(afecta && state.autenticado && state.clienteMap && Object.keys(state.clienteMap).length > 0){
+  if(afecta && !state.modoHistorial && state.autenticado && state.clienteMap && Object.keys(state.clienteMap).length > 0){
     clearTimeout(window._autoSaveTimer);
     window._autoSavePendiente = true;
     window._autoSaveTimer = setTimeout(() => {
@@ -790,6 +794,24 @@ function hayDatosActivos() {
   return state.autenticado
     && Object.keys(state.clienteMap||{}).length > 0
     && !state.modoHistorial;
+}
+
+// ── Evalúa si la liquidación del día puede confirmarse ──
+// Requisitos: (1) todas las entregas (no presupuestos) tienen un estado asignado,
+// (2) el cuadre tiene al menos 3 de sus 10 campos (7 billetes + monedas + depósito +
+// transferencia) llenos, para evitar confirmar con el cuadre casi vacío.
+function evaluarConfirmable() {
+  const clientesTodos = Object.keys(state.clienteMap||{});
+  const clientesEnt = clientesTodos.filter(c=>!esClientePre(c));
+  const sinConfirmar = clientesEnt.filter(c=>!state.estadoEntrega[c]);
+  const entregasCompletas = clientesEnt.length>0 && sinConfirmar.length===0;
+  const camposCuadre = [
+    ...BILLETES.map(b=>state.billetes ? state.billetes[b] : ""),
+    state.monedas, state.deposito, state.transferencia
+  ];
+  const camposLlenos = camposCuadre.filter(v => v!==undefined && v!==null && String(v).trim()!=="").length;
+  const cuadreListo = camposLlenos >= 3;
+  return {puede: entregasCompletas && cuadreListo, entregasCompletas, cuadreListo, sinConfirmar, camposLlenos};
 }
 
 // Navegar con confirmación si hay datos no confirmados
@@ -4631,18 +4653,19 @@ function renderListaRutas(container, porRuta) {
   } else {
     const btnRow=el("div",{style:{display:"flex",gap:"12px",justifyContent:"center",flexWrap:"wrap"}});
     btnRow.appendChild(el("button",{style:{background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 32px",fontSize:"15px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(30,58,95,0.2)"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Ir a Liquidación"));
-    btnRow.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 32px",fontSize:"15px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(39,174,96,0.3)"},onClick:()=>{
-      const sinConfirmar=clientes.filter(c=>!state.estadoEntrega[c] && !esClientePre(c));
-      if(sinConfirmar.length>0){
-        showModal({titulo:"⚠️ Entregas pendientes", mensaje:`Hay ${sinConfirmar.length} entrega(s) sin confirmar:\n\n${sinConfirmar.map(c=>"• "+c).join("\n")}\n\nConfirma todas las entregas antes de liquidar.`, tipo:"alert", btnAceptar:"Entendido"});
+    const _ecA = evaluarConfirmable();
+    btnRow.appendChild(el("button",{
+      disabled: !_ecA.puede,
+      title: _ecA.puede ? "" : (!_ecA.entregasCompletas ? "Faltan entregas por confirmar" : "Completa al menos 3 campos del cuadre antes de confirmar"),
+      style:{background:_ecA.puede?"#27ae60":"#bdc3c7",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 32px",fontSize:"15px",fontWeight:"700",cursor:_ecA.puede?"pointer":"not-allowed",boxShadow:_ecA.puede?"0 4px 12px rgba(39,174,96,0.3)":"none"},
+      onClick:()=>{
+      const ec=evaluarConfirmable();
+      if(!ec.entregasCompletas){
+        showModal({titulo:"⚠️ Entregas pendientes", mensaje:`Hay ${ec.sinConfirmar.length} entrega(s) sin confirmar:\n\n${ec.sinConfirmar.map(c=>"• "+c).join("\n")}\n\nConfirma todas las entregas antes de liquidar.`, tipo:"alert", btnAceptar:"Entendido"});
         return;
       }
-      const _tBill=BILLETES.reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
-      const _tMon=parseFloat(state.monedas)||0;
-      const _tDep=parseFloat(state.deposito)||0;
-      const _tTra=parseFloat(state.transferencia)||0;
-      if(_tBill+_tMon+_tDep+_tTra<=0){
-        showModal({titulo:"⚠️ Sin pagos registrados", mensaje:"El total recibido es Q 0.00.\n\nDebes ingresar al menos un monto en efectivo, depósito o transferencia antes de confirmar.", tipo:"alert", btnAceptar:"Entendido"});
+      if(!ec.cuadreListo){
+        showModal({titulo:"⚠️ Cuadre incompleto", mensaje:"Llena al menos 3 campos del cuadre (billetes, monedas, depósito o transferencia) antes de confirmar.", tipo:"alert", btnAceptar:"Entendido"});
         return;
       }
       setState({showConfirmar:true});
@@ -4857,7 +4880,14 @@ function _buildCuadrePanel(modoHistorial, onConfirmar) {
       }
       confirmDiv.appendChild(reconfDiv);
     } else {
-      confirmDiv.appendChild(el("button",{style:{background:"#27ae60",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 48px",fontSize:"16px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(39,174,96,0.3)"},onClick:onConfirmar},"✅ Confirmar Liquidación"));
+      const _ecB = evaluarConfirmable();
+      confirmDiv.appendChild(el("button",{
+        disabled: !_ecB.puede,
+        title: _ecB.puede ? "" : (!_ecB.entregasCompletas ? "Faltan entregas por confirmar" : "Completa al menos 3 campos del cuadre antes de confirmar"),
+        style:{background:_ecB.puede?"#27ae60":"#bdc3c7",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 48px",fontSize:"16px",fontWeight:"700",cursor:_ecB.puede?"pointer":"not-allowed",boxShadow:_ecB.puede?"0 4px 12px rgba(39,174,96,0.3)":"none"},
+        onClick:onConfirmar
+      },"✅ Confirmar Liquidación"));
+      if(!_ecB.puede) confirmDiv.appendChild(el("p",{style:{margin:"10px 0 0",fontSize:"12px",color:"#888"}}, !_ecB.entregasCompletas ? "Faltan entregas por confirmar." : "Llena al menos 3 campos del cuadre (billetes, monedas, depósito o transferencia)."));
     }
     cuadre.appendChild(confirmDiv);
   }
