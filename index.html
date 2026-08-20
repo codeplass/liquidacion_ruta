@@ -1097,12 +1097,19 @@ async function _ejecutarConfirmarLiquidacion() {
   }
 }
 
-// Recarga los datos del día actual desde Firebase al state (para cuando admin vuelve del historial)
-async function volverADiaDesdMenu() {
+// Recarga los datos del día actual desde Firebase al state (para cuando admin vuelve del
+// historial, o para volver a "Entregas de hoy"). opts.screen: pantalla destino ("main" por
+// defecto). opts.extra: campos adicionales para el setState final (ej. limpiar fechaSelec).
+// SIEMPRE deja clienteMap reflejando la verdad de Firebase — si no hay día activo, lo
+// limpia por completo, para que ninguna pantalla pueda quedarse con datos de otro día.
+async function volverADiaDesdMenu(opts) {
+  opts = opts || {};
+  const destino = opts.screen || "main";
   const datos = await fbGet("datos-dia");
-  if(datos && datos.clienteMap && Object.keys(datos.clienteMap).length > 0) {
+  const huboDatos = !!(datos && datos.clienteMap && Object.keys(datos.clienteMap).length > 0);
+  if(huboDatos) {
     state.clienteMap    = asegurarLids(datos.clienteMap);
-    state.fileName      = datos.fileName || state.fileName;
+    state.fileName      = datos.fileName || "";
     state.estadoEntrega = datos.estadoEntrega || datos.entregados || {};
     state.entregados    = datos.entregados || {};
     state.bloqueados    = datos.bloqueados || {};
@@ -1126,10 +1133,21 @@ async function volverADiaDesdMenu() {
       if(datos.repartidor && !state.loginRepartidor) state.loginRepartidor = datos.repartidor;
       if(datos.auxiliar   && !state.loginAuxiliar)   state.loginAuxiliar   = datos.auxiliar;
     }
+  } else {
+    // No hay día activo real en Firebase: no dejar colgando datos de otra pantalla
+    // (por ejemplo, de una liquidación del historial que se estaba viendo/editando).
+    state.clienteMap={}; state.fileName=""; state.estadoEntrega={}; state.entregados={};
+    state.bloqueados={}; state.devoluciones=[]; state.motivosDevTotal={}; state.descuentos={};
+    state.comentarios={}; state.billetes=Object.fromEntries(BILLETES.map(b=>[b,""])); state.monedas="";
+    state.deposito=""; state.transferencia=""; state.gastosDetalle=[{desc:"",monto:"",comentario:"",deCuenta:true}];
+    state.pagoPendiente={}; state.modoPago={}; state.loginRepartidor=""; state.loginAuxiliar="";
   }
-  const yaConfirmado = datos?.confirmado === true;
-  const huboDatos = !!(datos && datos.clienteMap && Object.keys(datos.clienteMap).length > 0);
-  setState({screen:"main", modoHistorial:yaConfirmado, confirmado:yaConfirmado, ocultarConfirmados:false, filtroRuta:"", esDiaActivo:huboDatos});
+  const yaConfirmado = huboDatos && datos?.confirmado === true;
+  setState({
+    screen:destino, modoHistorial:yaConfirmado, confirmado:yaConfirmado,
+    ocultarConfirmados:false, filtroRuta:"", esDiaActivo:huboDatos,
+    ...(opts.extra||{})
+  });
 }
 
 function renderOpciones() {
@@ -2664,20 +2682,12 @@ function cargarFechaHistorial(fecha) {
   });
 }
 
-// Sale de la vista de un día del historial de regreso a la lista. Limpia por completo
-// clienteMap y datos relacionados (no solo la bandera modoHistorial) para que ninguna
-// pantalla pueda confundir esa liquidación vieja con la del día activo real. Para volver
-// a ver el día en curso hay que pasar por "Ver entregas del día" (volverADiaDesdMenu),
-// que recarga "datos-dia" fresco desde Firebase.
+// Sale de la vista de un día del historial de regreso a la lista. En vez de solo vaciar
+// el estado (lo que dejaba el menú creyendo que "no hay día activo" aunque sí lo hubiera),
+// recarga "datos-dia" fresco desde Firebase con la misma función que usa "Ver entregas del
+// día": si hay una liquidación en curso, queda visible normalmente; si no, sí se limpia.
 function salirDeHistorialVista() {
-  setState({
-    screen:"historial", modoHistorial:false, fechaSelec:"", esDiaActivo:false,
-    clienteMap:{}, devoluciones:[], estadoEntrega:{}, entregados:{}, bloqueados:{},
-    motivosDevTotal:{}, descuentos:{}, comentarios:{}, pagoPendiente:{}, modoPago:{},
-    deposito:"", transferencia:"", gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],
-    billetes:Object.fromEntries(BILLETES.map(b=>[b,""])), monedas:"", confirmado:false,
-    loginRepartidor:"", loginAuxiliar:""
-  });
+  volverADiaDesdMenu({screen:"historial", extra:{fechaSelec:""}});
 }
 
 async function abrirModalAsignarRepartidor(fecha) {
