@@ -265,6 +265,11 @@ let state = {
   confirmado: false,
   guardando: false,
   modoHistorial: false,
+  // true SOLO cuando clienteMap refleja el registro real y vigente de "datos-dia" en
+  // Firebase (login, "Ver entregas del día", archivo recién cargado). Se pone en false
+  // al cargar cualquier liquidación del historial (viéndola o editándola), para que el
+  // autoguardado nunca pueda escribir datos de otro día encima del día activo real.
+  esDiaActivo: false,
   showMoverProd: false,
   moverOrigenCliente: "",
   moverOrigenPedido: "",
@@ -352,14 +357,14 @@ function _setStateInterno(updates) {
   render();
   // Guardado automático en Firebase cuando cambian datos del día
   // Autosave: solo datos de entregas (no cuadre — ese solo se guarda al confirmar)
-  // IMPORTANTE: nunca autoguardar mientras se está solo consultando un historial
-  // (modoHistorial=true), porque esos datos son de un día distinto al que está
-  // activo en "datos-dia" — guardar aquí sobrescribiría la entrega en proceso de
-  // otro día/repartidor con los datos del día histórico que se está viendo.
+  // IMPORTANTE: nunca autoguardar salvo que clienteMap sea realmente el día activo
+  // (state.esDiaActivo). Cualquier liquidación cargada desde el historial (viéndola
+  // o editándola con "✏️ Editar") deja esDiaActivo en false, así que aunque el admin
+  // navegue de un lado a otro nunca se sobrescribe "datos-dia" con datos de otro día.
   const camposGuardar = ["estadoEntrega","entregados","bloqueados",
     "motivosDevTotal","descuentos","comentarios","pagoPendiente","clienteMap"];
   const afecta = Object.keys(updates).some(k => camposGuardar.includes(k));
-  if(afecta && !state.modoHistorial && state.autenticado && state.clienteMap && Object.keys(state.clienteMap).length > 0){
+  if(afecta && state.esDiaActivo && state.autenticado && state.clienteMap && Object.keys(state.clienteMap).length > 0){
     clearTimeout(window._autoSaveTimer);
     window._autoSavePendiente = true;
     window._autoSaveTimer = setTimeout(() => {
@@ -624,7 +629,7 @@ async function iniciarSesionConUsuario(usuario) {
       // Reparto: la liquidación ya fue confirmada (queda en el historial). No se recarga
       // como pendiente, para que "Entregar" indique que no hay liquidaciones pendientes.
       setState({
-        screen:"menuRepartidor", cargandoDatos:false, confirmado:false, modoHistorial:false,
+        screen:"menuRepartidor", cargandoDatos:false, confirmado:false, modoHistorial:false, esDiaActivo:false,
         clienteMap:{}, estadoEntrega:{}, entregados:{}, bloqueados:{}, devoluciones:[],
         motivosDevTotal:{}, descuentos:{}, comentarios:{}, pagoPendiente:{}, modoPago:{}
       });
@@ -639,7 +644,7 @@ async function iniciarSesionConUsuario(usuario) {
         monedas:datos.monedas||"", deposito:datos.deposito||"", transferencia:datos.transferencia||"",
         gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}],
         pagoPendiente:datos.pagoPendiente||{},
-        confirmado:true, screen:"opciones", cargandoDatos:false
+        confirmado:true, screen:"opciones", cargandoDatos:false, esDiaActivo:true, modoHistorial:false
       });
     } else {
       setState({
@@ -652,13 +657,13 @@ async function iniciarSesionConUsuario(usuario) {
         billetes:datos.billetes||Object.fromEntries([1,5,10,20,50,100,200].map(b=>[b,""])),
         monedas:datos.monedas||"", deposito:datos.deposito||"", transferencia:datos.transferencia||"",
         gastosDetalle:datos.gastosDetalle||[{desc:"",monto:"",comentario:""}],
-        pagoPendiente:datos.pagoPendiente||{}
+        pagoPendiente:datos.pagoPendiente||{}, esDiaActivo:true, modoHistorial:false
       });
     }
   } else {
     setState({screen:admin?"menu":"menuRepartidor", cargandoDatos:false,
       // Limpiar clienteMap si los datos no le pertenecen a este repartidor
-      clienteMap:{}, devoluciones:[], estadoEntrega:{}, bloqueados:{},
+      clienteMap:{}, devoluciones:[], estadoEntrega:{}, bloqueados:{}, esDiaActivo:false,
       descuentos:{}, comentarios:{}, confirmado:false
     });
   }
@@ -791,9 +796,11 @@ async function cerrarSesion() {
 
 // ── Guard de cambios pendientes ──
 function hayDatosActivos() {
+  // Usa esDiaActivo (no solo !modoHistorial): editar una liquidación del historial
+  // también pone modoHistorial en false, pero eso NO es el día activo real.
   return state.autenticado
-    && Object.keys(state.clienteMap||{}).length > 0
-    && !state.modoHistorial;
+    && state.esDiaActivo
+    && Object.keys(state.clienteMap||{}).length > 0;
 }
 
 // ── Evalúa si la liquidación del día puede confirmarse ──
@@ -993,7 +1000,7 @@ async function procesarArchivo(file) {
       billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,
       modoPago:{},pagoPendiente:{},
       loginRepartidor:"",loginAuxiliar:"",
-      fileName:file.name,screen:"main",busqueda:""
+      fileName:file.name,screen:"main",busqueda:"",modoHistorial:false,esDiaActivo:true
     });
   } catch(e){setState({error:"Error: "+e.message});}
 }
@@ -1026,6 +1033,10 @@ async function confirmarLiquidacion() {
 }
 
 async function _ejecutarConfirmarLiquidacion() {
+  // Capturar ANTES de guardar si lo que se está confirmando es el día activo real
+  // (login / archivo recién cargado) o una edición de un registro del historial
+  // (abierta con "✏️ Editar"). Solo en el primer caso corresponde borrar "datos-dia".
+  const eraDiaActivo = state.esDiaActivo;
   setState({guardando:true});
   try {
     const devsC = devsValidas(state.devoluciones, state.clienteMap);
@@ -1063,12 +1074,17 @@ async function _ejecutarConfirmarLiquidacion() {
     const claveHistorial = repKeyH ? state.fecha+"_"+repKeyH : state.fecha;
     // Escribir solo el nodo del día — evita reescribir todo el historial (límite ~10MB)
     await fbSet("historial/"+claveHistorial, registroDia);
-    // Punto 3: la liquidación ya quedó en el historial, así que ya NO se deja cargada.
-    // Se elimina datos-dia y se limpia el estado. Para editarla, se abre desde el historial.
-    clearTimeout(window._autoSaveTimer); window._autoSaveTimer=null; window._autoSavePendiente=false;
-    await fbRemove("datos-dia");
+    // Punto 3: si esto era el día activo real, la liquidación ya quedó en el historial,
+    // así que ya NO se deja cargada: se elimina datos-dia y se limpia el estado. Para
+    // editarla más adelante, se abre desde el historial.
+    // Si en cambio esto era una edición de un registro histórico (vía "✏️ Editar"),
+    // "datos-dia" pertenece a otro día en curso y NO debe tocarse.
+    if(eraDiaActivo){
+      clearTimeout(window._autoSaveTimer); window._autoSaveTimer=null; window._autoSavePendiente=false;
+      await fbRemove("datos-dia");
+    }
     setState({
-      confirmado:true, showConfirmar:false, guardando:false, screen:"confirmado",
+      confirmado:true, showConfirmar:false, guardando:false, screen:"confirmado", esDiaActivo:false,
       clienteMap:{}, devoluciones:[], entregados:{}, estadoEntrega:{}, bloqueados:{},
       descuentos:{}, comentarios:{}, motivosDevTotal:{}, modoPago:{}, pagoPendiente:{},
       loginRepartidor:"", loginAuxiliar:""
@@ -1112,7 +1128,8 @@ async function volverADiaDesdMenu() {
     }
   }
   const yaConfirmado = datos?.confirmado === true;
-  setState({screen:"main", modoHistorial:yaConfirmado, confirmado:yaConfirmado, ocultarConfirmados:false, filtroRuta:""});
+  const huboDatos = !!(datos && datos.clienteMap && Object.keys(datos.clienteMap).length > 0);
+  setState({screen:"main", modoHistorial:yaConfirmado, confirmado:yaConfirmado, ocultarConfirmados:false, filtroRuta:"", esDiaActivo:huboDatos});
 }
 
 function renderOpciones() {
@@ -2637,10 +2654,29 @@ function cargarFechaHistorial(fecha) {
     bloqueados:Object.fromEntries(Object.keys(reg.estadoEntrega||reg.entregados||{}).map(k=>[k,true])),
     busqueda:"", clienteDetalle:null, confirmado:true, modoHistorial:true,
     ocultarConfirmados:false, filtroRuta:"",
+    // Nunca es el día activo: esto es una liquidación del historial, así que el
+    // autoguardado no debe tocar "datos-dia" aunque luego se navegue o se edite.
+    esDiaActivo:false,
     // Cargar repartidor/auxiliar del registro histórico para mostrar en infoBar
     loginRepartidor: reg.repartidor || state.loginRepartidor || "",
     loginAuxiliar:   reg.auxiliar  || state.loginAuxiliar  || "",
     // historialRepSelec se mantiene para poder volver correctamente al nivel de fechas
+  });
+}
+
+// Sale de la vista de un día del historial de regreso a la lista. Limpia por completo
+// clienteMap y datos relacionados (no solo la bandera modoHistorial) para que ninguna
+// pantalla pueda confundir esa liquidación vieja con la del día activo real. Para volver
+// a ver el día en curso hay que pasar por "Ver entregas del día" (volverADiaDesdMenu),
+// que recarga "datos-dia" fresco desde Firebase.
+function salirDeHistorialVista() {
+  setState({
+    screen:"historial", modoHistorial:false, fechaSelec:"", esDiaActivo:false,
+    clienteMap:{}, devoluciones:[], estadoEntrega:{}, entregados:{}, bloqueados:{},
+    motivosDevTotal:{}, descuentos:{}, comentarios:{}, pagoPendiente:{}, modoPago:{},
+    deposito:"", transferencia:"", gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],
+    billetes:Object.fromEntries(BILLETES.map(b=>[b,""])), monedas:"", confirmado:false,
+    loginRepartidor:"", loginAuxiliar:""
   });
 }
 
@@ -4113,7 +4149,7 @@ function renderMain() {
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenEntregas"})},"📦 Entregas"));
     hdrBtns.appendChild(el("button",{style:{background:"#e67e22",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Liquidación"));
     if(devsValidas(state.devoluciones,state.clienteMap).length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
-    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>setState({screen:"historial",modoHistorial:false,fechaSelec:""})},"← Historial"));
+    hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:salirDeHistorialVista},"← Historial"));
   } else {
     hdrBtns.appendChild(el("button",{style:{background:"#0d9488",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"cargaProducto"})},"📦 Carga"));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenEntregas"})},"📦 Entregas"));
@@ -4121,11 +4157,20 @@ function renderMain() {
     if(devsValidas(state.devoluciones,state.clienteMap).length>0) hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({screen:"resumenDevs"})},"↩️ Devol."));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>navegarConGuard(abrirHistorial)},"Historial"));
     if(state.esAdmin && !state.modoHistorial) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,165,0,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"700"},onClick:()=>setState({showMoverProd:true,moverOrigenCliente:"",moverOrigenPedido:"",moverProductoSel:"",moverDestinoCliente:"",moverDestinoPedido:"",moverError:""})},"🔀 Mover producto"));
-    if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>navegarConGuard(()=>setState({screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()}))},"Nuevo archivo"));
+    if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>navegarConGuard(()=>setState({screen:"upload",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,esDiaActivo:false,fecha:hoy()}))},"Nuevo archivo"));
     if(state.esAdmin) hdrBtns.appendChild(el("button",{style:{background:"rgba(220,53,69,0.75)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:async()=>{
-      showModal({titulo:"⚠️ Quitar archivo", mensaje:"¿Seguro que deseas quitar el archivo del día? Se borrarán todos los datos no confirmados.", tipo:"confirm", btnAceptar:"Quitar archivo", colorAceptar:"#c0392b", btnCancelar:"Cancelar",
-    onAceptar: async () => { await fbRemove("datos-dia"); setState({screen:"menu",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,fecha:hoy()}); } }); return;
-}},"🗑️ Quitar archivo"));
+      // state.esDiaActivo distingue si esto es realmente el día activo (Quitar archivo
+      // de verdad borra "datos-dia" en Firebase) o si es una edición de un registro del
+      // historial abierta con "✏️ Editar" (no debe tocar "datos-dia" de otro día).
+      if(state.esDiaActivo){
+        showModal({titulo:"⚠️ Quitar archivo", mensaje:"¿Seguro que deseas quitar el archivo del día? Se borrarán todos los datos no confirmados.", tipo:"confirm", btnAceptar:"Quitar archivo", colorAceptar:"#c0392b", btnCancelar:"Cancelar",
+      onAceptar: async () => { await fbRemove("datos-dia"); setState({screen:"menu",clienteMap:{},devoluciones:[],estadoEntrega:{},descuentos:{},comentarios:{},bloqueados:{},deposito:"",transferencia:"",gastosDetalle:[{desc:"",monto:"",comentario:"",deCuenta:true}],billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,modoHistorial:false,esDiaActivo:false,fecha:hoy()}); } });
+      } else {
+        showModal({titulo:"⚠️ Descartar cambios", mensaje:"¿Seguro que deseas salir sin guardar los cambios de esta liquidación del historial?", tipo:"confirm", btnAceptar:"Descartar cambios", colorAceptar:"#c0392b", btnCancelar:"Cancelar",
+      onAceptar: () => salirDeHistorialVista() });
+      }
+      return;
+}},state.esDiaActivo?"🗑️ Quitar archivo":"✕ Descartar edición"));
     hdrBtns.appendChild(el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px"},onClick:()=>navegarConGuard(()=>setState({screen:"menu"}))},"☰ Menú"));
   }
   hdrBtns.appendChild(el("button",{style:{background:"#c0392b",color:"#fff",border:"none",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",fontWeight:"600"},onClick:cerrarSesion},"🚪 Salir"));
@@ -5159,8 +5204,12 @@ function renderResumenLiquidacion() {
   const _btnVolver = el("button",{style:{background:"rgba(255,255,255,0.15)",color:"#fff",border:"none",borderRadius:"8px",padding:"7px 14px",cursor:"pointer",fontSize:"13px",flexShrink:"0"}});
   _btnVolver.textContent = "← Volver";
   _btnVolver.onclick = () => {
+    // destino/aviso usan modoHistorial (para volver a la vista de solo-lectura correcta),
+    // pero el GUARDADO en Firebase solo debe ocurrir si esto es de verdad el día activo
+    // (esDiaActivo) — editar un registro del historial también pone modoHistorial en
+    // false, y ahí este cuadre no debe escribirse en "datos-dia" de otro día.
     const destino = state.modoHistorial ? "historialVista" : "main";
-    if(state._cuadreModificado && !state.modoHistorial) {
+    if(state._cuadreModificado && state.esDiaActivo) {
       showModal({
         titulo:"💾 Cambios sin guardar",
         mensaje:"Tienes cambios en el cuadre (billetes, depósito, gastos...) que no se han confirmado.\n\n¿Qué deseas hacer?",
@@ -6367,8 +6416,14 @@ function abrirModalTripulacion() {
   btnG.onclick=async()=>{
     btnG.textContent="Guardando..."; btnG.disabled=true;
     try {
-      const dd = await fbGet("datos-dia") || {};
-      await fbSet("datos-dia", {...dd, repartidor: repSel||"", auxiliar: auxSel||""});
+      // Solo se escribe en "datos-dia" (Firebase) cuando esto es de verdad el día activo.
+      // Si se está editando un registro del historial (esDiaActivo=false), la tripulación
+      // se guarda solo en el estado local — se persiste al confirmar/guardar esa
+      // liquidación histórica, sin tocar el día activo real de otro repartidor.
+      if(state.esDiaActivo){
+        const dd = await fbGet("datos-dia") || {};
+        await fbSet("datos-dia", {...dd, repartidor: repSel||"", auxiliar: auxSel||""});
+      }
       state.loginRepartidor = repSel||""; state.loginAuxiliar = auxSel||"";
       overlay.remove(); showToast("✅ Tripulación actualizada","#27ae60"); render();
     } catch(e){ errP.textContent="Error al guardar."; btnG.textContent="💾 Guardar"; btnG.disabled=false; }
