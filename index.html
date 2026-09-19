@@ -805,20 +805,44 @@ function hayDatosActivos() {
 
 // ── Evalúa si la liquidación del día puede confirmarse ──
 // Requisitos: (1) todas las entregas (no presupuestos) tienen un estado asignado,
-// (2) el cuadre tiene al menos 3 de sus 10 campos (7 billetes + monedas + depósito +
-// transferencia) llenos, para evitar confirmar con el cuadre casi vacío.
+// (2) el cuadre tiene registrado algún monto: efectivo, depósito, transferencia o
+//     gastos pagados con dinero de la cuenta. No se exige una cantidad de campos,
+//     porque una ruta puede liquidar todo con un solo depósito bancario.
+// Excepción: si no hay nada que cobrar hoy (todo devuelto o todo al crédito),
+// se permite confirmar con el cuadre en cero.
 function evaluarConfirmable() {
   const clientesTodos = Object.keys(state.clienteMap||{});
   const clientesEnt = clientesTodos.filter(c=>!esClientePre(c));
-  const sinConfirmar = clientesEnt.filter(c=>!state.estadoEntrega[c]);
+  const sinConfirmar = clientesEnt.filter(c=>!(state.estadoEntrega||{})[c]);
   const entregasCompletas = clientesEnt.length>0 && sinConfirmar.length===0;
-  const camposCuadre = [
-    ...BILLETES.map(b=>state.billetes ? state.billetes[b] : ""),
-    state.monedas, state.deposito, state.transferencia
-  ];
-  const camposLlenos = camposCuadre.filter(v => v!==undefined && v!==null && String(v).trim()!=="").length;
-  const cuadreListo = camposLlenos >= 3;
-  return {puede: entregasCompletas && cuadreListo, entregasCompletas, cuadreListo, sinConfirmar, camposLlenos};
+  const T = calcularTotalesCuadre();
+  const totalRegistrado = T.totalRegistrado;            // pagos + gastos de la cuenta
+  const nadaQueCobrar = T.totalNetoACobrarHoy <= 0.01;  // nada pendiente de cobro hoy
+  const cuadreListo = totalRegistrado > 0 || nadaQueCobrar;
+  return {puede: entregasCompletas && cuadreListo, entregasCompletas, cuadreListo,
+    sinConfirmar, totalRegistrado, nadaQueCobrar, netoACobrarHoy: T.totalNetoACobrarHoy};
+}
+
+// ── Refresca EN VIVO los botones "Confirmar Liquidación" ──
+// Los campos del cuadre (billetes, monedas, depósito, transferencia, gastos) se editan
+// sin re-render de la pantalla, por lo que el estado "disabled" del botón debe
+// actualizarse a mano en cada tecleo. Sin esto, el botón solo se habilitaba al salir
+// de la pantalla y volver a entrar (que sí forzaba un re-render).
+function actualizarBotonesConfirmar() {
+  const ec = evaluarConfirmable();
+  const motivo = ec.puede ? "" : (!ec.entregasCompletas ? "Faltan entregas por confirmar" : "Registra el dinero recibido (efectivo, depósito o transferencia) antes de confirmar");
+  const textoHint = !ec.entregasCompletas ? "Faltan entregas por confirmar." : "Registra el dinero recibido: efectivo, depósito o transferencia.";
+  document.querySelectorAll('[data-btn-confirmar="1"]').forEach(b=>{
+    b.disabled = !ec.puede;
+    b.title = motivo;
+    b.style.background = ec.puede ? "#27ae60" : "#bdc3c7";
+    b.style.cursor = ec.puede ? "pointer" : "not-allowed";
+    b.style.boxShadow = ec.puede ? "0 4px 12px rgba(39,174,96,0.3)" : "none";
+  });
+  document.querySelectorAll('[data-hint-confirmar="1"]').forEach(p=>{
+    p.style.display = ec.puede ? "none" : "block";
+    if(!ec.puede) p.textContent = textoHint;
+  });
 }
 
 // Navegar con confirmación si hay datos no confirmados
@@ -1729,61 +1753,95 @@ function focusNextCuadre(e) {
   if(idx >= 0 && idx < all.length - 1) all[idx + 1].focus();
 }
 
-// ── Actualizar resumen sin re-render completo ──
-function actualizarResumen() {
-  const resDiv = document.getElementById("resumen-cuadre");
-  const totalBilletes2 = [1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
-  const totalMonedas2 = parseFloat(state.monedas)||0;
-  const totalEfectivo2 = totalBilletes2 + totalMonedas2;
-  const totalDeposito2 = parseFloat(state.deposito)||0;
-  const totalTransferencia2 = parseFloat(state.transferencia)||0;
-  const totalGastosDeCuenta2 = state.gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
-  const totalGastosBodega2 = state.gastosDetalle.reduce((s,g)=>!g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
-  const totalGastos2 = totalGastosDeCuenta2 + totalGastosBodega2;
-  const totalPagos2 = totalEfectivo2 + totalDeposito2 + totalTransferencia2;
+// ── Cálculo central del cuadre ──
+// Única fuente de verdad de los totales del cuadre. La usan tanto el resumen visual
+// (actualizarResumen) como la validación del botón confirmar (evaluarConfirmable),
+// para que ambos siempre coincidan.
+function calcularTotalesCuadre() {
+  const billetes = state.billetes||{};
+  const clienteMap = state.clienteMap||{};
+  const estadoEntrega = state.estadoEntrega||{};
+  const gastosDetalle = state.gastosDetalle||[];
+  const totalBilletes = [1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(billetes[b])||0),0);
+  const totalMonedas = parseFloat(state.monedas)||0;
+  const totalEfectivo = totalBilletes + totalMonedas;
+  const totalDeposito = parseFloat(state.deposito)||0;
+  const totalTransferencia = parseFloat(state.transferencia)||0;
+  const totalGastosDeCuenta = gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
+  const totalGastosBodega = gastosDetalle.reduce((s,g)=>!g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
+  const totalGastos = totalGastosDeCuenta + totalGastosBodega;
+  const totalPagos = totalEfectivo + totalDeposito + totalTransferencia;
 
   // Total a Entregar: bruto de clientes entregables (excluir presupuestos)
-  const totalAEntregar = Object.keys(state.clienteMap).reduce((acc,c)=>{
+  const totalAEntregar = Object.keys(clienteMap).reduce((acc,c)=>{
     if(esClientePre(c)) return acc;
-    let m=0; Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));
+    let m=0; Object.values(clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));
     return acc + m;
   },0);
   // Devoluciones: parciales + bruto de rosados (excluir presupuestos)
-  const totalDevCuadre = Object.keys(state.clienteMap).reduce((acc,c)=>{
+  const totalDev = Object.keys(clienteMap).reduce((acc,c)=>{
     if(esClientePre(c)) return acc;
-    if(state.estadoEntrega[c]==="rosado"){
-      let m=0; Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
+    if(estadoEntrega[c]==="rosado"){
+      let m=0; Object.values(clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
       return acc + m;
     }
-    return acc + state.devoluciones.filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
+    return acc + (state.devoluciones||[]).filter(d=>d.cliente===c).reduce((s,d)=>s+d.monto,0);
   },0);
   // Descuentos: solo confirmados verde+amarillo (excluir presupuestos)
-  const totalDescCuadre = Object.keys(state.clienteMap).reduce((acc,c)=>{
+  const totalDesc = Object.keys(clienteMap).reduce((acc,c)=>{
     if(esClientePre(c)) return acc;
-    if(!state.estadoEntrega[c]||state.estadoEntrega[c]==="rosado") return acc;
-    return acc + (parseFloat(state.descuentos[c])||0);
+    if(!estadoEntrega[c]||estadoEntrega[c]==="rosado") return acc;
+    return acc + (parseFloat((state.descuentos||{})[c])||0);
   },0);
   // Entregas no confirmadas: monto bruto de clientes sin estado (excluir presupuestos)
-  const totalNoConfirmado = Object.keys(state.clienteMap).reduce((acc,c)=>{
+  const totalNoConfirmado = Object.keys(clienteMap).reduce((acc,c)=>{
     if(esClientePre(c)) return acc;
-    if(state.estadoEntrega[c]) return acc; // ya tiene estado
-    let m=0; Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
+    if(estadoEntrega[c]) return acc; // ya tiene estado
+    let m=0; Object.values(clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
     return acc + m;
   },0);
   // Total Neto: Total a Entregar - Devoluciones - Descuentos - No confirmadas
-  const totalNetoCuadre = totalAEntregar - totalDevCuadre - totalDescCuadre - totalNoConfirmado;
+  const totalNeto = totalAEntregar - totalDev - totalDesc - totalNoConfirmado;
   // Créditos: clientes confirmados con modoPago="credito" (entregado pero no cobrado hoy)
-  const totalCreditosCuadre = Object.keys(state.clienteMap).reduce((acc,c)=>{
+  const totalCreditos = Object.keys(clienteMap).reduce((acc,c)=>{
     if(esClientePre(c)) return acc;
-    const est = state.estadoEntrega[c];
+    const est = estadoEntrega[c];
     if(!est || est==="rosado") return acc;
-    const mp = state.modoPago[c] || (state.pagoPendiente[c]?"pendiente":"contado");
+    const mp = (state.modoPago||{})[c] || ((state.pagoPendiente||{})[c]?"pendiente":"contado");
     if(mp !== "credito") return acc;
     return acc + totalesCliente(c).netoM;
   },0);
   // Neto a cobrar hoy = neto - créditos
-  const totalNetoACobrarHoy = totalNetoCuadre - totalCreditosCuadre;
-  const diferencia2 = (totalPagos2 + totalGastosDeCuenta2) - totalNetoACobrarHoy;
+  const totalNetoACobrarHoy = totalNeto - totalCreditos;
+  // Total registrado = lo recibido + los gastos pagados con dinero de la cuenta
+  const totalRegistrado = totalPagos + totalGastosDeCuenta;
+  const diferencia = totalRegistrado - totalNetoACobrarHoy;
+  return {totalBilletes,totalMonedas,totalEfectivo,totalDeposito,totalTransferencia,
+    totalGastosDeCuenta,totalGastosBodega,totalGastos,totalPagos,totalRegistrado,
+    totalAEntregar,totalDev,totalDesc,totalNoConfirmado,totalNeto,totalCreditos,
+    totalNetoACobrarHoy,diferencia};
+}
+
+// ── Actualizar resumen sin re-render completo ──
+function actualizarResumen() {
+  // Habilitar/deshabilitar en vivo los botones de confirmar según el cuadre actual
+  actualizarBotonesConfirmar();
+  const resDiv = document.getElementById("resumen-cuadre");
+  if(!resDiv) { state._cuadreModificado = true; return; }
+  const T = calcularTotalesCuadre();
+  const totalEfectivo2 = T.totalEfectivo;
+  const totalDeposito2 = T.totalDeposito;
+  const totalTransferencia2 = T.totalTransferencia;
+  const totalGastosDeCuenta2 = T.totalGastosDeCuenta;
+  const totalGastosBodega2 = T.totalGastosBodega;
+  const totalPagos2 = T.totalPagos;
+  const totalAEntregar = T.totalAEntregar;
+  const totalDevCuadre = T.totalDev;
+  const totalDescCuadre = T.totalDesc;
+  const totalNoConfirmado = T.totalNoConfirmado;
+  const totalNetoCuadre = T.totalNeto;
+  const totalCreditosCuadre = T.totalCreditos;
+  const diferencia2 = T.diferencia;
   resDiv.innerHTML = "";
   [
     {label:"Total a Entregar", val:fQ(totalAEntregar), color:"#1e3a5f", bold:true},
@@ -4710,8 +4768,9 @@ function renderListaRutas(container, porRuta) {
     btnRow.appendChild(el("button",{style:{background:"#1e3a5f",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 32px",fontSize:"15px",fontWeight:"700",cursor:"pointer",boxShadow:"0 4px 12px rgba(30,58,95,0.2)"},onClick:()=>setState({screen:"resumenLiq"})},"💳 Ir a Liquidación"));
     const _ecA = evaluarConfirmable();
     btnRow.appendChild(el("button",{
+      "data-btn-confirmar":"1",
       disabled: !_ecA.puede,
-      title: _ecA.puede ? "" : (!_ecA.entregasCompletas ? "Faltan entregas por confirmar" : "Completa al menos 3 campos del cuadre antes de confirmar"),
+      title: _ecA.puede ? "" : (!_ecA.entregasCompletas ? "Faltan entregas por confirmar" : "Registra el dinero recibido (efectivo, depósito o transferencia) antes de confirmar"),
       style:{background:_ecA.puede?"#27ae60":"#bdc3c7",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 32px",fontSize:"15px",fontWeight:"700",cursor:_ecA.puede?"pointer":"not-allowed",boxShadow:_ecA.puede?"0 4px 12px rgba(39,174,96,0.3)":"none"},
       onClick:()=>{
       const ec=evaluarConfirmable();
@@ -4720,7 +4779,7 @@ function renderListaRutas(container, porRuta) {
         return;
       }
       if(!ec.cuadreListo){
-        showModal({titulo:"⚠️ Cuadre incompleto", mensaje:"Llena al menos 3 campos del cuadre (billetes, monedas, depósito o transferencia) antes de confirmar.", tipo:"alert", btnAceptar:"Entendido"});
+        showModal({titulo:"⚠️ Cuadre incompleto", mensaje:"El cuadre está en cero.\n\nRegistra el dinero recibido (efectivo, depósito o transferencia) o los gastos pagados con dinero de la cuenta antes de confirmar.", tipo:"alert", btnAceptar:"Entendido"});
         return;
       }
       setState({showConfirmar:true});
@@ -4937,12 +4996,18 @@ function _buildCuadrePanel(modoHistorial, onConfirmar) {
     } else {
       const _ecB = evaluarConfirmable();
       confirmDiv.appendChild(el("button",{
+        "data-btn-confirmar":"1",
         disabled: !_ecB.puede,
-        title: _ecB.puede ? "" : (!_ecB.entregasCompletas ? "Faltan entregas por confirmar" : "Completa al menos 3 campos del cuadre antes de confirmar"),
+        title: _ecB.puede ? "" : (!_ecB.entregasCompletas ? "Faltan entregas por confirmar" : "Registra el dinero recibido (efectivo, depósito o transferencia) antes de confirmar"),
         style:{background:_ecB.puede?"#27ae60":"#bdc3c7",color:"#fff",border:"none",borderRadius:"12px",padding:"14px 48px",fontSize:"16px",fontWeight:"700",cursor:_ecB.puede?"pointer":"not-allowed",boxShadow:_ecB.puede?"0 4px 12px rgba(39,174,96,0.3)":"none"},
         onClick:onConfirmar
       },"✅ Confirmar Liquidación"));
-      if(!_ecB.puede) confirmDiv.appendChild(el("p",{style:{margin:"10px 0 0",fontSize:"12px",color:"#888"}}, !_ecB.entregasCompletas ? "Faltan entregas por confirmar." : "Llena al menos 3 campos del cuadre (billetes, monedas, depósito o transferencia)."));
+      // El aviso siempre se crea (oculto si ya se puede confirmar) para poder
+      // mostrarlo/ocultarlo en vivo desde actualizarBotonesConfirmar().
+      confirmDiv.appendChild(el("p",{
+        "data-hint-confirmar":"1",
+        style:{margin:"10px 0 0",fontSize:"12px",color:"#888",display:_ecB.puede?"none":"block"}
+      }, !_ecB.entregasCompletas ? "Faltan entregas por confirmar." : "Registra el dinero recibido: efectivo, depósito o transferencia."));
     }
     cuadre.appendChild(confirmDiv);
   }
