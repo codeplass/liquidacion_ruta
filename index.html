@@ -5129,7 +5129,10 @@ function imprimirTicketEfectivo() {
   css.textContent = base + "#ticket-print{position:fixed;left:-10000px;top:0;}";
   document.head.appendChild(css);
   document.body.appendChild(ticket);
-  const altoMm = Math.ceil(ticket.getBoundingClientRect().height * 25.4 / 96) + 2;
+  // La hoja SIEMPRE debe ser más alta que ancha (vertical). Si fuera más ancha que alta, el
+  // driver la toma como horizontal y la imprime girada 90°. Por eso el alto mínimo es el
+  // ancho del papel + 2 mm; si el contenido es corto, el resto queda en blanco (antes del corte).
+  const altoMm = Math.max(Math.ceil(ticket.getBoundingClientRect().height * 25.4 / 96) + 2, TICKET_ANCHO_MM + 2);
   // 2) Estilos definitivos: en pantalla el ticket no se ve; al imprimir es lo único que sale
   css.textContent = base + `
     #ticket-print{display:none;}
