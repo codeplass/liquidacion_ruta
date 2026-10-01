@@ -1867,6 +1867,7 @@ function calcularTotalesCuadre() {
 function actualizarResumen(editado) {
   // Habilitar/deshabilitar en vivo los botones de confirmar según el cuadre actual
   actualizarBotonesConfirmar();
+  refrescarEfectivoUI();
   const resDiv = document.getElementById("resumen-cuadre");
   if(!resDiv) { if(editado) state._cuadreModificado = true; return; }
   const T = calcularTotalesCuadre();
@@ -4960,102 +4961,228 @@ function renderListaRutas(container, porRuta) {
   return wrap;
 }
 
+// Actualiza en pantalla (sin re-render) los montos del recuadro EFECTIVO
+function refrescarEfectivoUI() {
+  const T = calcularTotalesCuadre();
+  const poner = (id, v) => { const e = document.getElementById(id); if(e) e.textContent = fQ(v); };
+  poner("efectivo-billetes-span", T.totalBilletes);
+  poner("efectivo-monedas-span", T.totalMonedas);
+  poner("total-efectivo-span", T.totalEfectivo);
+}
+
+// Ventana emergente para ingresar billetes (por denominación) o monedas (total).
+// Los valores se aplican en vivo al estado; "Listo" solo cierra la ventana.
+function abrirModalEfectivo(tipo) {
+  if(document.getElementById("modal-efectivo")) return; // ya hay una ventana abierta
+  const soloLectura = !!state.modoHistorial;
+  const overlay = document.createElement("div");
+  overlay.id = "modal-efectivo";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;overflow-y:auto;z-index:10000;padding:16px;font-family:sans-serif;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff;border-radius:14px;padding:22px 20px;width:100%;max-width:360px;margin:auto;box-shadow:0 8px 32px rgba(0,0,0,0.25);";
+  const cerrar = () => { overlay.remove(); refrescarEfectivoUI(); };
+  // Cerrar al tocar el fondo oscuro (solo si el toque empezó y terminó en el fondo)
+  let downEnFondo = false;
+  overlay.addEventListener("mousedown", e => { downEnFondo = (e.target === overlay); });
+  overlay.addEventListener("click", e => { if(downEnFondo && e.target === overlay) cerrar(); });
+  overlay.addEventListener("keydown", e => { if(e.key === "Escape") cerrar(); });
+
+  const titulo = document.createElement("h3");
+  titulo.style.cssText = "margin:0 0 14px;color:#1e3a5f;font-size:17px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
+  titulo.appendChild(document.createTextNode(tipo === "billetes" ? "💵 Billetes" : "🪙 Monedas"));
+  if(soloLectura){
+    const tag = document.createElement("span");
+    tag.textContent = "Solo lectura";
+    tag.style.cssText = "background:#f39c12;color:#fff;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700;";
+    titulo.appendChild(tag);
+  }
+  box.appendChild(titulo);
+
+  const estiloInput = "width:100%;padding:9px 10px;border-radius:8px;border:1px solid #ccc;font-size:15px;text-align:right;box-sizing:border-box;font-family:sans-serif;" + (soloLectura ? "background:#f4f6f9;color:#555;cursor:not-allowed;" : "");
+
+  if(tipo === "billetes") {
+    const cols = "56px 16px 1fr 96px";
+    const hdr = document.createElement("div");
+    hdr.style.cssText = `display:grid;grid-template-columns:${cols};gap:8px;align-items:center;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid #eef2f7;`;
+    ["DEN.","","CANT","TOTAL Q"].forEach((h,i)=>{
+      const sp = document.createElement("span");
+      sp.style.cssText = "font-size:10px;font-weight:700;color:#888;text-align:" + (i===3?"right":"center") + ";";
+      sp.textContent = h; hdr.appendChild(sp);
+    });
+    box.appendChild(hdr);
+    const subSpan = document.createElement("span");
+    subSpan.style.cssText = "color:#1e3a5f;font-weight:700;font-size:15px;";
+    subSpan.textContent = fQ(calcularTotalesCuadre().totalBilletes);
+    const inputs = [];
+    BILLETES.forEach((b, idx) => {
+      const row = document.createElement("div");
+      row.style.cssText = `display:grid;grid-template-columns:${cols};gap:8px;align-items:center;margin-bottom:8px;`;
+      const lbl = document.createElement("span");
+      lbl.style.cssText = "background:#1e3a5f;color:#fff;border-radius:6px;padding:4px 0;font-size:13px;font-weight:700;text-align:center;";
+      lbl.textContent = `Q${b}`;
+      const x = document.createElement("span");
+      x.style.cssText = "color:#aaa;font-size:12px;text-align:center;"; x.textContent = "×";
+      const bi = document.createElement("input");
+      bi.type = "number"; bi.min = "0"; bi.placeholder = "0"; bi.inputMode = "numeric";
+      bi.style.cssText = estiloInput;
+      if(soloLectura) bi.disabled = true;
+      bi.value = state.billetes[b] || "";
+      const totSpan = document.createElement("span");
+      totSpan.style.cssText = "text-align:right;font-size:13px;color:#1e3a5f;font-weight:600;";
+      totSpan.textContent = fQ(b * (parseFloat(state.billetes[b]) || 0));
+      bi.addEventListener("input", e => {
+        state.billetes[b] = e.target.value;
+        totSpan.textContent = fQ(b * (parseFloat(e.target.value) || 0));
+        subSpan.textContent = fQ(calcularTotalesCuadre().totalBilletes);
+        actualizarResumen(true);
+      });
+      bi.addEventListener("keydown", e => {
+        if(e.key !== "Enter") return;
+        e.preventDefault();
+        const sig = inputs[idx + 1];
+        if(sig) sig.focus(); else cerrar();
+      });
+      inputs.push(bi);
+      row.appendChild(lbl); row.appendChild(x); row.appendChild(bi); row.appendChild(totSpan);
+      box.appendChild(row);
+    });
+    const subRow = document.createElement("div");
+    subRow.style.cssText = "border-top:2px solid #eef2f7;padding-top:10px;margin:4px 0 16px;display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:700;color:#555;";
+    const subLbl = document.createElement("span"); subLbl.textContent = "Subtotal billetes";
+    subRow.appendChild(subLbl); subRow.appendChild(subSpan);
+    box.appendChild(subRow);
+  } else {
+    const lbl = document.createElement("label");
+    lbl.style.cssText = "display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:6px;";
+    lbl.textContent = "Total en monedas (Q)";
+    box.appendChild(lbl);
+    const mi = document.createElement("input");
+    mi.type = "number"; mi.min = "0"; mi.step = "0.01"; mi.placeholder = "0.00"; mi.inputMode = "decimal";
+    mi.style.cssText = estiloInput + "font-size:18px;margin-bottom:16px;";
+    if(soloLectura) mi.disabled = true;
+    mi.value = state.monedas || "";
+    mi.addEventListener("input", e => { state.monedas = e.target.value; actualizarResumen(true); });
+    mi.addEventListener("keydown", e => { if(e.key === "Enter"){ e.preventDefault(); cerrar(); } });
+    box.appendChild(mi);
+    if(!soloLectura) setTimeout(() => mi.focus(), 50);
+  }
+
+  const btnListo = document.createElement("button");
+  btnListo.textContent = soloLectura ? "Cerrar" : "✅ Listo";
+  btnListo.style.cssText = "width:100%;background:#27ae60;color:#fff;border:none;border-radius:10px;padding:13px 0;font-size:15px;font-weight:700;cursor:pointer;font-family:sans-serif;";
+  btnListo.onclick = cerrar;
+  box.appendChild(btnListo);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+}
+
+// ── Comprobante de efectivo para impresora térmica (papel de 80 mm) ──
+// Se imprime con el cuadro de impresión del navegador, usando el driver de la impresora.
+// IMPORTANTE: el corte del papel lo ejecuta la impresora según la configuración de su
+// driver; una página web no puede enviarle el comando de corte. Por eso el ticket deja
+// un espacio en blanco al final, para que el corte no toque el texto.
+const TICKET_ANCHO_MM = 80;   // ancho del papel (si fuera de 58 mm, cambiar aquí)
+const TICKET_MARGEN_MM = 4;   // margen a cada lado (72 mm útiles en papel de 80 mm)
+const TICKET_AVANCE_MM = 14;  // espacio en blanco al final antes del corte
+// Título del ticket: un elemento por renglón. Para cambiarlo, editar solo esta línea.
+const TICKET_TITULO = ["LIQUIDACIÓN", "RUTA DE ENTREGA"];
+
+function imprimirTicketEfectivo() {
+  const T = calcularTotalesCuadre();
+  const fecha = String(state.fecha || hoy());
+  const mf = fecha.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const fechaTxt = mf ? `${mf[3]}/${mf[2]}/${mf[1]}` : fecha;
+
+  // Limpiar restos de una impresión anterior
+  const previo = document.getElementById("ticket-print"); if(previo) previo.remove();
+  const cssPrevio = document.getElementById("ticket-print-css"); if(cssPrevio) cssPrevio.remove();
+
+  const ticket = document.createElement("div");
+  ticket.id = "ticket-print";
+  const linea = (cls, texto) => { const d = document.createElement("div"); d.className = cls; d.textContent = texto; return d; };
+  const fila = (cls, izq, der) => {
+    const r = document.createElement("div"); r.className = "t-row " + cls;
+    const a = document.createElement("span"); a.textContent = izq;
+    const b = document.createElement("span"); b.textContent = der;
+    r.appendChild(a); r.appendChild(b); return r;
+  };
+  TICKET_TITULO.forEach(t => ticket.appendChild(linea("t-tit", t)));
+  ticket.appendChild(linea("t-fec", "Fecha: " + fechaTxt));
+  ticket.appendChild(linea("t-sep", ""));
+  ticket.appendChild(linea("t-sec", "EFECTIVO"));
+  ticket.appendChild(fila("", "Billetes", fQ(T.totalBilletes)));
+  ticket.appendChild(fila("", "Monedas", fQ(T.totalMonedas)));
+  ticket.appendChild(fila("t-tot", "TOTAL", fQ(T.totalEfectivo)));
+
+  const util = TICKET_ANCHO_MM - 2 * TICKET_MARGEN_MM;
+  const base = `
+    #ticket-print{font-family:"Courier New",Courier,monospace;color:#000;background:#fff;box-sizing:border-box;width:${util}mm;margin:0 auto;padding:3mm 0 ${TICKET_AVANCE_MM}mm;}
+    #ticket-print .t-tit{font-size:14pt;font-weight:bold;text-align:center;line-height:1.2;word-break:break-word;}
+    #ticket-print .t-fec{font-size:11pt;text-align:center;margin:1.5mm 0 0;}
+    #ticket-print .t-sep{border-top:1px dashed #000;margin:3mm 0;}
+    #ticket-print .t-sec{font-size:13pt;font-weight:bold;text-align:center;margin:0 0 2mm;}
+    #ticket-print .t-row{display:flex;justify-content:space-between;align-items:baseline;gap:4mm;font-size:12pt;line-height:1.6;white-space:nowrap;}
+    #ticket-print .t-tot{border-top:2px solid #000;margin-top:1.5mm;padding-top:1.5mm;font-size:13pt;font-weight:bold;}`;
+  const css = document.createElement("style");
+  css.id = "ticket-print-css";
+  // 1) Medir el alto real del ticket (fuera de pantalla) para que la página mida justo eso
+  css.textContent = base + "#ticket-print{position:fixed;left:-10000px;top:0;}";
+  document.head.appendChild(css);
+  document.body.appendChild(ticket);
+  const altoMm = Math.ceil(ticket.getBoundingClientRect().height * 25.4 / 96) + 2;
+  // 2) Estilos definitivos: en pantalla el ticket no se ve; al imprimir es lo único que sale
+  css.textContent = base + `
+    #ticket-print{display:none;}
+    @page{size:${TICKET_ANCHO_MM}mm ${altoMm}mm;margin:0;}
+    @media print{
+      html,body{margin:0!important;padding:0!important;background:#fff!important;width:${TICKET_ANCHO_MM}mm!important;height:auto!important;min-height:0!important;}
+      body > *:not(#ticket-print){display:none!important;}
+      #ticket-print{display:block!important;position:static!important;}
+    }`;
+
+  const limpiar = () => { ticket.remove(); css.remove(); };
+  window.addEventListener("afterprint", limpiar, {once:true});
+  setTimeout(limpiar, 120000); // por si el navegador no avisa que terminó
+  setTimeout(() => window.print(), 100);
+}
+
 // ── CUADRE (usado en renderResumenLiquidacion) ──
 function _buildCuadrePanel(modoHistorial, onConfirmar) {
   const cuadre=el("div",{style:{background:"#fff",borderRadius:"12px",boxShadow:"0 2px 8px rgba(0,0,0,0.07)",padding:"20px",marginTop:"0"}});
-  const cuadreGrid=el("div",{class:"cuadre-grid",style:{display:"grid",gridTemplateColumns:"1fr 0.7fr 1.6fr",gap:"20px",alignItems:"start"}});
+  const cuadreGrid=el("div",{class:"cuadre-grid",style:{display:"grid",gridTemplateColumns:"minmax(250px,340px) minmax(0,1fr)",gap:"24px",alignItems:"start"}});
 
-  // ── Billetes (sin re-render) ──
-  const billDiv=el("div");
-  billDiv.appendChild(el("div",{style:{fontWeight:"700",fontSize:"13px",color:"#555",marginBottom:"8px"}},"💵 Billetes"));
-  // Encabezados de columna
-  const billHdr=document.createElement("div");
-  billHdr.style.cssText="display:grid;grid-template-columns:48px 16px 60px 75px;gap:8px;align-items:center;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid #eef2f7;";
-  ["DEN.","","CANT","TOTAL Q"].forEach((h,i)=>{
-    const s=document.createElement("span");
-    s.style.cssText="font-size:10px;font-weight:700;color:#888;text-align:"+(i===3?"right":i===0?"center":"center")+";";
-    s.textContent=h;
-    billHdr.appendChild(s);
-  });
-  billDiv.appendChild(billHdr);
-  const subtotalBillSpan=document.createElement("span");
-  subtotalBillSpan.style.cssText="color:#1e3a5f;font-weight:700;width:75px;text-align:right;";
-  const actualizarBilletes=()=>{
-    const tot=[1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0);
-    subtotalBillSpan.textContent=fQ(tot);
-    const tef=document.getElementById("total-efectivo-span");
-    if(tef) tef.textContent=fQ(tot+(parseFloat(state.monedas)||0));
-    actualizarResumen(true);
+  // ── Columna izquierda: recuadro EFECTIVO + depósito + transferencia ──
+  const izqDiv=el("div",{style:{display:"flex",flexDirection:"column",gap:"14px"}});
+  const T0=calcularTotalesCuadre();
+  const efBox=el("div",{style:{border:"2px solid #000",borderRadius:"10px",padding:"12px 14px",background:"#fff"}});
+  efBox.appendChild(el("div",{style:{fontWeight:"800",fontSize:"13px",letterSpacing:"1px",color:"#000",marginBottom:"10px"}},"EFECTIVO"));
+  const mkEfRow=(icon,label,spanId,valor,tipo)=>{
+    const b=document.createElement("button");
+    b.type="button";
+    b.style.cssText="display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer;font-family:sans-serif;font-size:14px;color:#1e3a5f;text-align:left;";
+    b.appendChild(el("span",{style:{fontWeight:"700"}},`${icon} ${label}`));
+    const r=el("span",{style:{display:"flex",alignItems:"center",gap:"8px"}});
+    r.appendChild(el("span",{id:spanId,style:{fontWeight:"700"}},fQ(valor)));
+    r.appendChild(el("span",{style:{color:"#94a3b8",fontSize:"13px"}},state.modoHistorial?"👁":"✎"));
+    b.appendChild(r);
+    b.onclick=()=>abrirModalEfectivo(tipo);
+    return b;
   };
-  BILLETES.forEach(b=>{
-    const row=document.createElement("div");
-    row.style.cssText="display:grid;grid-template-columns:48px 16px 60px 75px;gap:8px;align-items:center;margin-bottom:7px;";
-    const lbl=document.createElement("span");
-    lbl.style.cssText="background:#1e3a5f;color:#fff;border-radius:5px;padding:2px 8px;font-size:12px;font-weight:700;text-align:center;";
-    lbl.textContent=`Q${b}`;
-    const x=document.createElement("span"); x.style.cssText="color:#aaa;font-size:11px;text-align:center;"; x.textContent="×";
-    const bi=document.createElement("input");
-    bi.type="number"; bi.min="0"; bi.placeholder="0";
-    bi.style.cssText="width:100%;padding:5px 8px;border-radius:6px;border:1px solid #ccc;font-size:13px;text-align:right;box-sizing:border-box;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
-    if(state.modoHistorial) bi.disabled=true;
-    bi.value=state.billetes[b]||"";
-    const totSpan=document.createElement("span");
-    totSpan.style.cssText="text-align:right;font-size:12px;color:#1e3a5f;font-weight:600;";
-    totSpan.textContent=fQ(b*(parseFloat(state.billetes[b])||0));
-    bi.setAttribute("data-cuadre","1");
-    bi.addEventListener("input",e=>{
-      state.billetes[b]=e.target.value;
-      totSpan.textContent=fQ(b*(parseFloat(e.target.value)||0));
-      actualizarBilletes();
-    });
-    bi.addEventListener("keydown", focusNextCuadre);
-    row.appendChild(lbl); row.appendChild(x); row.appendChild(bi); row.appendChild(totSpan);
-    billDiv.appendChild(row);
-  });
-  const subtotalRow=document.createElement("div");
-  subtotalRow.style.cssText="border-top:2px solid #eef2f7;padding-top:8px;display:grid;grid-template-columns:48px 16px 60px 75px;gap:8px;align-items:center;font-weight:700;font-size:13px;margin-top:4px;";
-  const subtotalLbl=document.createElement("span");
-  subtotalLbl.style.cssText="color:#555;grid-column:1/4;font-size:12px;";
-  subtotalLbl.textContent="Subtotal billetes";
-  subtotalBillSpan.textContent=fQ([1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0));
-  subtotalRow.appendChild(subtotalLbl); subtotalRow.appendChild(subtotalBillSpan);
-  billDiv.appendChild(subtotalRow);
-  cuadreGrid.appendChild(billDiv);
+  efBox.appendChild(mkEfRow("💵","Billetes","efectivo-billetes-span",T0.totalBilletes,"billetes"));
+  efBox.appendChild(mkEfRow("🪙","Monedas","efectivo-monedas-span",T0.totalMonedas,"monedas"));
+  const efTotal=el("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:"2px solid #000",paddingTop:"10px",marginTop:"2px",fontWeight:"800",fontSize:"15px"}});
+  efTotal.appendChild(el("span",{style:{color:"#000"}},"Total"));
+  efTotal.appendChild(el("span",{id:"total-efectivo-span",style:{color:"#27ae60"}},fQ(T0.totalEfectivo)));
+  efBox.appendChild(efTotal);
+  izqDiv.appendChild(efBox);
+  const btnImp=el("button",{type:"button",id:"btn-imprimir-efectivo",title:"Imprimir comprobante de efectivo (ticket)",style:{width:"100%",background:"#fff",color:"#1e3a5f",border:"1.5px solid #1e3a5f",borderRadius:"8px",padding:"10px 12px",marginTop:"-4px",fontSize:"14px",fontWeight:"700",cursor:"pointer",fontFamily:"sans-serif"}},"🖨️ Imprimir comprobante");
+  btnImp.onclick=imprimirTicketEfectivo;
+  izqDiv.appendChild(btnImp);
 
-  // ── Monedas (sin re-render) ──
-  const monDiv=el("div");
-  monDiv.appendChild(el("div",{style:{fontWeight:"700",fontSize:"13px",color:"#555",marginBottom:"10px"}},"🪙 Monedas"));
-  const monRow=el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"12px"}});
-  monRow.appendChild(el("span",{style:{background:"#64748b",color:"#fff",borderRadius:"5px",padding:"4px 10px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}},"Total Q"));
-  const monInp=document.createElement("input");
-  monInp.type="number"; monInp.min="0"; monInp.step="0.01"; monInp.placeholder="0.00";
-  monInp.style.cssText="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #ccc;font-size:13px;box-sizing:border-box;text-align:right;font-family:sans-serif;"+(state.modoHistorial?";background:#f4f6f9;color:#555;cursor:not-allowed":"");
-  if(state.modoHistorial) monInp.disabled=true;
-  monInp.value=state.monedas||"";
-  monInp.setAttribute("data-cuadre","1");
-  monInp.addEventListener("input",e=>{
-    state.monedas=e.target.value;
-    const tef=document.getElementById("total-efectivo-span");
-    if(tef){ const bill=[1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0); tef.textContent=fQ(bill+(parseFloat(e.target.value)||0)); }
-    actualizarResumen(true);
-  });
-  monInp.addEventListener("keydown", focusNextCuadre);
-  monRow.appendChild(monInp); monDiv.appendChild(monRow);
-  monDiv.appendChild(el("div",{style:{borderTop:"2px solid #eef2f7",paddingTop:"8px",display:"flex",justifyContent:"space-between",fontWeight:"700",fontSize:"13px"}},
-    el("span",{style:{color:"#555"}},"Subtotal monedas"),el("span",{style:{color:"#1e3a5f"}},fQ(parseFloat(state.monedas)||0))
-  ));
-  const totEfectivoDiv=el("div",{style:{marginTop:"8px",background:"#f0f4f8",borderRadius:"7px",padding:"8px 12px",display:"flex",justifyContent:"space-between",fontWeight:"700",fontSize:"13px"}});
-  totEfectivoDiv.appendChild(el("span",{},"Total Efectivo"));
-  const totEfectivoSpan=document.createElement("span");
-  totEfectivoSpan.id="total-efectivo-span";
-  totEfectivoSpan.style.color="#27ae60";
-  totEfectivoSpan.textContent=fQ([1,5,10,20,50,100,200].reduce((s,b)=>s+b*(parseFloat(state.billetes[b])||0),0)+(parseFloat(state.monedas)||0));
-  totEfectivoDiv.appendChild(totEfectivoSpan);
-  monDiv.appendChild(totEfectivoDiv);
-  cuadreGrid.appendChild(monDiv);
+  // ── Columna derecha: gastos y resumen ──
+  const derDiv=el("div",{style:{display:"flex",flexDirection:"column",gap:"12px"}});
 
   // ── Otros pagos (sin re-render) ──
-  const otrosDiv=el("div",{style:{display:"flex",flexDirection:"column",gap:"12px"}});
   const depDiv=el("div");
   depDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"🏦 Depósito bancario (Q)"));
   const depInp=document.createElement("input");
@@ -5066,7 +5193,7 @@ function _buildCuadrePanel(modoHistorial, onConfirmar) {
   depInp.setAttribute("data-cuadre","1");
   depInp.addEventListener("input",e=>{ state.deposito=e.target.value; actualizarResumen(true); });
   depInp.addEventListener("keydown", focusNextCuadre);
-  depDiv.appendChild(depInp); otrosDiv.appendChild(depDiv);
+  depDiv.appendChild(depInp); izqDiv.appendChild(depDiv);
 
   const traDiv=el("div");
   traDiv.appendChild(el("label",{style:{display:"block",fontSize:"12px",fontWeight:"600",color:"#555",marginBottom:"4px"}},"📲 Transferencia (Q)"));
@@ -5078,7 +5205,7 @@ function _buildCuadrePanel(modoHistorial, onConfirmar) {
   traInp.setAttribute("data-cuadre","1");
   traInp.addEventListener("input",e=>{ state.transferencia=e.target.value; actualizarResumen(true); });
   traInp.addEventListener("keydown", focusNextCuadre);
-  traDiv.appendChild(traInp); otrosDiv.appendChild(traDiv);
+  traDiv.appendChild(traInp); izqDiv.appendChild(traDiv);
 
   // Gastos
   const gasDiv=el("div");
@@ -5140,16 +5267,17 @@ function _buildCuadrePanel(modoHistorial, onConfirmar) {
   gasTable.appendChild(gasTbody); gasDiv.appendChild(gasTable);
   gasDiv.appendChild(el("button",{style:{background:"#eef2f7",border:"none",borderRadius:"6px",padding:"4px 12px",fontSize:"12px",cursor:"pointer",color:"#1e3a5f",fontWeight:"600"},onClick:()=>setState({gastosDetalle:[...state.gastosDetalle,{desc:"",monto:"",comentario:"",deCuenta:true}]})},"+ Agregar gasto"));
   if(state.esAdmin) gasDiv.appendChild(el("button",{style:{background:"none",border:"1px solid #cbd5e1",borderRadius:"6px",padding:"4px 12px",fontSize:"12px",cursor:"pointer",color:"#64748b",fontWeight:"600",marginLeft:"8px"},onClick:abrirModalRubros},"⚙️ Rubros"));
-  otrosDiv.appendChild(gasDiv);
+  derDiv.appendChild(gasDiv);
 
   // Resumen cuadre
   const resumen=document.createElement("div");
   resumen.id="resumen-cuadre";
   resumen.style.cssText="background:#f0f4f8;border-radius:9px;padding:14px;margin-top:4px;";
-  otrosDiv.appendChild(resumen);
+  derDiv.appendChild(resumen);
   // Llenar resumen DESPUÉS de que esté en el DOM
   setTimeout(actualizarResumen, 0);
-  cuadreGrid.appendChild(otrosDiv);
+  cuadreGrid.appendChild(izqDiv);
+  cuadreGrid.appendChild(derDiv);
   cuadre.appendChild(cuadreGrid);
 
   // Botón confirmar dentro del panel
