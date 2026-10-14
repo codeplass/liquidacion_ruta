@@ -167,9 +167,18 @@ function parseFile(raw) {
 let _lidSeq = 0;
 function nuevoLid(){ _lidSeq++; return "L"+Date.now().toString(36)+"-"+_lidSeq; }
 function asegurarLids(map){
-  Object.values(map||{}).forEach(cl=>Object.values((cl&&cl.pedidos)||{}).forEach(pd=>{
-    ((pd&&pd.lineas)||[]).forEach(l=>{ if(l && !l.lid) l.lid = nuevoLid(); });
-  }));
+  // Firebase no guarda objetos ni arreglos vacíos: un cliente al que se le eliminaron todos
+  // sus pedidos llega SIN "pedidos", y un pedido sin productos llega SIN "lineas".
+  // Se normalizan aquí (todas las cargas pasan por esta función) para que nada falle al dibujar.
+  Object.values(map||{}).forEach(cl=>{
+    if(!cl || typeof cl!=="object") return;
+    if(!cl.pedidos || typeof cl.pedidos!=="object") cl.pedidos = {};
+    Object.values(cl.pedidos).forEach(pd=>{
+      if(!pd || typeof pd!=="object") return;
+      if(!Array.isArray(pd.lineas)) pd.lineas = Object.values(pd.lineas||{});
+      pd.lineas.forEach(l=>{ if(l && !l.lid) l.lid = nuevoLid(); });
+    });
+  });
   return map;
 }
 // Reparte las devoluciones de un pedido entre sus líneas.
@@ -413,6 +422,11 @@ function esClientePre(c) {
   const pedidos = Object.values(state.clienteMap[c]?.pedidos||{});
   return pedidos.length > 0 && pedidos.every(p=>/^pre$/i.test(p.estPed||""));
 }
+// Cliente inactivo: se le eliminaron todos sus pedidos. Se muestra en gris ("Pedido eliminado")
+// y no cuenta como entrega (ni pendiente, ni en efectividad, ni en el cuadre).
+function esClienteInactivo(c) { return Object.keys(state.clienteMap?.[c]?.pedidos||{}).length === 0; }
+// Fuera de las entregas del día: presupuesto o inactivo
+function esClienteFuera(c) { return esClientePre(c) || esClienteInactivo(c); }
 // Helper: true si un pedido específico es "Pre"
 const esPedPre = p => /^pre$/i.test(p?.estPed||"");
 // Forma de cobro del cliente (contado por defecto; respeta el campo legacy pagoPendiente)
@@ -467,6 +481,7 @@ function clientesVisiblesOrden() {
   const bq = _norm((state.busqueda||"").trim());
   const clientes = Object.keys(state.clienteMap);
   const filtrados = clientes.filter(c=>{
+    if(esClienteInactivo(c)) return false;
     if(!bq) return true;
     if(_norm(c).includes(bq)) return true;
     const productos = Object.values(state.clienteMap[c]?.pedidos||{}).flatMap(p=>p.lineas||[]).map(l=>_norm(l.producto||""));
@@ -512,12 +527,25 @@ function irAClienteAdyacente(dir) {
 // ── Eliminar un pedido completo (solo admin) ──
 function eliminarPedido(c, pedido) {
   const cl=state.clienteMap[c];
-  if(!cl||!cl.pedidos[pedido]) return;
+  if(!cl||!cl.pedidos||!cl.pedidos[pedido]) return;
   delete cl.pedidos[pedido];
   state.devoluciones=state.devoluciones.filter(d=>!(d.cliente===c&&d.pedido===pedido));
   state.dvTemporal=state.dvTemporal.filter(d=>!(d.cliente===c&&d.pedido===pedido));
-  setState({clienteMap:state.clienteMap, devoluciones:state.devoluciones, dvTemporal:state.dvTemporal});
-  showToast("🗑️ Pedido eliminado","#c0392b");
+  const upd={clienteMap:state.clienteMap, devoluciones:state.devoluciones, dvTemporal:state.dvTemporal};
+  if(Object.keys(cl.pedidos).length===0){
+    // Era su último pedido: el cliente queda inactivo (en gris, "Pedido eliminado").
+    // Se limpian su estado de entrega, cobro, descuento y devoluciones para que no afecten el cuadre.
+    ["estadoEntrega","entregados","bloqueados","motivosDevTotal","descuentos","modoPago","pagoPendiente"].forEach(k=>{
+      if(state[k] && state[k][c]!==undefined){ const m={...state[k]}; delete m[c]; upd[k]=m; }
+    });
+    upd.devoluciones=upd.devoluciones.filter(d=>d.cliente!==c);
+    upd.dvTemporal=upd.dvTemporal.filter(d=>d.cliente!==c);
+    // Salir del detalle (ya no tiene pedidos) y volver al listado en la posición del cliente
+    Object.assign(upd,{clienteDetalle:null, showDvForm:false, dvPedido:"", dvProducto:"", dvError:"", dvPopup:null,
+      _sinConfirmarPendiente:false, _prodQuitadoPendiente:false, scrollAfterCliente:c});
+  }
+  setState(upd);
+  showToast(upd.clienteDetalle===null?"🗑️ Pedido eliminado · cliente inactivo":"🗑️ Pedido eliminado","#c0392b");
 }
 
 // ── Agregar un producto a un pedido (solo admin) ──
@@ -540,7 +568,7 @@ function cambiarNumPedido(c, viejo, nuevo) {
   nuevo=(nuevo||"").trim();
   if(!nuevo){ showToast("Escribe el nuevo número de pedido","#e67e22"); return; }
   const cl=state.clienteMap[c];
-  if(!cl||!cl.pedidos[viejo]){ setState({editPedidoModal:null}); return; }
+  if(!cl||!cl.pedidos||!cl.pedidos[viejo]){ setState({editPedidoModal:null}); return; }
   if(nuevo===viejo){ setState({editPedidoModal:null}); return; }
   if(cl.pedidos[nuevo]){ showToast("Ya existe un pedido con ese número","#e67e22"); return; }
   const nuevos={};
@@ -850,7 +878,7 @@ function hayDatosActivos() {
 // se permite confirmar con el cuadre en cero.
 function evaluarConfirmable() {
   const clientesTodos = Object.keys(state.clienteMap||{});
-  const clientesEnt = clientesTodos.filter(c=>!esClientePre(c));
+  const clientesEnt = clientesTodos.filter(c=>!esClienteFuera(c));
   const sinConfirmar = clientesEnt.filter(c=>!(state.estadoEntrega||{})[c]);
   const entregasCompletas = clientesEnt.length>0 && sinConfirmar.length===0;
   const T = calcularTotalesCuadre();
@@ -3068,7 +3096,7 @@ function renderDetalleCliente() {
   const devsTempCliente = state.dvTemporal.filter(d=>d.cliente===c);
   // Para mostrar en detalle: combinar permanentes + temporales (temporales sobreescriben si mismo producto)
   const devsCl = [...devsPermCliente.filter(dp=>!devsTempCliente.some(dt=>mismaLineaRef(dt,dp))), ...devsTempCliente];
-  const pedidos=Object.entries(cl.pedidos);
+  const pedidos=Object.entries(cl?.pedidos||{});
   const tc=totalesCliente(c);
   const prodsSel=state.dvPedido?prodsDisp(c,state.dvPedido):[];
   const prodSel=prodsSel.find(p=>p.producto===state.dvProducto);
@@ -3544,7 +3572,7 @@ function renderDetalleCliente() {
       }
       const btnDelPed=el("button",{style:{background:"#fdecea",border:"1px solid #f5c6c6",borderRadius:"6px",padding:"5px 11px",cursor:"pointer",color:"#c0392b",fontWeight:"700",fontSize:"12px",fontFamily:"sans-serif",marginLeft:"auto"}},"🗑️ Eliminar pedido");
       btnDelPed.onclick=()=>{
-        showModal({titulo:"🗑️ Eliminar pedido", mensaje:`¿Estás seguro que quieres eliminar el pedido "${pedido}" completo? Esta acción no se puede deshacer.`, tipo:"confirm", btnAceptar:"Sí, eliminar", colorAceptar:"#c0392b", btnCancelar:"Cancelar", onAceptar:()=>eliminarPedido(c,pedido)});
+        showModal({titulo:"🗑️ Eliminar pedido", mensaje:`¿Estás seguro que quieres eliminar el pedido "${pedido}" completo? Esta acción no se puede deshacer.`+(Object.keys(cl.pedidos||{}).length===1?`\n\nEs el único pedido de este cliente: quedará en gris como inactivo ("Pedido eliminado").`:""), tipo:"confirm", btnAceptar:"Sí, eliminar", colorAceptar:"#c0392b", btnCancelar:"Cancelar", onAceptar:()=>eliminarPedido(c,pedido)});
       };
       adminBar.appendChild(btnDelPed);
       box.appendChild(adminBar);
@@ -4074,7 +4102,7 @@ function renderCargaProducto(){
 
 function renderMain() {
   const clientes=Object.keys(state.clienteMap);
-  const clientesEntregables=clientes.filter(c=>!esClientePre(c));
+  const clientesEntregables=clientes.filter(c=>!esClienteFuera(c));
   // Variables globales de renderMain (declaradas aquí para uso en modal y resto)
   const totalDevGral=clientesEntregables.reduce((s,c)=>{
     if(state.estadoEntrega[c]==="rosado") return s+totalesCliente(c).monto;
@@ -4398,7 +4426,7 @@ function renderMain() {
 
   // ── Info de tripulación + estatus de liquidación ──
   {
-    const clientesEntregablesAll = clientes.filter(c=>!esClientePre(c));
+    const clientesEntregablesAll = clientes.filter(c=>!esClienteFuera(c));
     const totalEntregables = clientesEntregablesAll.length;
     const totalConEstado = clientesEntregablesAll.filter(c=>state.estadoEntrega[c]).length;
     const todasEntregasConfirmadas = totalEntregables > 0 && totalConEstado === totalEntregables;
@@ -4460,7 +4488,7 @@ function renderMain() {
   const tagBar = el("div",{style:{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"16px",overflowX:"auto",paddingBottom:"4px"}});
 
   const mkTag = (label, cls, seleccionada, isTotal=false) => {
-    const cEntregables = cls.filter(c=>!esClientePre(c));
+    const cEntregables = cls.filter(c=>!esClienteFuera(c));
     const cVerde = cEntregables.filter(c=>state.estadoEntrega[c]==="verde").length;
     const cAmarillo = cEntregables.filter(c=>state.estadoEntrega[c]==="amarillo").length;
     const cRosado = cEntregables.filter(c=>state.estadoEntrega[c]==="rosado").length;
@@ -4695,7 +4723,7 @@ function renderListaRutas(container, porRuta) {
     const cntVerdeR=rutaClientes.filter(c=>state.estadoEntrega[c]==="verde").length;
     const cntAmarilloR=rutaClientes.filter(c=>state.estadoEntrega[c]==="amarillo").length;
     const cntRosadoR=rutaClientes.filter(c=>state.estadoEntrega[c]==="rosado").length;
-    const rutaEntregables=rutaClientes.filter(c=>!esClientePre(c));
+    const rutaEntregables=rutaClientes.filter(c=>!esClienteFuera(c));
     const entregadosRuta=cntVerdeR+cntAmarilloR;
     const montoEntregadoRuta=rutaEntregables.filter(c=>state.estadoEntrega[c] && state.estadoEntrega[c]!=="rosado").reduce((s,c)=>s+totalesCliente(c).netoM,0);
     const montoPendienteRuta=rutaEntregables.filter(c=>!state.estadoEntrega[c]).reduce((s,c)=>s+totalesCliente(c).netoM,0);
@@ -4733,6 +4761,18 @@ function renderListaRutas(container, porRuta) {
     const cardsWrap=el("div",{style:{padding:"4px 0"}});
 
     rutaClientesFiltrados.forEach((cliente,ri)=>{
+      // Cliente inactivo (se eliminó su último pedido): tarjeta en gris, sin acciones
+      if(esClienteInactivo(cliente)){
+        const cardIn=el("div",{style:{borderTop:"1px solid #f0f0f0",background:"#eceff1",padding:"10px 14px",opacity:"0.7",display:"flex",alignItems:"center",gap:"10px"}});
+        cardIn.setAttribute("data-cliente", cliente);
+        cardIn.appendChild(el("span",{title:"Cliente inactivo",style:{fontSize:"18px",flexShrink:"0",filter:"grayscale(1)"}},"🚫"));
+        const infoIn=el("div",{style:{flex:"1",minWidth:"0"}});
+        infoIn.appendChild(el("div",{style:{fontWeight:"700",fontSize:"14px",color:"#78909c",wordBreak:"break-word"}},cliente));
+        infoIn.appendChild(el("span",{style:{display:"inline-block",marginTop:"3px",background:"#90a4ae",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700"}},"🗑️ PEDIDO ELIMINADO"));
+        cardIn.appendChild(infoIn);
+        cardsWrap.appendChild(cardIn);
+        return;
+      }
       const tt=totalesCliente(cliente);
       const bloqueado=state.bloqueados[cliente]||false;
       const comRazonL=(state.comentarios[cliente]||"").trim();
@@ -4853,7 +4893,7 @@ function renderListaRutas(container, porRuta) {
       if(mpBadge === "credito") badgeRow.appendChild(el("span",{title:"Entrega al crédito",style:{background:"#8e44ad",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700"}},"💳 CRÉDITO"));
       else if(mpBadge === "pendiente") badgeRow.appendChild(el("span",{title:"Pago pendiente",style:{background:"#e67e22",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700"}},"🕐 PENDIENTE"));
       if(esPresupuesto) badgeRow.appendChild(el("span",{style:{background:"#9e9e9e",color:"#fff",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"700"}},"PRESUPUESTO"));
-      const pedEntries=Object.entries(state.clienteMap[cliente].pedidos);
+      const pedEntries=Object.entries(state.clienteMap[cliente].pedidos||{});
       pedEntries.forEach(([ped,pData])=>{
         const esPre=esPedPre(pData);
         badgeRow.appendChild(el("span",{style:{background:esPre?"#fdecea":"#eef2f7",color:esPre?"#c0392b":"#555",borderRadius:"4px",padding:"1px 6px",fontSize:"10px",fontWeight:"600"}},esPre?`*${ped}`:ped));
@@ -5406,7 +5446,7 @@ function renderResumenNotas() {
 // ── Resumen de Entregas ──
 function renderResumenEntregas() {
   const clientes = Object.keys(state.clienteMap);
-  const clientesEntregables = clientes.filter(c=>!esClientePre(c));
+  const clientesEntregables = clientes.filter(c=>!esClienteFuera(c));
   const cntVerde = clientesEntregables.filter(c=>state.estadoEntrega[c]==="verde").length;
   const cntAmarillo = clientesEntregables.filter(c=>state.estadoEntrega[c]==="amarillo").length;
   const cntRosado = clientesEntregables.filter(c=>state.estadoEntrega[c]==="rosado").length;
@@ -5571,7 +5611,7 @@ function renderResumenEntregas() {
 // ── Resumen de Liquidación (cuadre editable) ──
 function renderResumenLiquidacion() {
   const clientes = Object.keys(state.clienteMap);
-  const clientesEntregables = clientes.filter(c=>!esClientePre(c));
+  const clientesEntregables = clientes.filter(c=>!esClienteFuera(c));
 
   const wrap = el("div",{style:{fontFamily:"sans-serif",background:"#f4f6f9",minHeight:"100vh",padding:"20px"}});
   const inner = el("div",{style:{maxWidth:"900px",margin:"0 auto"}});
@@ -5641,7 +5681,7 @@ function renderResumenLiquidacion() {
 
   // Panel cuadre editable
   const cuadrePanel = _buildCuadrePanel(state.modoHistorial, ()=>{
-    const sinConfirmar=clientes.filter(c=>!state.estadoEntrega[c] && !esClientePre(c));
+    const sinConfirmar=clientes.filter(c=>!state.estadoEntrega[c] && !esClienteFuera(c));
     if(sinConfirmar.length>0){
       showModal({titulo:"⚠️ Entregas pendientes", mensaje:`Hay ${sinConfirmar.length} entrega(s) sin confirmar:\n\n${sinConfirmar.map(c=>"• "+c).join("\n")}\n\nConfirma todas las entregas antes de liquidar.`, tipo:"alert", btnAceptar:"Entendido"});
       return;
@@ -6010,7 +6050,27 @@ function renderResumenDevoluciones() {
 }
 
 // ── Render principal ──
+// Si una pantalla falla al dibujarse, mostrar el error en vez de dejar la pantalla en blanco
 function render() {
+  try { _renderInterno(); }
+  catch(err) {
+    console.error("Error al dibujar la pantalla:", err);
+    const app=document.getElementById("app");
+    app.innerHTML="";
+    const pantalla=(state.screenAdmin||state.screen||"?")+(state.clienteDetalle?" · detalle: "+state.clienteDetalle:"");
+    const box=el("div",{style:{fontFamily:"sans-serif",maxWidth:"420px",margin:"40px auto",background:"#fff",borderRadius:"14px",padding:"24px",boxShadow:"0 6px 24px rgba(0,0,0,0.12)",textAlign:"center"}});
+    box.appendChild(el("div",{style:{fontSize:"40px",marginBottom:"8px"}},"⚠️"));
+    box.appendChild(el("h3",{style:{margin:"0 0 8px",color:"#c0392b"}},"No se pudo mostrar esta pantalla"));
+    box.appendChild(el("p",{style:{fontSize:"12px",color:"#555",margin:"0 0 4px"}},"Pantalla: "+pantalla));
+    box.appendChild(el("p",{style:{fontSize:"12px",color:"#888",margin:"0 0 16px",wordBreak:"break-word"}},"Error: "+(err&&err.message||String(err))));
+    const btnS={border:"none",borderRadius:"8px",padding:"10px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"700",margin:"4px"};
+    if(state.autenticado) box.appendChild(el("button",{style:{...btnS,background:"#1e3a5f",color:"#fff"},onClick:()=>setState({screen:state.esAdmin?"menu":"menuRepartidor",screenAdmin:null,clienteDetalle:null})},"↩ Volver al menú"));
+    box.appendChild(el("button",{style:{...btnS,background:"#eef2f7",color:"#1e3a5f"},onClick:()=>location.reload()},"🔄 Recargar"));
+    app.appendChild(box);
+  }
+}
+
+function _renderInterno() {
   const app=document.getElementById("app");
   app.innerHTML="";
   let content;
