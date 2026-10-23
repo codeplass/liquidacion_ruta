@@ -232,6 +232,23 @@ function esDevolucionTotal(pedidosEntregables, devsCl){
   });
   return hayLineas && todas;
 }
+// Punto 2: el estado Entregado/Parcial se deriva de las devoluciones REALES del cliente.
+// verde -> amarillo si tiene devoluciones; amarillo -> verde si ya no tiene ninguna.
+// "rosado" (devolución total) no se toca: su cálculo usa el monto bruto, no las líneas.
+// Devuelve un nuevo objeto si hubo cambios, o null si todo ya estaba correcto.
+function normalizarEstadosEntrega(est, devs, map){
+  if(!est || typeof est!=="object") return null;
+  let cambio=false; const nuevo={...est};
+  Object.keys(est).forEach(c=>{
+    const e=est[c];
+    if(e!=="verde" && e!=="amarillo") return;
+    if(!map || !map[c]) return;
+    const tieneDevs=(devs||[]).some(d=>d && d.cliente===c && (parseFloat(d.unidades)||0)>0);
+    const correcto = tieneDevs ? "amarillo" : "verde";
+    if(e!==correcto){ nuevo[c]=correcto; cambio=true; }
+  });
+  return cambio ? nuevo : null;
+}
 
 // ── Estado global ──
 let state = {
@@ -336,6 +353,7 @@ let state = {
   filtroPendientePago: false,  // true = lista de entregas filtrada a clientes con pago pendiente
   cargaEstatus: "",            // filtro de estatus en Carga por producto: ""|"pend"|"ent"|"dev"
   dvCodigoCliente: "",         // cliente al que pertenece el motivo de devolución elegido en dvCodigo
+  _claveEdicionHist: "",       // clave del historial que se está editando con "✏️ Editar" ("" = ninguna)
 };
 
 // Pantallas que son parte del flujo activo de liquidación (no requieren guard entre sí)
@@ -396,6 +414,11 @@ function programarAutoSave() {
 
 function _setStateInterno(updates) {
   Object.assign(state, updates);
+  // Punto 2: si cambian devoluciones, pedidos o estados, recalcular Entregado/Parcial
+  if(["devoluciones","clienteMap","estadoEntrega"].some(k=>k in updates)){
+    const estNorm = normalizarEstadosEntrega(state.estadoEntrega, state.devoluciones, state.clienteMap);
+    if(estNorm){ state.estadoEntrega = estNorm; updates = {...updates, estadoEntrega:estNorm}; }
+  }
   render();
   // Guardado automático en Firebase cuando cambian datos del día
   // Autosave: solo datos de entregas (no cuadre — ese solo se guarda al confirmar)
@@ -403,7 +426,7 @@ function _setStateInterno(updates) {
   // (state.esDiaActivo). Cualquier liquidación cargada desde el historial (viéndola
   // o editándola con "✏️ Editar") deja esDiaActivo en false, así que aunque el admin
   // navegue de un lado a otro nunca se sobrescribe "datos-dia" con datos de otro día.
-  const camposGuardar = ["estadoEntrega","entregados","bloqueados",
+  const camposGuardar = ["estadoEntrega","entregados","bloqueados","devoluciones",
     "motivosDevTotal","descuentos","comentarios","comentariosGen","pagoPendiente","modoPago","clienteMap"];
   const afecta = Object.keys(updates).some(k => camposGuardar.includes(k));
   if(afecta) programarAutoSave();
@@ -1091,7 +1114,7 @@ async function procesarArchivo(file) {
       billetes:Object.fromEntries(BILLETES.map(b=>[b,""])),monedas:"",confirmado:false,
       modoPago:{},pagoPendiente:{},
       loginRepartidor:"",loginAuxiliar:"",
-      fileName:file.name,screen:"main",busqueda:"",modoHistorial:false,esDiaActivo:true
+      fileName:file.name,screen:"main",busqueda:"",modoHistorial:false,esDiaActivo:true,_claveEdicionHist:""
     });
   } catch(e){setState({error:"Error: "+e.message});}
 }
@@ -1103,7 +1126,12 @@ async function confirmarLiquidacion() {
     const repKey = (state.loginRepartidor||"").replace(/[.#$\/\[\]\s]/g,"_");
     const claveVerif = repKey ? state.fecha+"_"+repKey : state.fecha;
     const existente = await fbGet("historial/"+claveVerif);
-    if(existente && existente.fileName) {
+    // Punto 1: si es una edición del historial ("✏️ Editar") y la clave es la del mismo
+    // registro, se sobrescribe (queda grabado el último estado). Solo se bloquea si choca
+    // con OTRA liquidación ya existente.
+    const claveEdit = (!state.esDiaActivo && state._claveEdicionHist) || "";
+    const esMismoRegistro = !!claveEdit && claveEdit === claveVerif;
+    if(existente && existente.fileName && !esMismoRegistro) {
       setState({guardando:false});
       const quien = existente.repartidor ? `del repartidor "${existente.repartidor}"` : "sin repartidor asignado";
       showModal({
@@ -1164,7 +1192,14 @@ async function _ejecutarConfirmarLiquidacion() {
     const repKeyH = (state.loginRepartidor||"").replace(/[.#$\/\[\]\s]/g,"_");
     const claveHistorial = repKeyH ? state.fecha+"_"+repKeyH : state.fecha;
     // Escribir solo el nodo del día — evita reescribir todo el historial (límite ~10MB)
-    await fbSet("historial/"+claveHistorial, registroDia);
+    const claveEditada = (!eraDiaActivo && state._claveEdicionHist) || "";
+    if(claveEditada && claveEditada !== claveHistorial){
+      // Edición que cambió la clave (repartidor distinto o registro antiguo solo-fecha):
+      // mover en una sola operación atómica para no dejar el registro viejo duplicado.
+      await db.ref("historial").update({[claveHistorial]:registroDia, [claveEditada]:null});
+    } else {
+      await fbSet("historial/"+claveHistorial, registroDia);
+    }
     // Punto 3: si esto era el día activo real, la liquidación ya quedó en el historial,
     // así que ya NO se deja cargada: se elimina datos-dia y se limpia el estado. Para
     // editarla más adelante, se abre desde el historial.
@@ -1178,7 +1213,7 @@ async function _ejecutarConfirmarLiquidacion() {
       confirmado:true, showConfirmar:false, guardando:false, screen:"confirmado", esDiaActivo:false,
       clienteMap:{}, devoluciones:[], entregados:{}, estadoEntrega:{}, bloqueados:{},
       descuentos:{}, comentarios:{},comentariosGen:{}, motivosDevTotal:{}, modoPago:{}, pagoPendiente:{},
-      loginRepartidor:"", loginAuxiliar:""
+      loginRepartidor:"", loginAuxiliar:"", _claveEdicionHist:""
     });
     state._cuadreModificado = false;
   } catch(e){
@@ -1720,7 +1755,12 @@ function confirmarDesdeDetalle(cliente, tipo, codigoMotivo, descMotivo) {
     .filter(d=>d.cliente===cliente)
     .map(d=>({...d, codigo:codigoMotivo||"", desc:descFinal}));
   const devsOtros = state.devoluciones.filter(d=>d.cliente!==cliente);
-  const devsFinales = [...devsOtros, ...devsTemporalesCliente];
+  // Punto 3: conservar las devoluciones ya guardadas del cliente (salvo las líneas que una
+  // devolución temporal reemplaza), igual que se muestran en el detalle antes de confirmar.
+  const devsPermCliente = state.devoluciones
+    .filter(d=>d.cliente===cliente && !devsTemporalesCliente.some(dt=>mismaLineaRef(dt,d)))
+    .map(d=>codigoMotivo ? {...d, codigo:codigoMotivo, desc:descFinal} : d);
+  const devsFinales = [...devsOtros, ...devsPermCliente, ...devsTemporalesCliente];
   const dvTemporalRestante = state.dvTemporal.filter(d=>d.cliente!==cliente);
   const updates = {
     estadoEntrega:{...state.estadoEntrega,[cliente]:tipo},
@@ -2819,7 +2859,7 @@ function cargarFechaHistorial(fecha) {
   const reg=state.historialData[fecha];
   if(!reg) return;
   setState({
-    fechaSelec:fecha, screen:"historialVista",
+    fechaSelec:fecha, screen:"historialVista", _claveEdicionHist:"",
     clienteMap:asegurarLids(reg.clienteMap||{}), fileName:reg.fileName||"", fecha:reg.fecha||fecha,
     devoluciones:devsValidas(reg.devoluciones, reg.clienteMap||{}),
     estadoEntrega:reg.estadoEntrega||reg.entregados||{},
@@ -4383,7 +4423,7 @@ function renderMain() {
         showModal({titulo:"✏️ Editar liquidación", mensaje:`¿Deseas habilitar la edición de la liquidación del ${state.fechaSelec}?\n\nPodrás modificar datos y volver a confirmar para guardar los cambios en el historial.`, tipo:"confirm", btnAceptar:"Sí, editar", colorAceptar:"#8e44ad", btnCancelar:"Cancelar",
           onAceptar: ()=>{
             // Desbloquear todos los clientes para edición
-            setState({modoHistorial:false, confirmado:false, bloqueados:{}});
+            setState({modoHistorial:false, confirmado:false, bloqueados:{}, _claveEdicionHist:state.fechaSelec||""});
             showToast("✏️ Modo edición habilitado","#8e44ad");
           }
         });
