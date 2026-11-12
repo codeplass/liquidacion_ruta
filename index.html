@@ -443,7 +443,7 @@ function setState(updates) {
 // Helper: true si todos los pedidos del cliente son "Pre"
 function esClientePre(c) {
   const pedidos = Object.values(state.clienteMap[c]?.pedidos||{});
-  return pedidos.length > 0 && pedidos.every(p=>/^pre$/i.test(p.estPed||""));
+  return pedidos.length > 0 && pedidos.every(esPedPre);
 }
 // Cliente inactivo: se le eliminaron todos sus pedidos. Se muestra en gris ("Pedido eliminado")
 // y no cuenta como entrega (ni pendiente, ni en efectividad, ni en el cuadre).
@@ -451,7 +451,8 @@ function esClienteInactivo(c) { return Object.keys(state.clienteMap?.[c]?.pedido
 // Fuera de las entregas del día: presupuesto o inactivo
 function esClienteFuera(c) { return esClientePre(c) || esClienteInactivo(c); }
 // Helper: true si un pedido específico es "Pre"
-const esPedPre = p => /^pre$/i.test(p?.estPed||"");
+// Pedido Pre: marcado Pre, o con todas sus líneas en Pre (p.ej. se quitó el producto bloqueado después de importar).
+const esPedPre = p => /^pre$/i.test(p?.estPed||"") || (Array.isArray(p?.lineas) && p.lineas.length>0 && p.lineas.every(l=>/^pre$/i.test(l.estPed||"")));
 // Forma de cobro del cliente (contado por defecto; respeta el campo legacy pagoPendiente)
 const modoPagoDe = c => (state.modoPago||{})[c] || ((state.pagoPendiente||{})[c] ? "pendiente" : "contado");
 // Cliente con pago pendiente: forma de cobro "Pendiente", no presupuesto y sin devolución total
@@ -1344,7 +1345,7 @@ async function exportarExcel(reg, nombreArchivo) {
   const billetes=reg.billetes||{};
   // Usar SOLO clientes del clienteMap — no incluir estadoEnt ni devs porque pueden
   // contener clientes de otras rutas/días que no pertenecen a este archivo del día
-  const clts=Object.keys(cMap).filter(Boolean).filter(c=>{ const ps=Object.values(cMap[c]?.pedidos||{}); return !(ps.length>0&&ps.every(p=>/^pre$/i.test(p.estPed||""))); }).sort();
+  const clts=Object.keys(cMap).filter(Boolean).filter(c=>{ const ps=Object.values(cMap[c]?.pedidos||{}); return !(ps.length>0&&ps.every(esPedPre)); }).sort();
 
   // ── Hoja 1: Resumen ──
   // Fix obs.2: devoluciones siempre se muestran en columna Devoluciones (positivo),
@@ -1451,7 +1452,7 @@ async function exportarExcel(reg, nombreArchivo) {
   const tPag=tEf+tDep+tTra;
   // Clientes no confirmados: su bruto NO se cobra, se descuenta del neto igual que la app
   const tNoCobrado=clts.filter(c=>!estadoEnt[c]).reduce((acc,c)=>{
-    let m=0; Object.values(cMap[c]?.pedidos||{}).filter(p=>!/^pre$/i.test(p.estPed||"")).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
+    let m=0; Object.values(cMap[c]?.pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
     return acc+m;
   },0);
   // Total Neto cobrable = bruto - devs - descuentos - no confirmados (igual que la app)
@@ -1520,7 +1521,7 @@ async function exportarExcelMultiple(fechas) {
     const estadoEnt=reg.estadoEntrega||reg.entregados||{};
     const cMap=reg.clienteMap||{};
     const clts=[...new Set([...Object.keys(estadoEnt),...Object.keys(cMap)])].filter(Boolean)
-      .filter(c=>{ const ps=Object.values(cMap[c]?.pedidos||{}); return !(ps.length>0&&ps.every(p=>/^pre$/i.test(p.estPed||""))); });
+      .filter(c=>{ const ps=Object.values(cMap[c]?.pedidos||{}); return !(ps.length>0&&ps.every(esPedPre)); });
     let sB=0,sD=0,sDe=0,sN=0;
     clts.forEach(c=>{
       let bruto=0; Object.values(cMap[c]?.pedidos||{}).forEach(p=>p.lineas.forEach(l=>{bruto+=l.monto;}));
@@ -1846,6 +1847,12 @@ function intentarQuitarProducto() {
   if(idx === -1) { setState({quitarProdModal:null, quitarProdPassInput:"", quitarProdPassError:""}); return; }
   const lineaQuitada = lineas[idx];
   lineas.splice(idx, 1);
+  // Si tras quitar el producto todas las líneas restantes son Pre, el pedido pasa a Pre
+  // (misma regla que al importar), para que no se cuente como entregable.
+  {
+    const pedQ = newMap[cliente].pedidos[pedido];
+    if(lineas.length>0 && lineas.every(l=>/^pre$/i.test(l.estPed||""))) pedQ.estPed = "Pre";
+  }
   const refQ = {pedido, lid:lineaQuitada.lid, producto:lineaQuitada.producto};
   const devsRestantes = state.devoluciones.filter(d=>!(d.cliente===cliente && d.lid!=null && mismaLineaRef(d,refQ)));
   const dvTempRestantes = state.dvTemporal.filter(d=>!(d.cliente===cliente && d.lid!=null && mismaLineaRef(d,refQ)));
@@ -1884,7 +1891,7 @@ function calcularTotalesCuadre() {
   // Total a Entregar: bruto de clientes entregables (excluir presupuestos)
   const totalAEntregar = Object.keys(clienteMap).reduce((acc,c)=>{
     if(esClientePre(c)) return acc;
-    let m=0; Object.values(clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));
+    let m=0; Object.values(clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));
     return acc + m;
   },0);
   // Devoluciones: parciales + bruto de rosados (excluir presupuestos)
@@ -4345,7 +4352,7 @@ function renderMain() {
     const totalGastosM = state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
     const totalGastosDeCuentaM = state.gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
     const totalPagosM = totalEfectivoM + totalDepositoM + totalTransferenciaM;
-    const totalAEntregarM = clientesEntregables.reduce((s,c)=>{let m=0;Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));return s+m;},0);
+    const totalAEntregarM = clientesEntregables.reduce((s,c)=>{let m=0;Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));return s+m;},0);
     const totalDescM = clientesEntregables.reduce((acc,c)=>{
       if(!state.estadoEntrega[c]||state.estadoEntrega[c]==="rosado") return acc;
       return acc+(parseFloat(state.descuentos[c])||0);
@@ -5748,7 +5755,7 @@ function renderResumenLiquidacion() {
     const totalGastosM = state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
     const totalGastosDeCuentaM = state.gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
     const totalPagosM = totalEfectivoM+totalDepositoM+totalTransferenciaM;
-    const totalAEntregarM = clientesEntregables.reduce((s,c)=>{let m=0;Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.forEach(l=>{m+=l.monto;}));return s+m;},0);
+    const totalAEntregarM = clientesEntregables.reduce((s,c)=>{let m=0;Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));return s+m;},0);
     const totalDescM = clientesEntregables.reduce((acc,c)=>{
       if(!state.estadoEntrega[c]||state.estadoEntrega[c]==="rosado") return acc;
       return acc+(parseFloat(state.descuentos[c])||0);
