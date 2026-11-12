@@ -4352,13 +4352,15 @@ function renderMain() {
     const totalGastosM = state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
     const totalGastosDeCuentaM = state.gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
     const totalPagosM = totalEfectivoM + totalDepositoM + totalTransferenciaM;
-    const totalAEntregarM = clientesEntregables.reduce((s,c)=>{let m=0;Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));return s+m;},0);
-    const totalDescM = clientesEntregables.reduce((acc,c)=>{
-      if(!state.estadoEntrega[c]||state.estadoEntrega[c]==="rosado") return acc;
-      return acc+(parseFloat(state.descuentos[c])||0);
-    },0);
-    const totalNetoM = totalAEntregarM - totalDevGral - totalDescM;
-    const diferenciaM = (totalPagosM + totalGastosDeCuentaM) - totalNetoM;
+    // Mismos totales que el cuadre en pantalla (única fuente: calcularTotalesCuadre)
+    const T_M = calcularTotalesCuadre();
+    const totalAEntregarM = T_M.totalAEntregar;
+    const totalDevM = T_M.totalDev;
+    const totalDescM = T_M.totalDesc;
+    const totalNoConfM = T_M.totalNoConfirmado;
+    const totalNetoM = T_M.totalNeto;
+    const totalCreditosM = T_M.totalCreditos;
+    const diferenciaM = T_M.diferencia;
     const difColor = Math.abs(diferenciaM)<0.01?"#27ae60":diferenciaM>0?"#2563eb":"#c0392b";
     const difTexto = Math.abs(diferenciaM)<0.01?"✓ CUADRADO":diferenciaM>0?`+${fQ(diferenciaM)} SOBRANTE`:`-${fQ(Math.abs(diferenciaM))} FALTANTE`;
 
@@ -4374,9 +4376,14 @@ function renderMain() {
     [
       {label:"Clientes:",val:`${entregadosCount}/${clientes.length}  ✅${cntVerde} 🟡${cntAmarillo} 🔴${cntRosado}`,color:"#333"},
       {label:"Total a Entregar:",val:fQ(totalAEntregarM),color:"#1e3a5f"},
-      {label:"(-) Devoluciones:",val:`-${fQ(totalDevGral)}`,color:"#c0392b"},
+      {label:"(-) Devoluciones:",val:`-${fQ(totalDevM)}`,color:"#c0392b"},
       {label:"(-) Descuentos:",val:`-${fQ(totalDescM)}`,color:"#e67e22"},
+      ...(totalNoConfM>0?[{label:"(-) Ent. no confirmadas:",val:`-${fQ(totalNoConfM)}`,color:"#e67e22"}]:[]),
       {label:"Total Neto:",val:fQ(totalNetoM),color:"#1e3a5f",bold:true},
+      ...(totalCreditosM>0?[
+        {label:"💳 (-) Crédito (cobro posterior):",val:`-${fQ(totalCreditosM)}`,color:"#c0392b"},
+        {label:"Neto a cobrar hoy:",val:fQ(T_M.totalNetoACobrarHoy),color:"#1e3a5f",bold:true},
+      ]:[]),
     ].forEach(r=>{
       secEntregas.appendChild(el("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:"4px"}},el("span",{style:{color:"#666"}},r.label),el("span",{style:{fontWeight:r.bold?"700":"600",color:r.color}},r.val)));
     });
@@ -5755,23 +5762,17 @@ function renderResumenLiquidacion() {
     const totalGastosM = state.gastosDetalle.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
     const totalGastosDeCuentaM = state.gastosDetalle.reduce((s,g)=>g.deCuenta?(s+(parseFloat(g.monto)||0)):s,0);
     const totalPagosM = totalEfectivoM+totalDepositoM+totalTransferenciaM;
-    const totalAEntregarM = clientesEntregables.reduce((s,c)=>{let m=0;Object.values(state.clienteMap[c].pedidos||{}).filter(p=>!esPedPre(p)).forEach(p=>p.lineas.filter(l=>!/^pre$/i.test(l.estPed||"")).forEach(l=>{m+=l.monto;}));return s+m;},0);
-    const totalDescM = clientesEntregables.reduce((acc,c)=>{
-      if(!state.estadoEntrega[c]||state.estadoEntrega[c]==="rosado") return acc;
-      return acc+(parseFloat(state.descuentos[c])||0);
-    },0);
-    const totalDevM = clientesEntregables.reduce((s,c)=>{
-      if(state.estadoEntrega[c]==="rosado") return s+totalesCliente(c).monto;
-      return s+totalesCliente(c).devM;
-    },0);
-    const totalNetoM = totalAEntregarM - totalDevM - totalDescM;
-    const diferenciaM = (totalPagosM+totalGastosDeCuentaM)-totalNetoM;
+    // Mismos totales que el cuadre en pantalla (única fuente: calcularTotalesCuadre)
+    const T_M = calcularTotalesCuadre();
+    const totalCreditosM = T_M.totalCreditos;
+    const totalNetoM = T_M.totalNetoACobrarHoy; // neto menos créditos (lo que se cobra hoy)
+    const diferenciaM = T_M.diferencia;
     const difColor = Math.abs(diferenciaM)<0.01?"#27ae60":diferenciaM>0?"#2563eb":"#c0392b";
     const difTexto = Math.abs(diferenciaM)<0.01?"✓ CUADRADO":diferenciaM>0?`+${fQ(diferenciaM)} SOBRANTE`:`-${fQ(Math.abs(diferenciaM))} FALTANTE`;
     const modal=el("div",{style:{position:"fixed",inset:"0",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:"999",overflowY:"auto",padding:"20px 0"}});
     const box=el("div",{style:{background:"#fff",borderRadius:"16px",padding:"28px",width:"340px",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}});
     box.appendChild(el("h3",{style:{margin:"0 0 18px",color:"#1e3a5f",fontSize:"17px"}},"✅ Confirmar Liquidación"));
-    [[`💵 Efectivo`,fQ(totalEfectivoM)],[`🏦 Depósito`,fQ(totalDepositoM)],[`📲 Transferencia`,fQ(totalTransferenciaM)],[`Total recibido`,fQ(totalPagosM),true],[`⛽ Gastos (de cuenta)`,`-${fQ(totalGastosDeCuentaM)}`],[`📦 Total a cobrar`,fQ(totalNetoM)],[`↩️ Diferencia`,difTexto,false,difColor]].forEach(([l,v,bold,col])=>{
+    [[`💵 Efectivo`,fQ(totalEfectivoM)],[`🏦 Depósito`,fQ(totalDepositoM)],[`📲 Transferencia`,fQ(totalTransferenciaM)],[`Total recibido`,fQ(totalPagosM),true],[`⛽ Gastos (de cuenta)`,`-${fQ(totalGastosDeCuentaM)}`],...(totalCreditosM>0?[[`💳 Crédito (cobro posterior)`,`-${fQ(totalCreditosM)}`,false,"#c0392b"]]:[]),[`📦 Total a cobrar`,fQ(totalNetoM)],[`↩️ Diferencia`,difTexto,false,difColor]].forEach(([l,v,bold,col])=>{
       const r=el("div",{style:{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #f0f4f8"}});
       r.appendChild(el("span",{style:{fontSize:"13px",color:"#666"}},l));
       r.appendChild(el("span",{style:{fontSize:"13px",fontWeight:bold?"700":"600",color:col||"#333"}},v));
